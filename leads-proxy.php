@@ -47,7 +47,7 @@ try {
         date TEXT NOT NULL,
         source_id TEXT,
         source_name TEXT,
-        offer_name TEXT,
+        offer_name TEXT NOT NULL DEFAULT \'Unknown\',
         clicks INTEGER DEFAULT 0,
         conversions INTEGER DEFAULT 0,
         approved INTEGER DEFAULT 0,
@@ -216,10 +216,11 @@ if ($action === 'save_stats') {
         $stmt = $db->prepare('INSERT INTO daily_stats (date, source_id, source_name, offer_name, clicks, conversions, approved, revenue)
             VALUES (:date, :source_id, :source_name, :offer_name, :clicks, :conversions, :approved, :revenue)
             ON CONFLICT(date, source_id, offer_name) DO UPDATE SET
-                clicks = clicks + excluded.clicks,
-                conversions = conversions + excluded.conversions,
-                approved = approved + excluded.approved,
-                revenue = revenue + excluded.revenue');
+                source_name = excluded.source_name,
+                clicks = excluded.clicks,
+                conversions = excluded.conversions,
+                approved = excluded.approved,
+                revenue = excluded.revenue');
         $stmt->bindValue(':date', $date, SQLITE3_TEXT);
         $stmt->bindValue(':source_id', $sourceId, SQLITE3_TEXT);
         $stmt->bindValue(':source_name', $sourceName, SQLITE3_TEXT);

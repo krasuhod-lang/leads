@@ -17,25 +17,40 @@
     table th, table td { padding: 10px 12px; border-bottom: 1px solid rgba(51,65,85,.5); text-align: left; }
     table th { color: #94a3b8; text-transform: uppercase; font-size: 11px; }
     table th.text-right, table td.text-right { text-align: right; }
+    .tab-btn { padding: 10px 20px; font-weight: 700; border: none; cursor: pointer; border-radius: 8px 8px 0 0; transition: background 0.2s, color 0.2s; }
+    .tab-btn.active { background: #1e293b; color: #fff; border-bottom: 2px solid #3b82f6; }
+    .tab-btn:not(.active) { background: #0f172a; color: #64748b; }
+    .tab-btn:hover:not(.active) { color: #94a3b8; }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+    .matrix-table th, .matrix-table td { border: 1px solid #334155; padding: 8px 12px; font-size: 13px; }
+    .matrix-table th { background: #1e3a5f; color: #93c5fd; font-weight: 600; }
+    .matrix-table tr:hover { background: rgba(59,130,246,0.08); }
+    .sort-th { cursor: pointer; user-select: none; }
+    .sort-th:hover { color: #e2e8f0; }
+    .auto-refresh-indicator { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: #10b981; }
+    .auto-refresh-indicator .dot { width: 8px; height: 8px; background: #10b981; border-radius: 50%; animation: pulse 2s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
   </style>
 </head>
 <body>
-
 <div class="max-w-7xl mx-auto px-4 py-8 space-y-6">
+  <!-- Header -->
   <div class="flex flex-col lg:flex-row gap-4 lg:items-center lg:justify-between">
     <div>
       <h1 class="text-3xl font-black text-white">Leads.su Dashboard</h1>
       <p class="text-slate-400 text-sm mt-1">PRO Analytics Edition</p>
     </div>
-    
     <div>
       <div class="flex flex-wrap gap-3 items-center">
         <input id="dateFrom" type="date" class="bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-blue-500">
         <input id="dateTo" type="date" class="bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-blue-500">
-        <input id="leadsToken" type="text" placeholder="Leads.su token..." class="bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm w-80 focus:outline-none focus:border-blue-500">
         <button id="btnLoadAPI" class="btn" onclick="loadFromAPI()">⚡ Загрузить из кабинета</button>
+        <div class="auto-refresh-indicator" id="autoRefreshStatus">
+          <span class="dot"></span>
+          <span>Автообновление: <span id="nextRefreshTime">--:--</span></span>
+        </div>
       </div>
-      
       <div id="loadStatusWrap" class="hidden mt-3">
         <div class="flex items-center justify-between text-xs text-slate-400 mb-1">
           <span id="loadStatusText">Подготовка...</span>
@@ -48,144 +63,176 @@
     </div>
   </div>
 
-  <!-- KPI для Leads.su -->
-  <div id="kpiCards" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4"></div>
+  <!-- Tabs -->
+  <div class="flex gap-1 border-b border-slate-700">
+    <button class="tab-btn active" data-tab="dashboard" onclick="switchTab('dashboard')">📊 Дашборд</button>
+    <button class="tab-btn" data-tab="epc" onclick="switchTab('epc')">📈 EPC-анализ</button>
+    <button class="tab-btn" data-tab="matrix" onclick="switchTab('matrix')">🧩 Матрица</button>
+    <button class="tab-btn" data-tab="banner" onclick="switchTab('banner')">🎯 Баннер</button>
+  </div>
 
-  <!-- KPI для баннера -->
-  <div id="bannerKpiCards" class="grid grid-cols-1 md:grid-cols-4 gap-4"></div>
-
-  <!-- Основные графики -->
-  <div class="grid grid-cols-1 xl:grid-cols-3 gap-6">
-    <div class="card xl:col-span-2">
-      <div class="flex flex-wrap gap-3 justify-between items-center mb-4">
-        <h2 class="text-white font-bold">Динамика</h2>
-        <div class="flex gap-2">
-          <select id="chartGrouping" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm focus:outline-none" onchange="refreshChart()">
-            <option value="date">По дням</option>
-            <option value="week">По неделям</option>
-            <option value="month">По месяцам</option>
-          </select>
-          <select id="chartMetric" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm focus:outline-none" onchange="refreshChart()">
-            <option value="absolute">Доход + Клики</option>
-            <option value="conversion">CR + Approve</option>
-          </select>
-          <select id="chartSourceFilter" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm focus:outline-none" onchange="refreshChart(); renderUI();">
-            <option value="all">Все площадки</option>
-          </select>
+  <!-- TAB: DASHBOARD -->
+  <div id="tab-dashboard" class="tab-content active space-y-6">
+    <div id="kpiCards" class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-4"></div>
+    <div class="grid grid-cols-1 xl:grid-cols-3 gap-6">
+      <div class="card xl:col-span-2">
+        <div class="flex flex-wrap gap-3 justify-between items-center mb-4">
+          <h2 class="text-white font-bold">Динамика</h2>
+          <div class="flex gap-2">
+            <select id="chartGrouping" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm focus:outline-none" onchange="refreshChart()">
+              <option value="date">По дням</option><option value="week">По неделям</option><option value="month">По месяцам</option>
+            </select>
+            <select id="chartMetric" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm focus:outline-none" onchange="refreshChart()">
+              <option value="absolute">Доход + Клики</option><option value="conversion">CR + Approve</option><option value="epc">EPC</option><option value="traffic">Объём трафика</option>
+            </select>
+            <select id="chartSourceFilter" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm focus:outline-none" onchange="refreshChart(); renderUI();">
+              <option value="all">Все площадки</option>
+            </select>
+          </div>
         </div>
+        <div class="chart-wrap"><canvas id="trendChart"></canvas></div>
       </div>
-      <div class="chart-wrap"><canvas id="trendChart"></canvas></div>
-    </div>
-    <div class="card">
-      <h2 class="text-white font-bold mb-4">Воронка</h2>
-      <div id="funnelBox" class="space-y-3 text-sm text-slate-300"></div>
-    </div>
-  </div>
-
-  <!-- График конверсии баннера -->
-  <div class="card">
-    <h2 class="text-white font-bold mb-4">📈 Динамика конверсии баннера (показы → переходы)</h2>
-    <div class="chart-wrap"><canvas id="bannerConvChart"></canvas></div>
-  </div>
-
-  <!-- Остальные графики -->
-  <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
-    <div class="card">
-      <h2 class="text-white font-bold mb-4">Доли площадок (Доход ₽)</h2>
-      <div class="chart-wrap flex justify-center"><canvas id="donutChart"></canvas></div>
-    </div>
-    <div class="card">
-      <h2 class="text-white font-bold mb-4">Топ-5 Офферов по EPC (от 100 кликов)</h2>
-      <div class="chart-wrap"><canvas id="barChart"></canvas></div>
-    </div>
-  </div>
-
-  <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
-    <div class="card">
-      <h2 class="text-white font-bold mb-4">Площадки</h2>
-      <div class="overflow-auto">
-        <table class="w-full text-sm" id="sourceTable">
-          <thead>
-            <tr>
-              <th class="cursor-pointer hover:text-white" onclick="sortTable('sourceTable', 'name')">Площадка ↕</th>
-              <th class="cursor-pointer hover:text-white text-right" onclick="sortTable('sourceTable', 'clicks')">Клики ↕</th>
-              <th class="cursor-pointer hover:text-white text-right" onclick="sortTable('sourceTable', 'conversions')">Лиды ↕</th>
-              <th class="cursor-pointer hover:text-white text-right" onclick="sortTable('sourceTable', 'approveRate')">Approve % ↕</th>
-              <th class="cursor-pointer hover:text-white text-right" onclick="sortTable('sourceTable', 'revenue')">Доход ↕</th>
-              <th class="cursor-pointer hover:text-white text-right" onclick="sortTable('sourceTable', 'epc')">EPC ↕</th>
-            </tr>
-          </thead>
-          <tbody></tbody>
-        </table>
-      </div>
-    </div>
-    <div class="card">
-      <div class="flex flex-wrap gap-3 justify-between items-center mb-4">
-        <h2 class="text-white font-bold">Офферы</h2>
-        <select id="offerSourceFilter" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm max-w-[200px] focus:outline-none" onchange="renderTables()">
-          <option value="all">Все площадки</option>
-        </select>
-      </div>
-      <div class="overflow-auto">
-        <table class="w-full text-sm" id="offerTable">
-          <thead>
-            <tr>
-              <th class="cursor-pointer hover:text-white" onclick="sortTable('offerTable', 'name')">Оффер ↕</th>
-              <th class="cursor-pointer hover:text-white text-right" onclick="sortTable('offerTable', 'clicks')">Клики ↕</th>
-              <th class="cursor-pointer hover:text-white text-right" onclick="sortTable('offerTable', 'conversions')">Лиды ↕</th>
-              <th class="cursor-pointer hover:text-white text-right" onclick="sortTable('offerTable', 'approveRate')">Approve % ↕</th>
-              <th class="cursor-pointer hover:text-white text-right" onclick="sortTable('offerTable', 'revenue')">Доход ↕</th>
-              <th class="cursor-pointer hover:text-white text-right" onclick="sortTable('offerTable', 'epc')">EPC ↕</th>
-            </tr>
-          </thead>
-          <tbody></tbody>
-        </table>
-      </div>
-    </div>
-  </div>
-
-  <!-- Аналитика EPC -->
-  <div class="card col-span-full">
-    <div class="flex flex-wrap gap-3 justify-between items-center mb-4">
-      <h2 class="text-white font-bold">Анализ EPC (доход на клик)</h2>
-      <div class="flex gap-2">
-        <select id="epcOfferSelect" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm focus:outline-none">
-          <option value="all">Все офферы</option>
-        </select>
-        <select id="epcGrouping" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm focus:outline-none">
-          <option value="day">По дням</option>
-          <option value="week">По неделям</option>
-        </select>
+      <div class="card">
+        <h2 class="text-white font-bold mb-4">Воронка</h2>
+        <div id="funnelBox" class="space-y-3 text-sm text-slate-300"></div>
       </div>
     </div>
     <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
-      <div class="chart-wrap" style="height: 320px;">
-        <canvas id="epcLineChart"></canvas>
+      <div class="card"><h2 class="text-white font-bold mb-4">Доли площадок (Доход ₽)</h2><div class="chart-wrap flex justify-center"><canvas id="donutChart"></canvas></div></div>
+      <div class="card"><h2 class="text-white font-bold mb-4">Топ-5 Офферов по EPC (от 100 кликов)</h2><div class="chart-wrap"><canvas id="barChart"></canvas></div></div>
+    </div>
+    <div class="card"><h2 class="text-white font-bold mb-4">📊 Доходность по площадкам (помесячно)</h2><div class="chart-wrap" style="height:400px"><canvas id="revenueByPlatformChart"></canvas></div></div>
+    <div class="card"><h2 class="text-white font-bold mb-4">🚀 Объём трафика по площадкам (помесячно)</h2><div class="chart-wrap" style="height:400px"><canvas id="trafficByPlatformChart"></canvas></div></div>
+    <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
+      <div class="card">
+        <h2 class="text-white font-bold mb-4">Площадки</h2>
+        <div class="overflow-auto" style="max-height:500px">
+          <table class="w-full text-sm" id="sourceTable"><thead><tr>
+            <th class="sort-th" onclick="sortTable('sourceTable','name')">Площадка ↕</th>
+            <th class="sort-th text-right" onclick="sortTable('sourceTable','clicks')">Клики ↕</th>
+            <th class="sort-th text-right" onclick="sortTable('sourceTable','conversions')">Лиды ↕</th>
+            <th class="sort-th text-right" onclick="sortTable('sourceTable','approveRate')">Approve % ↕</th>
+            <th class="sort-th text-right" onclick="sortTable('sourceTable','revenue')">Доход ↕</th>
+            <th class="sort-th text-right" onclick="sortTable('sourceTable','epc')">EPC ↕</th>
+          </tr></thead><tbody></tbody></table>
+        </div>
       </div>
-      <div class="chart-wrap" style="height: 320px;">
-        <canvas id="epcWeekdayChart"></canvas>
+      <div class="card">
+        <div class="flex flex-wrap gap-3 justify-between items-center mb-4">
+          <h2 class="text-white font-bold">Офферы</h2>
+          <select id="offerSourceFilter" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm max-w-[200px] focus:outline-none" onchange="renderTables()"><option value="all">Все площадки</option></select>
+        </div>
+        <div class="overflow-auto" style="max-height:500px">
+          <table class="w-full text-sm" id="offerTable"><thead><tr>
+            <th class="sort-th" onclick="sortTable('offerTable','name')">Оффер ↕</th>
+            <th class="sort-th text-right" onclick="sortTable('offerTable','clicks')">Клики ↕</th>
+            <th class="sort-th text-right" onclick="sortTable('offerTable','conversions')">Лиды ↕</th>
+            <th class="sort-th text-right" onclick="sortTable('offerTable','approveRate')">Approve % ↕</th>
+            <th class="sort-th text-right" onclick="sortTable('offerTable','revenue')">Доход ↕</th>
+            <th class="sort-th text-right" onclick="sortTable('offerTable','epc')">EPC ↕</th>
+          </tr></thead><tbody></tbody></table>
+        </div>
       </div>
     </div>
-    <div class="mt-4 text-sm text-slate-300" id="epcStats"></div>
   </div>
 
-  <!-- Блок загрузки Excel (статистика баннера) -->
-  <div class="card">
-    <h2 class="text-white font-bold mb-4">📊 Загрузка статистики баннера (Excel)</h2>
-    <p class="text-sm text-slate-400 mb-4">Файл должен содержать колонки: Дата (YYYY-MM-DD), Показы, Переходы</p>
-    <div class="flex flex-wrap gap-4 items-end">
-      <div class="flex-1">
-        <input type="file" id="bannerExcelFile" accept=".xlsx, .xls, .csv" class="bg-slate-800 border border-slate-700 rounded px-3 py-2 w-full">
+  <!-- TAB: EPC ANALYSIS -->
+  <div id="tab-epc" class="tab-content space-y-6">
+    <div class="card">
+      <div class="flex flex-wrap gap-3 justify-between items-center mb-4">
+        <h2 class="text-white font-bold text-lg">📈 Анализ EPC (доход на клик)</h2>
+        <div class="flex gap-2">
+          <select id="epcSourceSelect" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm focus:outline-none" onchange="renderEPCAnalytics()"><option value="all">Все площадки</option></select>
+          <select id="epcOfferSelect" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm focus:outline-none" onchange="renderEPCAnalytics()"><option value="all">Все офферы</option></select>
+          <select id="epcGrouping" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm focus:outline-none" onchange="renderEPCAnalytics()">
+            <option value="day">По дням</option><option value="week">По неделям</option><option value="month">По месяцам</option>
+          </select>
+        </div>
       </div>
-      <button id="uploadBannerBtn" class="btn">📤 Загрузить и обновить</button>
+      <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
+        <div><h3 class="text-sm text-slate-400 mb-2">Динамика EPC</h3><div class="chart-wrap" style="height:320px"><canvas id="epcLineChart"></canvas></div></div>
+        <div><h3 class="text-sm text-slate-400 mb-2">EPC по дням недели</h3><div class="chart-wrap" style="height:320px"><canvas id="epcWeekdayChart"></canvas></div></div>
+      </div>
     </div>
-    <div id="bannerUploadMsg" class="mt-3 text-sm hidden"></div>
+    <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
+      <div class="card"><h2 class="text-white font-bold mb-4">📅 EPC по месяцам</h2><div class="chart-wrap" style="height:320px"><canvas id="epcMonthChart"></canvas></div></div>
+      <div class="card"><h2 class="text-white font-bold mb-4">🔥 Тепловая карта EPC (день недели × месяц)</h2><div id="epcHeatmapContainer" class="overflow-auto"></div></div>
+    </div>
+    <div class="card">
+      <h2 class="text-white font-bold mb-4">📉 Анализ просадок EPC</h2>
+      <div class="mt-4 text-sm text-slate-300" id="epcStats"></div>
+      <div class="mt-4 overflow-auto" style="max-height:400px">
+        <table class="w-full text-sm" id="epcDropsTable"><thead><tr>
+          <th class="sort-th" onclick="sortTable('epcDropsTable','period')">Период ↕</th>
+          <th class="sort-th text-right" onclick="sortTable('epcDropsTable','epc')">EPC ↕</th>
+          <th class="sort-th text-right" onclick="sortTable('epcDropsTable','clicks')">Клики ↕</th>
+          <th class="sort-th text-right" onclick="sortTable('epcDropsTable','revenue')">Доход ↕</th>
+          <th class="text-right">Отклонение от среднего</th>
+        </tr></thead><tbody></tbody></table>
+      </div>
+    </div>
+  </div>
+
+  <!-- TAB: MATRIX -->
+  <div id="tab-matrix" class="tab-content space-y-6">
+    <div class="card">
+      <h2 class="text-white font-bold text-lg mb-4">🧩 Матрица каналов коммуникаций</h2>
+      <div class="overflow-auto">
+        <table class="w-full matrix-table text-sm"><thead><tr><th>Каналы</th><th>Ресурсы</th><th>Продукты</th><th>Инструменты</th><th>Коммуникации</th></tr></thead>
+        <tbody>
+          <tr><td rowspan="14">Онлайн</td><td rowspan="11">Личный кабинет/Сайт</td><td rowspan="5">PDL</td><td>Баннер с кнопкой</td><td>Ссылка на витрину с офферами</td></tr>
+          <tr><td>E-mail</td><td>Прямая ссылка на оффер в письме</td></tr>
+          <tr><td>Баннер с кнопкой</td><td>Ссылка на витрину с офферами</td></tr>
+          <tr><td>СМС 1</td><td>Ссылка на витрину с офферами</td></tr>
+          <tr><td>СМС 2</td><td>Ссылка на витрину с офферами</td></tr>
+          <tr><td rowspan="3">INL</td><td>Баннер с кнопкой</td><td>Витрины с офферами</td></tr>
+          <tr><td>E-mail</td><td>Прямая ссылка на оффер в письме</td></tr>
+          <tr><td>СМС</td><td>Ссылка на витрину с офферами</td></tr>
+          <tr><td rowspan="3">REF</td><td>Баннер с кнопкой</td><td>Витрины с офферами</td></tr>
+          <tr><td>E-mail</td><td>Прямая ссылка на оффер в письме</td></tr>
+          <tr><td>СМС</td><td>Ссылка на витрину с офферами</td></tr>
+          <tr><td rowspan="3">Мобильное приложение</td><td rowspan="3">PDL, INL, REF</td><td>Баннер с кнопкой</td><td>Витрины с офферами</td></tr>
+          <tr><td>E-mail</td><td>Прямая ссылка на оффер в письме</td></tr>
+          <tr><td>СМС</td><td>Ссылка на витрину с офферами</td></tr>
+        </tbody></table>
+      </div>
+    </div>
+    <div class="card">
+      <div class="flex flex-wrap gap-3 justify-between items-center mb-4">
+        <h2 class="text-white font-bold text-lg">📊 Матрица источников трафика</h2>
+        <select id="matrixMetric" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm focus:outline-none" onchange="renderMatrixAnalytics()">
+          <option value="clicks">Трафик (клики)</option><option value="revenue">Выручка (₽)</option><option value="conversions">Лиды</option><option value="epc">EPC</option>
+        </select>
+      </div>
+      <div class="overflow-auto"><table class="w-full text-sm" id="matrixSourceTable"><thead><tr id="matrixSourceHeader"></tr></thead><tbody id="matrixSourceBody"></tbody></table></div>
+    </div>
+    <div class="card"><h2 class="text-white font-bold mb-4">📈 Доли площадок по месяцам (% от общего трафика)</h2><div class="chart-wrap" style="height:400px"><canvas id="matrixShareChart"></canvas></div></div>
+    <div class="card"><h2 class="text-white font-bold mb-4">📋 Помесячная сводка: выручка, объём трафика, доли</h2>
+      <div class="overflow-auto" style="max-height:600px"><table class="w-full text-sm matrix-table" id="matrixMonthlyTable"><thead><tr id="matrixMonthlyHeader"></tr></thead><tbody id="matrixMonthlyBody"></tbody></table></div>
+    </div>
+  </div>
+
+  <!-- TAB: BANNER -->
+  <div id="tab-banner" class="tab-content space-y-6">
+    <div id="bannerKpiCards" class="grid grid-cols-1 md:grid-cols-4 gap-4"></div>
+    <div class="card"><h2 class="text-white font-bold mb-4">📈 Динамика конверсии баннера (показы → переходы)</h2><div class="chart-wrap"><canvas id="bannerConvChart"></canvas></div></div>
+    <div class="card">
+      <h2 class="text-white font-bold mb-4">📊 Загрузка статистики баннера (Excel)</h2>
+      <p class="text-sm text-slate-400 mb-4">Файл должен содержать колонки: Дата (YYYY-MM-DD), Показы, Переходы</p>
+      <div class="flex flex-wrap gap-4 items-end">
+        <div class="flex-1"><input type="file" id="bannerExcelFile" accept=".xlsx, .xls, .csv" class="bg-slate-800 border border-slate-700 rounded px-3 py-2 w-full"></div>
+        <button id="uploadBannerBtn" class="btn">📤 Загрузить и обновить</button>
+      </div>
+      <div id="bannerUploadMsg" class="mt-3 text-sm hidden"></div>
+    </div>
   </div>
 </div>
 
 <script>
 // ========================== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ==========================
 const API_BASE = './leads-proxy.php';
+const HARDCODED_TOKEN = '2104ce6ccd2ce95458a53926597416eb';
+const AUTO_REFRESH_INTERVAL_MS = 60 * 60 * 1000; // 1 час
 
 let originalData = [];
 let globalRawData = [];
@@ -194,19 +241,43 @@ let bannerData = [];
 
 let epcLineChart = null;
 let epcWeekdayChart = null;
+let epcMonthChartInstance = null;
 let trendChartInstance = null;
 let donutChartInstance = null;
 let barChartInstance = null;
 let bannerConvChart = null;
+let revenueByPlatformChartInstance = null;
+let trafficByPlatformChartInstance = null;
+let matrixShareChartInstance = null;
+let autoRefreshTimer = null;
 
 let tableSort = {
   sourceTable: { field: 'revenue', desc: true },
-  offerTable: { field: 'revenue', desc: true }
+  offerTable: { field: 'revenue', desc: true },
+  epcDropsTable: { field: 'epc', desc: false }
 };
 
 const daysOfWeek = ['Вс','Пн','Вт','Ср','Чт','Пт','Сб'];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const colorPalette = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316', '#06b6d4', '#6366f1'];
+const colorPalette = ['#3b82f6','#10b981','#f59e0b','#ef4444','#8b5cf6','#ec4899','#14b8a6','#f97316','#06b6d4','#6366f1'];
+
+const sharedTooltipConfig = {
+  mode: 'index', intersect: false,
+  backgroundColor: 'rgba(15,23,42,0.95)', titleColor: '#e2e8f0', bodyColor: '#cbd5e1',
+  borderColor: '#334155', borderWidth: 1, padding: 12, displayColors: true, caretSize: 6
+};
+
+// ========================== TAB NAVIGATION ==========================
+function switchTab(tabName) {
+  document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+  const tabEl = document.getElementById('tab-' + tabName);
+  if (tabEl) tabEl.classList.add('active');
+  document.querySelectorAll('.tab-btn').forEach(btn => {
+    if (btn.dataset.tab === tabName) btn.classList.add('active');
+  });
+  setTimeout(() => window.dispatchEvent(new Event('resize')), 100);
+}
 
 // ========================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========================
 function getWeekNumber(d) {
@@ -230,7 +301,13 @@ function parseDateSmart(rawD) {
 }
 
 function escapeHtml(str) {
-  return String(str).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#039;');
+  return String(str).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#039;');
+}
+
+function mergeSourceName(name) {
+  const lower = (name || '').toLowerCase();
+  if (lower.includes('хочузайм') || lower.includes('заимберис') || lower.includes('займберис')) return 'Займберис';
+  return name;
 }
 
 // ========================== ЗАГРУЗКА ДАННЫХ ИЗ LEADS.SU ==========================
@@ -239,37 +316,28 @@ async function fetchJSON(url, attempt = 0) {
   if (res.status === 429) {
     if (attempt >= 8) throw new Error('API Leads.su перегружен. Попробуйте позже.');
     let waitMs = Math.min(2000 * Math.pow(1.5, attempt), 15000);
-    console.warn(`[Rate Limit] 429. Ждем ${waitMs}мс...`);
     await sleep(waitMs);
     return fetchJSON(url, attempt + 1);
   }
   if ([502, 503, 504].includes(res.status)) {
-    if (attempt < 4) {
-      await sleep(3000);
-      return fetchJSON(url, attempt + 1);
-    }
+    if (attempt < 4) { await sleep(3000); return fetchJSON(url, attempt + 1); }
   }
   const text = await res.text();
   let json = null;
   try { json = text ? JSON.parse(text) : null; }
   catch (e) { throw new Error(`Ответ сервера не JSON. HTTP: ${res.status}`); }
   if (!res.ok) {
-      let errorMsg = `HTTP ${res.status}`;
-      if (json && json.error && Array.isArray(json.error.params)) {
-          errorMsg = json.error.params.map(p => p.message).join(' | ');
-      } else if (json && json.message) {
-          errorMsg = json.message;
-      }
-      throw new Error(errorMsg);
+    let errorMsg = `HTTP ${res.status}`;
+    if (json && json.error && Array.isArray(json.error.params)) errorMsg = json.error.params.map(p => p.message).join(' | ');
+    else if (json && json.message) errorMsg = json.message;
+    throw new Error(errorMsg);
   }
   if (json && json.status && json.status !== 'success') throw new Error(json.message || 'API error');
   return json;
 }
 
 async function fetchAll(method, params = {}) {
-  let offset = 0;
-  const limit = 500;
-  let all = [];
+  let offset = 0; const limit = 500; let all = [];
   while (true) {
     const query = new URLSearchParams({ method, ...params, offset: String(offset), limit: String(limit) });
     const json = await fetchJSON(`${API_BASE}?${query.toString()}`);
@@ -298,28 +366,21 @@ function processDataFromDb(rows) {
     week: getWeekNumber(new Date(row.date)),
     month: row.date.slice(0, 7),
     dayOfWeek: daysOfWeek[new Date(row.date).getDay()],
-    offer: 'Unknown',
-    source: row.source_name,
-    clicks: row.clicks,
-    conversions: row.conversions,
-    approved: row.approved,
-    revenue: row.revenue
+    offer: row.offer_name || 'Unknown',
+    source: mergeSourceName(row.source_name),
+    clicks: row.clicks, conversions: row.conversions, approved: row.approved, revenue: row.revenue
   }));
 }
 
 async function loadFromAPI() {
-  const token = document.getElementById('leadsToken').value.trim();
+  const token = HARDCODED_TOKEN;
   const dFrom = document.getElementById('dateFrom').value;
   const dTo = document.getElementById('dateTo').value;
   const btn = document.getElementById('btnLoadAPI');
   const originalText = btn.innerHTML;
-
-  if (!token) return alert('Введите Leads.su token');
   if (!dFrom || !dTo) return alert('Укажите даты');
-
   btn.disabled = true;
   updateProgress(5, 'Проверка наличия данных...');
-
   try {
     const saved = await fetchSavedStats(dFrom, dTo);
     if (saved && saved.length) {
@@ -331,24 +392,18 @@ async function loadFromAPI() {
       btn.disabled = false;
       return;
     }
-
     updateProgress(10, 'Получение структуры API...');
     const [offersData, platformsData] = await Promise.all([
-      fetchAll('offers', { token }),
-      fetchAll('platforms', { token })
+      fetchAll('offers', { token }), fetchAll('platforms', { token })
     ]);
-
     const offerMap = {};
     for (const o of offersData) offerMap[String(o.id)] = o.name || `Offer #${o.id}`;
-
-    const platformMap = {};
-    const activePlatformIds = [];
+    const platformMap = {}; const activePlatformIds = [];
     for (const p of platformsData) {
       if (p?.id == null) continue;
       platformMap[String(p.id)] = p.name || `Platform #${p.id}`;
       activePlatformIds.push(String(p.id));
     }
-
     let reportData = [];
     if (activePlatformIds.length > 0) {
       let loaded = 0;
@@ -356,7 +411,7 @@ async function loadFromAPI() {
         let pct = 10 + Math.round((loaded / activePlatformIds.length) * 80);
         updateProgress(pct, `Загрузка отчетов: площадка ${loaded + 1} из ${activePlatformIds.length}`);
         const pData = await fetchAll('reports/summary', {
-          token: token, start_date: `${dFrom} 00:00:00`, end_date: `${dTo} 23:59:59`,
+          token, start_date: `${dFrom} 00:00:00`, end_date: `${dTo} 23:59:59`,
           grouping: 'day', fields: 'offer_id,source', platform_id: pid
         });
         for (const row of pData) row.platformid = String(pid);
@@ -366,11 +421,10 @@ async function loadFromAPI() {
     } else {
       updateProgress(50, 'Загрузка общего отчета...');
       reportData = await fetchAll('reports/summary', {
-        token: token, start_date: `${dFrom} 00:00:00`, end_date: `${dTo} 23:59:59`,
+        token, start_date: `${dFrom} 00:00:00`, end_date: `${dTo} 23:59:59`,
         grouping: 'day', fields: 'offer_id,source'
       });
     }
-
     updateProgress(95, 'Обработка данных...');
     originalData = [];
     for (const row of reportData) {
@@ -384,15 +438,9 @@ async function loadFromAPI() {
       const approved = Number(row.conversions_approved ?? row.conversionsapproved ?? 0);
       const revenue = Number(row.payout ?? 0);
       let sourceName = 'Unknown';
-      if (platformId && platformMap[platformId]) {
-        sourceName = `${platformId}, ${platformMap[platformId]}`;
-      } else if (row.source) {
-        sourceName = String(row.source).trim();
-      }
-      const lowerSource = sourceName.toLowerCase();
-      if (lowerSource.includes('хочузайм') || lowerSource.includes('заимберис') || lowerSource.includes('займберис')) {
-          sourceName = 'Займберис';
-      }
+      if (platformId && platformMap[platformId]) sourceName = `${platformId}, ${platformMap[platformId]}`;
+      else if (row.source) sourceName = String(row.source).trim();
+      sourceName = mergeSourceName(sourceName);
       originalData.push({
         date: dateStr, week: getWeekNumber(new Date(dateStr)), month: dateStr.slice(0, 7),
         dayOfWeek: daysOfWeek[new Date(dateStr).getDay()],
@@ -400,16 +448,12 @@ async function loadFromAPI() {
         source: sourceName, clicks, conversions, approved, revenue
       });
     }
-
     try {
       await fetch(`${API_BASE}?action=save_stats`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ data: originalData })
       });
-      console.log('Данные сохранены в базу');
     } catch(e) { console.warn('Ошибка сохранения:', e); }
-
     await applyGlobalFilters();
     updateProgress(100, 'Готово!');
     setTimeout(() => updateProgress(0), 1500);
@@ -418,371 +462,436 @@ async function loadFromAPI() {
     alert(`Ошибка загрузки:\n${e.message}`);
     updateProgress(0);
   } finally {
-    btn.disabled = false;
-    btn.innerHTML = originalText;
+    btn.disabled = false; btn.innerHTML = originalText;
   }
 }
 
 function updateProgress(percent, text) {
   const wrap = document.getElementById('loadStatusWrap');
-  if (percent > 0) wrap.classList.remove('hidden');
-  else wrap.classList.add('hidden');
+  if (percent > 0) wrap.classList.remove('hidden'); else wrap.classList.add('hidden');
   document.getElementById('loadProgressBar').style.width = `${percent}%`;
   document.getElementById('loadStatusPercent').textContent = `${Math.round(percent)}%`;
   if (text) document.getElementById('loadStatusText').textContent = text;
 }
 
-// ========================== АВТОМАТИЧЕСКАЯ ЗАГРУЗКА КЭША ПРИ СТАРТЕ ==========================
+// ========================== АВТООБНОВЛЕНИЕ КАЖДЫЙ ЧАС ==========================
+function startAutoRefresh() {
+  if (autoRefreshTimer) clearInterval(autoRefreshTimer);
+  updateNextRefreshTime();
+  autoRefreshTimer = setInterval(() => {
+    if (document.hidden) { console.log('[Auto-refresh] Страница не видна, пропуск'); return; }
+    console.log('[Auto-refresh] Обновление данных...');
+    loadFromAPI();
+    updateNextRefreshTime();
+  }, AUTO_REFRESH_INTERVAL_MS);
+}
+
+function updateNextRefreshTime() {
+  const next = new Date(Date.now() + AUTO_REFRESH_INTERVAL_MS);
+  const hh = String(next.getHours()).padStart(2, '0');
+  const mm = String(next.getMinutes()).padStart(2, '0');
+  const el = document.getElementById('nextRefreshTime');
+  if (el) el.textContent = `${hh}:${mm}`;
+}
+
 async function autoLoadSavedStats() {
   const dFrom = document.getElementById('dateFrom').value;
   const dTo = document.getElementById('dateTo').value;
   if (!dFrom || !dTo) return;
   const saved = await fetchSavedStats(dFrom, dTo);
   if (saved && saved.length) {
-    console.log('Автозагрузка из кэша:', saved.length, 'записей');
     processDataFromDb(saved);
     await applyGlobalFilters();
-    // Показываем сообщение в логах (можно добавить в UI)
-    const statusDiv = document.getElementById('loadStatusText');
-    if (statusDiv) statusDiv.textContent = 'Данные загружены из кэша (последние 30 дней)';
-    setTimeout(() => { if (statusDiv) statusDiv.textContent = 'Подготовка...'; }, 3000);
-  } else {
-    console.log('Нет сохранённых данных, нажмите "Загрузить из кабинета"');
   }
 }
 
-// ========================== ЗАГРУЗКА ДАННЫХ БАННЕРА ==========================
+// ========================== БАННЕР ==========================
 async function fetchBannerStats(start, end) {
-  const res = await fetch(`${API_BASE}?action=get_banner_stats&start_date=${start}&end_date=${end}`);
-  const data = await res.json();
-  if (data.status === 'success') bannerData = data.data;
+  try {
+    const res = await fetch(`${API_BASE}?action=get_banner_stats&start_date=${start}&end_date=${end}`);
+    const data = await res.json();
+    if (data.status === 'success') bannerData = data.data;
+  } catch(e) { console.warn(e); }
 }
 
 function renderBannerKPI() {
-  const totalImpressions = bannerData.reduce((sum, d) => sum + d.impressions, 0);
-  const totalClicks = bannerData.reduce((sum, d) => sum + d.clicks, 0);
+  const totalImpressions = bannerData.reduce((s,d) => s + d.impressions, 0);
+  const totalClicks = bannerData.reduce((s,d) => s + d.clicks, 0);
   const overallConv = totalImpressions ? (totalClicks / totalImpressions * 100) : 0;
-  const avgConv = bannerData.length ? (bannerData.reduce((sum, d) => sum + d.conversion_rate, 0) / bannerData.length) : 0;
-  const container = document.getElementById('bannerKpiCards');
-  if (container) {
-    container.innerHTML = `
-      <div class="card"><div class="text-slate-400 text-xs uppercase">Показы баннера</div><div class="text-3xl font-black mt-2">${totalImpressions.toLocaleString('ru-RU')}</div></div>
-      <div class="card"><div class="text-slate-400 text-xs uppercase">Переходы на витрину</div><div class="text-3xl font-black mt-2">${totalClicks.toLocaleString('ru-RU')}</div></div>
-      <div class="card"><div class="text-slate-400 text-xs uppercase">Общая конверсия</div><div class="text-3xl font-black mt-2">${overallConv.toFixed(2)}%</div></div>
-      <div class="card"><div class="text-slate-400 text-xs uppercase">Средняя конверсия (по дням)</div><div class="text-3xl font-black mt-2">${avgConv.toFixed(2)}%</div></div>
-    `;
-  }
+  const avgConv = bannerData.length ? (bannerData.reduce((s,d) => s + d.conversion_rate, 0) / bannerData.length) : 0;
+  const c = document.getElementById('bannerKpiCards');
+  if (c) c.innerHTML = `
+    <div class="card"><div class="text-slate-400 text-xs uppercase">Показы</div><div class="text-3xl font-black mt-2">${totalImpressions.toLocaleString('ru-RU')}</div></div>
+    <div class="card"><div class="text-slate-400 text-xs uppercase">Переходы</div><div class="text-3xl font-black mt-2">${totalClicks.toLocaleString('ru-RU')}</div></div>
+    <div class="card"><div class="text-slate-400 text-xs uppercase">Общая конверсия</div><div class="text-3xl font-black mt-2">${overallConv.toFixed(2)}%</div></div>
+    <div class="card"><div class="text-slate-400 text-xs uppercase">Средняя конверсия</div><div class="text-3xl font-black mt-2">${avgConv.toFixed(2)}%</div></div>`;
 }
 
 function renderBannerChart() {
   if (!bannerData.length) return;
-  const labels = bannerData.map(d => d.date.slice(5));
-  const convData = bannerData.map(d => d.conversion_rate);
   const ctx = document.getElementById('bannerConvChart').getContext('2d');
   if (bannerConvChart) bannerConvChart.destroy();
   bannerConvChart = new Chart(ctx, {
     type: 'line',
-    data: {
-      labels: labels,
-      datasets: [{
-        label: 'Конверсия (%)',
-        data: convData,
-        borderColor: '#f97316',
-        backgroundColor: 'rgba(249,115,22,0.1)',
-        fill: true,
-        tension: 0.3
-      }]
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      scales: {
-        y: { title: { display: true, text: '%', color: '#94a3b8' }, ticks: { color: '#94a3b8' } },
-        x: { ticks: { color: '#94a3b8' } }
-      }
+    data: { labels: bannerData.map(d => d.date.slice(5)), datasets: [{ label: 'Конверсия (%)', data: bannerData.map(d => d.conversion_rate), borderColor: '#f97316', backgroundColor: 'rgba(249,115,22,0.1)', fill: true, tension: 0.3, pointRadius: 3 }] },
+    options: { responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false },
+      plugins: { tooltip: { ...sharedTooltipConfig, callbacks: { label: ctx => ` ${Number(ctx.raw).toFixed(2)}%` } } },
+      scales: { y: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } }, x: { ticks: { color: '#94a3b8' }, grid: { display: false } } }
     }
   });
 }
 
-// ========================== ОБНОВЛЕНИЕ ИНТЕРФЕЙСА ==========================
+// ========================== ОБНОВЛЕНИЕ UI ==========================
 async function applyGlobalFilters() {
   const dFrom = document.getElementById('dateFrom').value || '2000-01-01';
   const dTo = document.getElementById('dateTo').value || '2099-01-01';
-
   globalRawData = originalData.filter(r => r.date >= dFrom && r.date <= dTo);
   await fetchBannerStats(dFrom, dTo);
-  renderBannerKPI();
-  renderBannerChart();
+  renderBannerKPI(); renderBannerChart();
 
   const sources = [...new Set(globalRawData.map(r => r.source))].sort();
-
-  const sourceSelect = document.getElementById('chartSourceFilter');
-  const current = sourceSelect.value;
-  sourceSelect.innerHTML = '<option value="all">Все площадки</option>' + sources.map(s => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join('');
-  if (sources.includes(current)) sourceSelect.value = current;
-
-  const offerSelect = document.getElementById('offerSourceFilter');
-  const currentOffer = offerSelect.value;
-  offerSelect.innerHTML = '<option value="all">Все площадки</option>' + sources.map(s => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join('');
-  if (sources.includes(currentOffer)) offerSelect.value = currentOffer;
-
-  renderUI();
-  renderTables();
-  refreshChart();
-  drawExtraCharts();
-
+  for (const selectId of ['chartSourceFilter', 'offerSourceFilter', 'epcSourceSelect']) {
+    const sel = document.getElementById(selectId);
+    if (!sel) continue;
+    const current = sel.value;
+    sel.innerHTML = '<option value="all">Все площадки</option>' + sources.map(s => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join('');
+    if (sources.includes(current)) sel.value = current;
+  }
   const epcOfferSelect = document.getElementById('epcOfferSelect');
   const offers = [...new Set(globalRawData.map(r => r.offer))].sort();
-  const currentEpcOffer = epcOfferSelect.value;
+  const curOffer = epcOfferSelect.value;
   epcOfferSelect.innerHTML = '<option value="all">Все офферы</option>' + offers.map(o => `<option value="${escapeHtml(o)}">${escapeHtml(o)}</option>`).join('');
-  if (offers.includes(currentEpcOffer)) epcOfferSelect.value = currentEpcOffer;
-  renderEPCAnalytics();
+  if (offers.includes(curOffer)) epcOfferSelect.value = curOffer;
+
+  renderUI(); renderTables(); refreshChart(); drawExtraCharts();
+  renderEPCAnalytics(); renderMatrixAnalytics(); renderPlatformCharts();
 }
 
 function renderUI() {
-  const sourceFilter = document.getElementById('chartSourceFilter').value;
-  let data = [...globalRawData];
-  if (sourceFilter !== 'all') data = data.filter(r => r.source === sourceFilter);
-  const totals = data.reduce((acc, item) => {
-    acc.clicks += item.clicks; acc.conversions += item.conversions; acc.approved += item.approved; acc.revenue += item.revenue;
-    return acc;
-  }, { clicks:0, conversions:0, approved:0, revenue:0 });
-  const cr = totals.clicks ? (totals.conversions / totals.clicks * 100) : 0;
-  const approveRate = totals.conversions ? (totals.approved / totals.conversions * 100) : 0;
-  const epc = totals.clicks ? (totals.revenue / totals.clicks) : 0;
-
+  const sf = document.getElementById('chartSourceFilter').value;
+  let data = sf !== 'all' ? globalRawData.filter(r => r.source === sf) : [...globalRawData];
+  const t = data.reduce((a,i) => { a.clicks+=i.clicks; a.conversions+=i.conversions; a.approved+=i.approved; a.revenue+=i.revenue; return a; }, {clicks:0,conversions:0,approved:0,revenue:0});
+  const cr = t.clicks ? (t.conversions/t.clicks*100) : 0;
+  const ar = t.conversions ? (t.approved/t.conversions*100) : 0;
+  const epc = t.clicks ? (t.revenue/t.clicks) : 0;
   document.getElementById('kpiCards').innerHTML = `
-    <div class="card"><div class="text-slate-400 text-xs uppercase">Клики</div><div class="text-3xl font-black mt-2">${totals.clicks.toLocaleString('ru-RU')}</div></div>
-    <div class="card"><div class="text-slate-400 text-xs uppercase">Лиды</div><div class="text-3xl font-black mt-2">${totals.conversions.toLocaleString('ru-RU')}</div></div>
-    <div class="card"><div class="text-slate-400 text-xs uppercase">Approve %</div><div class="text-3xl font-black mt-2">${approveRate.toFixed(2)}%</div></div>
-    <div class="card"><div class="text-slate-400 text-xs uppercase">Доход (₽)</div><div class="text-3xl font-black mt-2">${Math.round(totals.revenue).toLocaleString('ru-RU')} ₽</div></div>
-  `;
+    <div class="card"><div class="text-slate-400 text-xs uppercase">Клики</div><div class="text-3xl font-black mt-2">${t.clicks.toLocaleString('ru-RU')}</div></div>
+    <div class="card"><div class="text-slate-400 text-xs uppercase">Лиды</div><div class="text-3xl font-black mt-2">${t.conversions.toLocaleString('ru-RU')}</div></div>
+    <div class="card"><div class="text-slate-400 text-xs uppercase">Approve %</div><div class="text-3xl font-black mt-2">${ar.toFixed(2)}%</div></div>
+    <div class="card"><div class="text-slate-400 text-xs uppercase">Доход (₽)</div><div class="text-3xl font-black mt-2">${Math.round(t.revenue).toLocaleString('ru-RU')} ₽</div></div>
+    <div class="card"><div class="text-slate-400 text-xs uppercase">EPC</div><div class="text-3xl font-black mt-2 text-emerald-400">${epc.toFixed(2)} ₽</div></div>
+    <div class="card"><div class="text-slate-400 text-xs uppercase">CR %</div><div class="text-3xl font-black mt-2">${cr.toFixed(2)}%</div></div>`;
   document.getElementById('funnelBox').innerHTML = `
-    <div class="flex justify-between"><span>Клики:</span><strong>${totals.clicks.toLocaleString('ru-RU')}</strong></div>
-    <div class="flex justify-between"><span>Лиды:</span><strong>${totals.conversions.toLocaleString('ru-RU')}</strong></div>
-    <div class="flex justify-between"><span>Approve:</span><strong>${totals.approved.toLocaleString('ru-RU')}</strong></div>
+    <div class="flex justify-between"><span>Клики:</span><strong>${t.clicks.toLocaleString('ru-RU')}</strong></div>
+    <div class="flex justify-between"><span>Лиды:</span><strong>${t.conversions.toLocaleString('ru-RU')}</strong></div>
+    <div class="flex justify-between"><span>Approve:</span><strong>${t.approved.toLocaleString('ru-RU')}</strong></div>
     <div class="flex justify-between"><span>CR:</span><strong>${cr.toFixed(2)}%</strong></div>
-    <div class="flex justify-between"><span>Approve Rate:</span><strong>${approveRate.toFixed(2)}%</strong></div>
-    <div class="flex justify-between"><span>EPC:</span><strong>${epc.toFixed(2)} ₽</strong></div>
-  `;
+    <div class="flex justify-between"><span>Approve Rate:</span><strong>${ar.toFixed(2)}%</strong></div>
+    <div class="flex justify-between"><span>EPC:</span><strong>${epc.toFixed(2)} ₽</strong></div>`;
 }
 
-function aggregateBy(field, sourceFilter = 'all') {
+function aggregateBy(field, sourceFilter) {
   const map = {};
   for (const r of globalRawData) {
     if (sourceFilter !== 'all' && r.source !== sourceFilter) continue;
     const key = r[field];
-    if (!map[key]) map[key] = { clicks:0, conversions:0, approved:0, revenue:0 };
-    map[key].clicks += r.clicks; map[key].conversions += r.conversions; map[key].approved += r.approved; map[key].revenue += r.revenue;
+    if (!map[key]) map[key] = {clicks:0,conversions:0,approved:0,revenue:0};
+    map[key].clicks+=r.clicks; map[key].conversions+=r.conversions; map[key].approved+=r.approved; map[key].revenue+=r.revenue;
   }
   return map;
 }
 
 function renderTables() {
-  const selectedOfferSource = document.getElementById('offerSourceFilter').value;
-  const sourceMap = aggregateBy('source', 'all');
-  const offerMap = aggregateBy('offer', selectedOfferSource);
-  const applySort = (arr, sortConfig) => {
-    return arr.sort((a, b) => {
-      let valA = a[sortConfig.field]; let valB = b[sortConfig.field];
-      if (typeof valA === 'string') return sortConfig.desc ? valB.localeCompare(valA) : valA.localeCompare(valB);
-      return sortConfig.desc ? valB - valA : valA - valB;
-    });
-  };
-  let sourceRows = Object.entries(sourceMap).map(([name, v]) => ({
-    name, clicks: v.clicks, conversions: v.conversions, approved: v.approved, revenue: v.revenue,
-    epc: v.clicks ? (v.revenue / v.clicks) : 0, approveRate: v.conversions ? (v.approved / v.conversions * 100) : 0
-  }));
-  let offerRows = Object.entries(offerMap).map(([name, v]) => ({
-    name, clicks: v.clicks, conversions: v.conversions, approved: v.approved, revenue: v.revenue,
-    epc: v.clicks ? (v.revenue / v.clicks) : 0, approveRate: v.conversions ? (v.approved / v.conversions * 100) : 0
-  }));
-  sourceRows = applySort(sourceRows, tableSort.sourceTable);
-  offerRows = applySort(offerRows, tableSort.offerTable);
-  document.querySelector('#sourceTable tbody').innerHTML = sourceRows.map(r => `
-    <tr class="hover:bg-slate-800 transition-colors">
-      <td>${escapeHtml(r.name)}</td>
-      <td class="text-right">${r.clicks.toLocaleString('ru-RU')}</td>
-      <td class="text-right">${r.conversions.toLocaleString('ru-RU')}</td>
-      <td class="text-right">${r.approveRate.toFixed(1)}%</td>
-      <td class="text-right">${Math.round(r.revenue).toLocaleString('ru-RU')} ₽</td>
-      <td class="text-right font-semibold">${r.epc.toFixed(2)} ₽</td>
-    </tr>`).join('');
-  document.querySelector('#offerTable tbody').innerHTML = offerRows.map(r => {
-    let epcColorClass = 'text-red-400';
-    if (r.epc >= 80 && r.epc < 100) epcColorClass = 'text-yellow-400';
-    else if (r.epc >= 100 && r.epc < 140) epcColorClass = 'text-green-500';
-    else if (r.epc >= 140) epcColorClass = 'text-emerald-300 drop-shadow-[0_0_8px_rgba(52,211,153,0.8)]';
-    if (r.clicks === 0) epcColorClass = 'text-slate-400';
-    return `
-    <tr class="hover:bg-slate-800 transition-colors">
-      <td>${escapeHtml(r.name)}</td>
-      <td class="text-right">${r.clicks.toLocaleString('ru-RU')}</td>
-      <td class="text-right">${r.conversions.toLocaleString('ru-RU')}</td>
-      <td class="text-right">${r.approveRate.toFixed(1)}%</td>
-      <td class="text-right">${Math.round(r.revenue).toLocaleString('ru-RU')} ₽</td>
-      <td class="text-right font-bold ${epcColorClass}">${r.epc.toFixed(2)} ₽</td>
-    </tr>`;
+  const selSrc = document.getElementById('offerSourceFilter').value;
+  const srcMap = aggregateBy('source','all');
+  const offMap = aggregateBy('offer', selSrc);
+  const doSort = (arr, sc) => arr.sort((a,b) => {
+    let va=a[sc.field], vb=b[sc.field];
+    if (typeof va==='string') return sc.desc ? vb.localeCompare(va) : va.localeCompare(vb);
+    return sc.desc ? vb-va : va-vb;
+  });
+  let sRows = Object.entries(srcMap).map(([n,v]) => ({name:n, clicks:v.clicks, conversions:v.conversions, approved:v.approved, revenue:v.revenue, epc:v.clicks?(v.revenue/v.clicks):0, approveRate:v.conversions?(v.approved/v.conversions*100):0}));
+  let oRows = Object.entries(offMap).map(([n,v]) => ({name:n, clicks:v.clicks, conversions:v.conversions, approved:v.approved, revenue:v.revenue, epc:v.clicks?(v.revenue/v.clicks):0, approveRate:v.conversions?(v.approved/v.conversions*100):0}));
+  doSort(sRows, tableSort.sourceTable);
+  doSort(oRows, tableSort.offerTable);
+  document.querySelector('#sourceTable tbody').innerHTML = sRows.map(r => `<tr class="hover:bg-slate-800"><td>${escapeHtml(r.name)}</td><td class="text-right">${r.clicks.toLocaleString('ru-RU')}</td><td class="text-right">${r.conversions.toLocaleString('ru-RU')}</td><td class="text-right">${r.approveRate.toFixed(1)}%</td><td class="text-right">${Math.round(r.revenue).toLocaleString('ru-RU')} ₽</td><td class="text-right font-semibold">${r.epc.toFixed(2)} ₽</td></tr>`).join('');
+  document.querySelector('#offerTable tbody').innerHTML = oRows.map(r => {
+    let cc='text-red-400';
+    if(r.epc>=80&&r.epc<100)cc='text-yellow-400';else if(r.epc>=100&&r.epc<140)cc='text-green-500';else if(r.epc>=140)cc='text-emerald-300';
+    if(!r.clicks)cc='text-slate-400';
+    return `<tr class="hover:bg-slate-800"><td>${escapeHtml(r.name)}</td><td class="text-right">${r.clicks.toLocaleString('ru-RU')}</td><td class="text-right">${r.conversions.toLocaleString('ru-RU')}</td><td class="text-right">${r.approveRate.toFixed(1)}%</td><td class="text-right">${Math.round(r.revenue).toLocaleString('ru-RU')} ₽</td><td class="text-right font-bold ${cc}">${r.epc.toFixed(2)} ₽</td></tr>`;
   }).join('');
 }
 
 function refreshChart() {
   const grouping = document.getElementById('chartGrouping').value;
   const metricType = document.getElementById('chartMetric').value;
-  const sourceFilter = document.getElementById('chartSourceFilter').value;
-  let data = [...globalRawData];
-  if (sourceFilter !== 'all') data = data.filter(r => r.source === sourceFilter);
+  const sf = document.getElementById('chartSourceFilter').value;
+  let data = sf !== 'all' ? globalRawData.filter(r => r.source === sf) : [...globalRawData];
   const grouped = {};
   for (const row of data) {
     const key = row[grouping];
-    if (!grouped[key]) grouped[key] = { clicks:0, conv:0, app:0, rev:0 };
-    grouped[key].clicks += row.clicks; grouped[key].conv += row.conversions; grouped[key].app += row.approved; grouped[key].rev += row.revenue;
+    if (!grouped[key]) grouped[key] = {clicks:0,conv:0,app:0,rev:0};
+    grouped[key].clicks+=row.clicks; grouped[key].conv+=row.conversions; grouped[key].app+=row.approved; grouped[key].rev+=row.revenue;
   }
   const labels = Object.keys(grouped).sort();
-  let datasets = [];
+  let datasets = [], scalesConfig = {};
   if (metricType === 'absolute') {
     datasets = [
-      { label: 'Доход (₽)', data: labels.map(l => grouped[l].rev), borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,.12)', fill: true, yAxisID: 'y', tension: 0.3 },
-      { label: 'Клики', data: labels.map(l => grouped[l].clicks), borderColor: '#38bdf8', borderDash: [5,5], yAxisID: 'y1', tension: 0.3 }
+      {label:'Доход (₽)',data:labels.map(l=>grouped[l].rev),borderColor:'#10b981',backgroundColor:'rgba(16,185,129,.12)',fill:true,yAxisID:'y',tension:0.3,pointRadius:3,pointBackgroundColor:'#10b981'},
+      {label:'Клики',data:labels.map(l=>grouped[l].clicks),borderColor:'#38bdf8',borderDash:[5,5],yAxisID:'y1',tension:0.3,pointRadius:3}
     ];
-  } else {
+    scalesConfig = {y:{ticks:{color:'#94a3b8'},grid:{color:'#1e293b'}},y1:{display:true,position:'right',ticks:{color:'#94a3b8'},grid:{drawOnChartArea:false}}};
+  } else if (metricType === 'conversion') {
     datasets = [
-      { label: 'CR (%)', data: labels.map(l => grouped[l].clicks ? (grouped[l].conv / grouped[l].clicks * 100).toFixed(2) : 0), borderColor: '#f59e0b', yAxisID: 'y', tension: 0.3 },
-      { label: 'Approve (%)', data: labels.map(l => grouped[l].conv ? (grouped[l].app / grouped[l].conv * 100).toFixed(2) : 0), borderColor: '#10b981', yAxisID: 'y', tension: 0.3 }
+      {label:'CR (%)',data:labels.map(l=>grouped[l].clicks?(grouped[l].conv/grouped[l].clicks*100):0),borderColor:'#f59e0b',tension:0.3,pointRadius:3},
+      {label:'Approve (%)',data:labels.map(l=>grouped[l].conv?(grouped[l].app/grouped[l].conv*100):0),borderColor:'#10b981',tension:0.3,pointRadius:3}
     ];
+    scalesConfig = {y:{ticks:{color:'#94a3b8'},grid:{color:'#1e293b'}}};
+  } else if (metricType === 'epc') {
+    datasets = [{label:'EPC (₽)',data:labels.map(l=>grouped[l].clicks?(grouped[l].rev/grouped[l].clicks):0),borderColor:'#f59e0b',backgroundColor:'rgba(245,158,11,.1)',fill:true,tension:0.3,pointRadius:3}];
+    scalesConfig = {y:{ticks:{color:'#94a3b8'},grid:{color:'#1e293b'}}};
+  } else if (metricType === 'traffic') {
+    datasets = [
+      {label:'Клики',data:labels.map(l=>grouped[l].clicks),borderColor:'#3b82f6',backgroundColor:'rgba(59,130,246,.15)',fill:true,tension:0.3,pointRadius:3},
+      {label:'Лиды',data:labels.map(l=>grouped[l].conv),borderColor:'#10b981',backgroundColor:'rgba(16,185,129,.1)',fill:true,tension:0.3,pointRadius:3}
+    ];
+    scalesConfig = {y:{ticks:{color:'#94a3b8'},grid:{color:'#1e293b'}}};
   }
   if (trendChartInstance) trendChartInstance.destroy();
   trendChartInstance = new Chart(document.getElementById('trendChart'), {
-    type: 'line', data: { labels, datasets },
-    options: {
-      responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false },
-      plugins: { legend: { labels: { color: '#cbd5e1' } } },
-      scales: {
-        x: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } },
-        y: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } },
-        y1: { display: metricType==='absolute', position: 'right', ticks: { color: '#94a3b8' }, grid: { drawOnChartArea: false } }
-      }
+    type:'line', data:{labels,datasets},
+    options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
+      plugins:{legend:{labels:{color:'#cbd5e1'}},tooltip:{...sharedTooltipConfig,callbacks:{label:function(ctx){
+        const v=Number(ctx.raw);
+        if(ctx.dataset.label.includes('₽'))return ` ${ctx.dataset.label}: ${v.toFixed(2)} ₽`;
+        if(ctx.dataset.label.includes('%'))return ` ${ctx.dataset.label}: ${v.toFixed(2)}%`;
+        return ` ${ctx.dataset.label}: ${v.toLocaleString('ru-RU')}`;
+      }}}},
+      scales:{x:{ticks:{color:'#94a3b8'},grid:{color:'#1e293b'}},...scalesConfig}
     }
   });
 }
 
 function drawExtraCharts() {
-  const sourceMap = aggregateBy('source', 'all');
-  const offerMap = aggregateBy('offer', 'all');
-  let donutData = Object.entries(sourceMap).map(([name, stats]) => ({ name, revenue: stats.revenue })).filter(item => item.revenue > 0).sort((a, b) => b.revenue - a.revenue);
-  if (donutData.length > 5) {
-    const top5 = donutData.slice(0, 5);
-    const othersRev = donutData.slice(5).reduce((sum, item) => sum + item.revenue, 0);
-    top5.push({ name: 'Другие', revenue: othersRev });
-    donutData = top5;
-  }
-  const totalRevenue = donutData.reduce((sum, item) => sum + item.revenue, 0);
-  if (donutChartInstance) donutChartInstance.destroy();
-  donutChartInstance = new Chart(document.getElementById('donutChart'), {
-    type: 'doughnut',
-    data: { labels: donutData.map(d => d.name), datasets: [{ data: donutData.map(d => d.revenue), backgroundColor: colorPalette, borderWidth: 0, hoverOffset: 4 }] },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      plugins: {
-        legend: { position: 'right', labels: { color: '#cbd5e1', padding: 20, generateLabels: function(chart) {
-          const data = chart.data;
-          if (data.labels.length && data.datasets.length) {
-            return data.labels.map((label, i) => {
-              const value = data.datasets[0].data[i];
-              const percent = totalRevenue > 0 ? ((value / totalRevenue) * 100).toFixed(1) : 0;
-              return { text: `${label} (${percent}%)`, fillStyle: data.datasets[0].backgroundColor[i], index: i };
-            });
-          }
-          return [];
-        } } },
-        tooltip: { callbacks: { label: function(context) {
-          const value = context.raw;
-          const percent = totalRevenue > 0 ? ((value / totalRevenue) * 100).toFixed(1) : 0;
-          return ` ${Math.round(value).toLocaleString('ru-RU')} ₽ (${percent}%)`;
-        } } }
-      }
+  const srcMap = aggregateBy('source','all');
+  const offMap = aggregateBy('offer','all');
+  let dd = Object.entries(srcMap).map(([n,s])=>({name:n,revenue:s.revenue})).filter(i=>i.revenue>0).sort((a,b)=>b.revenue-a.revenue);
+  if(dd.length>5){const t5=dd.slice(0,5);t5.push({name:'Другие',revenue:dd.slice(5).reduce((s,i)=>s+i.revenue,0)});dd=t5;}
+  const totalRev = dd.reduce((s,i)=>s+i.revenue,0);
+  if(donutChartInstance)donutChartInstance.destroy();
+  donutChartInstance = new Chart(document.getElementById('donutChart'),{
+    type:'doughnut',data:{labels:dd.map(d=>d.name),datasets:[{data:dd.map(d=>d.revenue),backgroundColor:colorPalette,borderWidth:0,hoverOffset:8}]},
+    options:{responsive:true,maintainAspectRatio:false,plugins:{
+      legend:{position:'right',labels:{color:'#cbd5e1',padding:20,generateLabels:function(chart){
+        const data=chart.data;if(!data.labels.length||!data.datasets.length)return[];
+        return data.labels.map((label,i)=>{const v=data.datasets[0].data[i];const p=totalRev>0?((v/totalRev)*100).toFixed(1):0;return{text:`${label} (${p}%)`,fillStyle:data.datasets[0].backgroundColor[i],index:i};});
+      }}},tooltip:{...sharedTooltipConfig,callbacks:{label:function(context){const v=context.raw;const p=totalRev>0?((v/totalRev)*100).toFixed(1):0;return ` ${Math.round(v).toLocaleString('ru-RU')} ₽ (${p}%)`;}}}}
     }
   });
-  let barData = Object.entries(offerMap).map(([name, stats]) => ({ name: name.split(',')[1] ? name.split(',')[1].trim() : name, epc: stats.clicks > 0 ? (stats.revenue / stats.clicks) : 0, clicks: stats.clicks })).filter(item => item.clicks > 100 && item.epc > 0).sort((a, b) => b.epc - a.epc).slice(0, 5);
-  if (barChartInstance) barChartInstance.destroy();
-  barChartInstance = new Chart(document.getElementById('barChart'), {
-    type: 'bar',
-    data: { labels: barData.map(d => d.name.substring(0, 20) + (d.name.length > 20 ? '...' : '')), datasets: [{ label: 'EPC (₽)', data: barData.map(d => d.epc.toFixed(2)), backgroundColor: '#10b981', borderRadius: 4 }] },
-    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { ticks: { color: '#94a3b8' }, grid: { display: false } }, y: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } } } }
+  let bd = Object.entries(offMap).map(([n,s])=>({name:n.split(',')[1]?n.split(',')[1].trim():n,epc:s.clicks>0?(s.revenue/s.clicks):0,clicks:s.clicks})).filter(i=>i.clicks>100&&i.epc>0).sort((a,b)=>b.epc-a.epc).slice(0,5);
+  if(barChartInstance)barChartInstance.destroy();
+  barChartInstance = new Chart(document.getElementById('barChart'),{
+    type:'bar',data:{labels:bd.map(d=>d.name.substring(0,20)+(d.name.length>20?'...':'')),datasets:[{label:'EPC (₽)',data:bd.map(d=>d.epc),backgroundColor:'#10b981',borderRadius:4}]},
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{...sharedTooltipConfig,callbacks:{label:ctx=>` EPC: ${Number(ctx.raw).toFixed(2)} ₽`}}},
+      scales:{x:{ticks:{color:'#94a3b8'},grid:{display:false}},y:{ticks:{color:'#94a3b8'},grid:{color:'#1e293b'}}}}
   });
 }
 
-function aggregateEPCByPeriod(grouping, offerFilter = 'all') {
-  let data = [...globalRawData];
-  if (offerFilter !== 'all') data = data.filter(r => r.offer === offerFilter);
-  const map = {};
-  for (const row of data) {
-    let key = (grouping === 'week') ? row.week : row.date;
-    if (!map[key]) map[key] = { clicks: 0, revenue: 0 };
-    map[key].clicks += row.clicks;
-    map[key].revenue += row.revenue;
-  }
-  const labels = Object.keys(map).sort();
-  const epcValues = labels.map(l => map[l].clicks > 0 ? map[l].revenue / map[l].clicks : 0);
-  return { labels, epcValues };
-}
-
-function aggregateEPCByWeekday(offerFilter = 'all') {
-  let data = [...globalRawData];
-  if (offerFilter !== 'all') data = data.filter(r => r.offer === offerFilter);
-  const weekdayMap = Array(7).fill().map(() => ({ clicks: 0, revenue: 0 }));
-  for (const row of data) {
-    const dayIdx = new Date(row.date).getDay();
-    weekdayMap[dayIdx].clicks += row.clicks;
-    weekdayMap[dayIdx].revenue += row.revenue;
-  }
-  const weekdayNames = ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'];
-  return weekdayNames.map((name, idx) => {
-    const epc = weekdayMap[idx].clicks > 0 ? weekdayMap[idx].revenue / weekdayMap[idx].clicks : 0;
-    return { name, epc, clicks: weekdayMap[idx].clicks };
+// ========================== PLATFORM CHARTS ==========================
+function renderPlatformCharts() {
+  if(!globalRawData.length) return;
+  const sources=[...new Set(globalRawData.map(r=>r.source))].sort();
+  const months=[...new Set(globalRawData.map(r=>r.month))].sort();
+  const revDS=sources.map((src,i)=>({label:src,data:months.map(m=>globalRawData.filter(r=>r.source===src&&r.month===m).reduce((s,r)=>s+r.revenue,0)),backgroundColor:colorPalette[i%colorPalette.length],borderRadius:2}));
+  if(revenueByPlatformChartInstance)revenueByPlatformChartInstance.destroy();
+  revenueByPlatformChartInstance=new Chart(document.getElementById('revenueByPlatformChart'),{
+    type:'bar',data:{labels:months,datasets:revDS},
+    options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
+      plugins:{legend:{labels:{color:'#cbd5e1'}},tooltip:{...sharedTooltipConfig,callbacks:{label:ctx=>` ${ctx.dataset.label}: ${Math.round(ctx.raw).toLocaleString('ru-RU')} ₽`}}},
+      scales:{x:{stacked:true,ticks:{color:'#94a3b8'}},y:{stacked:true,ticks:{color:'#94a3b8'},grid:{color:'#1e293b'}}}}
+  });
+  const trafDS=sources.map((src,i)=>({label:src,data:months.map(m=>globalRawData.filter(r=>r.source===src&&r.month===m).reduce((s,r)=>s+r.clicks,0)),backgroundColor:colorPalette[i%colorPalette.length],borderRadius:2}));
+  if(trafficByPlatformChartInstance)trafficByPlatformChartInstance.destroy();
+  trafficByPlatformChartInstance=new Chart(document.getElementById('trafficByPlatformChart'),{
+    type:'bar',data:{labels:months,datasets:trafDS},
+    options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
+      plugins:{legend:{labels:{color:'#cbd5e1'}},tooltip:{...sharedTooltipConfig,callbacks:{label:ctx=>` ${ctx.dataset.label}: ${ctx.raw.toLocaleString('ru-RU')} кликов`}}},
+      scales:{x:{stacked:true,ticks:{color:'#94a3b8'}},y:{stacked:true,ticks:{color:'#94a3b8'},grid:{color:'#1e293b'}}}}
   });
 }
 
+// ========================== EPC ANALYTICS ==========================
 function renderEPCAnalytics() {
-  if (!globalRawData.length) return;
-  const grouping = document.getElementById('epcGrouping').value;
-  const offerFilter = document.getElementById('epcOfferSelect').value;
-  const { labels, epcValues } = aggregateEPCByPeriod(grouping, offerFilter);
-  if (epcLineChart) epcLineChart.destroy();
-  const ctxLine = document.getElementById('epcLineChart').getContext('2d');
-  epcLineChart = new Chart(ctxLine, {
-    type: 'line',
-    data: { labels: labels.map(l => grouping === 'week' ? l : l.slice(5)), datasets: [{ label: 'EPC (₽)', data: epcValues.map(v => v.toFixed(2)), borderColor: '#f59e0b', backgroundColor: 'rgba(245,158,11,0.1)', fill: true, tension: 0.3, pointRadius: 2, pointBackgroundColor: '#f59e0b' }] },
-    options: { responsive: true, maintainAspectRatio: false, plugins: { tooltip: { callbacks: { label: ctx => `${ctx.raw.toFixed(2)} ₽` } } }, scales: { y: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } }, x: { ticks: { color: '#94a3b8' }, grid: { display: false } } } }
+  if(!globalRawData.length) return;
+  const grouping=document.getElementById('epcGrouping').value;
+  const offerF=document.getElementById('epcOfferSelect').value;
+  const sourceF=document.getElementById('epcSourceSelect').value;
+  let data=[...globalRawData];
+  if(offerF!=='all')data=data.filter(r=>r.offer===offerF);
+  if(sourceF!=='all')data=data.filter(r=>r.source===sourceF);
+
+  const periodMap={};
+  for(const row of data){
+    let key;
+    if(grouping==='week')key=row.week;else if(grouping==='month')key=row.month;else key=row.date;
+    if(!periodMap[key])periodMap[key]={clicks:0,revenue:0};
+    periodMap[key].clicks+=row.clicks;periodMap[key].revenue+=row.revenue;
+  }
+  const labels=Object.keys(periodMap).sort();
+  const epcValues=labels.map(l=>periodMap[l].clicks>0?periodMap[l].revenue/periodMap[l].clicks:0);
+  const valid=epcValues.filter(v=>v>0);
+  const avgEpc=valid.length?valid.reduce((a,b)=>a+b,0)/valid.length:0;
+
+  if(epcLineChart)epcLineChart.destroy();
+  epcLineChart=new Chart(document.getElementById('epcLineChart').getContext('2d'),{
+    type:'line',data:{labels:labels.map(l=>grouping==='day'?l.slice(5):l),datasets:[
+      {label:'EPC (₽)',data:epcValues,borderColor:'#f59e0b',backgroundColor:'rgba(245,158,11,0.1)',fill:true,tension:0.3,pointRadius:3,pointBackgroundColor:epcValues.map(v=>v<avgEpc*0.7?'#ef4444':'#f59e0b')},
+      {label:'Среднее',data:labels.map(()=>avgEpc),borderColor:'#64748b',borderDash:[8,4],pointRadius:0,fill:false}
+    ]},options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
+      plugins:{tooltip:{...sharedTooltipConfig,callbacks:{label:ctx=>` ${ctx.dataset.label}: ${Number(ctx.raw).toFixed(2)} ₽`}}},
+      scales:{y:{ticks:{color:'#94a3b8'},grid:{color:'#1e293b'}},x:{ticks:{color:'#94a3b8',maxRotation:45},grid:{display:false}}}}
   });
-  const weekdayData = aggregateEPCByWeekday(offerFilter);
-  if (epcWeekdayChart) epcWeekdayChart.destroy();
-  const ctxWeek = document.getElementById('epcWeekdayChart').getContext('2d');
-  epcWeekdayChart = new Chart(ctxWeek, {
-    type: 'bar',
-    data: { labels: weekdayData.map(d => d.name), datasets: [{ label: 'Средний EPC (₽)', data: weekdayData.map(d => d.epc.toFixed(2)), backgroundColor: '#3b82f6', borderRadius: 4 }] },
-    options: { responsive: true, maintainAspectRatio: false, plugins: { tooltip: { callbacks: { label: ctx => `${ctx.raw.toFixed(2)} ₽ (кликов: ${weekdayData[ctx.dataIndex].clicks.toLocaleString('ru-RU')})` } } }, scales: { y: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } }, x: { ticks: { color: '#94a3b8' }, grid: { display: false } } } }
+
+  // EPC by weekday
+  const wdMap=Array(7).fill().map(()=>({clicks:0,revenue:0}));
+  for(const row of data){const di=new Date(row.date).getDay();wdMap[di].clicks+=row.clicks;wdMap[di].revenue+=row.revenue;}
+  const wdNames=['Вс','Пн','Вт','Ср','Чт','Пт','Сб'];
+  const wdEpc=wdNames.map((n,i)=>({name:n,epc:wdMap[i].clicks>0?wdMap[i].revenue/wdMap[i].clicks:0,clicks:wdMap[i].clicks}));
+  if(epcWeekdayChart)epcWeekdayChart.destroy();
+  epcWeekdayChart=new Chart(document.getElementById('epcWeekdayChart').getContext('2d'),{
+    type:'bar',data:{labels:wdEpc.map(d=>d.name),datasets:[{label:'Средний EPC (₽)',data:wdEpc.map(d=>d.epc),backgroundColor:wdEpc.map(d=>d.epc<avgEpc*0.7?'#ef4444':'#3b82f6'),borderRadius:4}]},
+    options:{responsive:true,maintainAspectRatio:false,
+      plugins:{tooltip:{...sharedTooltipConfig,callbacks:{label:ctx=>` ${Number(ctx.raw).toFixed(2)} ₽ (кликов: ${wdEpc[ctx.dataIndex].clicks.toLocaleString('ru-RU')})`}}},
+      scales:{y:{ticks:{color:'#94a3b8'},grid:{color:'#1e293b'}},x:{ticks:{color:'#94a3b8'},grid:{display:false}}}}
   });
-  const validEpc = epcValues.filter(v => v > 0);
-  const avgEpc = validEpc.length ? validEpc.reduce((a,b) => a+b,0) / validEpc.length : 0;
-  const threshold = avgEpc * 0.7;
-  const lowDays = labels.filter((_, i) => epcValues[i] > 0 && epcValues[i] < threshold);
-  document.getElementById('epcStats').innerHTML = `
-    <div class="flex flex-wrap gap-4">
-      <div><span class="text-slate-400">Средний EPC за период:</span> <strong class="text-emerald-400">${avgEpc.toFixed(2)} ₽</strong></div>
-      <div><span class="text-slate-400">Дней с низким EPC (ниже среднего на 30%):</span> <strong class="text-rose-400">${lowDays.length}</strong></div>
-    </div>
-    ${lowDays.length ? `<div class="mt-2 text-xs text-slate-400">Дни с низким EPC: ${lowDays.slice(0, 10).join(', ')}${lowDays.length > 10 ? '...' : ''}</div>` : ''}
-  `;
+
+  // EPC by month
+  const mMap={};
+  for(const row of data){if(!mMap[row.month])mMap[row.month]={clicks:0,revenue:0};mMap[row.month].clicks+=row.clicks;mMap[row.month].revenue+=row.revenue;}
+  const mLabels=Object.keys(mMap).sort();
+  const mEpc=mLabels.map(m=>mMap[m].clicks>0?mMap[m].revenue/mMap[m].clicks:0);
+  if(epcMonthChartInstance)epcMonthChartInstance.destroy();
+  epcMonthChartInstance=new Chart(document.getElementById('epcMonthChart').getContext('2d'),{
+    type:'bar',data:{labels:mLabels,datasets:[{label:'EPC (₽)',data:mEpc,backgroundColor:mEpc.map(v=>v<avgEpc*0.7?'#ef4444':v<avgEpc*0.9?'#f59e0b':'#10b981'),borderRadius:4}]},
+    options:{responsive:true,maintainAspectRatio:false,
+      plugins:{tooltip:{...sharedTooltipConfig,callbacks:{label:ctx=>` EPC: ${Number(ctx.raw).toFixed(2)} ₽`}}},
+      scales:{y:{ticks:{color:'#94a3b8'},grid:{color:'#1e293b'}},x:{ticks:{color:'#94a3b8'},grid:{display:false}}}}
+  });
+
+  // Heatmap
+  const heatData={};
+  for(const row of data){const m=row.month;const wd=new Date(row.date).getDay();const key=`${m}_${wd}`;if(!heatData[key])heatData[key]={clicks:0,revenue:0};heatData[key].clicks+=row.clicks;heatData[key].revenue+=row.revenue;}
+  let hHtml='<table class="w-full text-xs matrix-table"><thead><tr><th>Месяц</th>';
+  wdNames.forEach(d=>hHtml+=`<th class="text-center">${d}</th>`);
+  hHtml+='</tr></thead><tbody>';
+  for(const m of mLabels){
+    hHtml+=`<tr><td class="font-bold">${m}</td>`;
+    for(let wd=0;wd<7;wd++){
+      const key=`${m}_${wd}`;
+      const epc=heatData[key]&&heatData[key].clicks>0?heatData[key].revenue/heatData[key].clicks:0;
+      let bg='rgba(100,116,139,0.2)';
+      if(epc>0){const ratio=avgEpc>0?epc/avgEpc:1;if(ratio<0.7)bg='rgba(239,68,68,0.4)';else if(ratio<0.9)bg='rgba(245,158,11,0.3)';else if(ratio<1.1)bg='rgba(59,130,246,0.3)';else bg='rgba(16,185,129,0.4)';}
+      hHtml+=`<td class="text-center" style="background:${bg}" title="EPC: ${epc.toFixed(2)} ₽">${epc>0?epc.toFixed(1):'—'}</td>`;
+    }
+    hHtml+='</tr>';
+  }
+  hHtml+='</tbody></table>';
+  document.getElementById('epcHeatmapContainer').innerHTML=hHtml;
+
+  // Drops table
+  const threshold=avgEpc*0.7;
+  const drops=labels.map((l,i)=>({period:l,epc:epcValues[i],clicks:periodMap[l].clicks,revenue:periodMap[l].revenue,deviation:avgEpc>0?((epcValues[i]-avgEpc)/avgEpc*100):0})).filter(d=>d.epc>0&&d.epc<threshold);
+  const ds=tableSort.epcDropsTable||{field:'epc',desc:false};
+  drops.sort((a,b)=>{let va=a[ds.field],vb=b[ds.field];if(typeof va==='string')return ds.desc?vb.localeCompare(va):va.localeCompare(vb);return ds.desc?vb-va:va-vb;});
+  const minE=valid.length?Math.min(...valid):0;const maxE=epcValues.length?Math.max(...epcValues):0;
+  document.getElementById('epcStats').innerHTML=`
+    <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+      <div class="card"><div class="text-slate-400 text-xs uppercase">Средний EPC</div><div class="text-2xl font-black mt-1 text-emerald-400">${avgEpc.toFixed(2)} ₽</div></div>
+      <div class="card"><div class="text-slate-400 text-xs uppercase">Мин EPC</div><div class="text-2xl font-black mt-1 text-red-400">${minE.toFixed(2)} ₽</div></div>
+      <div class="card"><div class="text-slate-400 text-xs uppercase">Макс EPC</div><div class="text-2xl font-black mt-1 text-blue-400">${maxE.toFixed(2)} ₽</div></div>
+      <div class="card"><div class="text-slate-400 text-xs uppercase">Просадки (&lt; 70% от среднего)</div><div class="text-2xl font-black mt-1 text-rose-400">${drops.length}</div></div>
+    </div>`;
+  document.querySelector('#epcDropsTable tbody').innerHTML=drops.map(d=>`<tr class="hover:bg-slate-800"><td>${escapeHtml(d.period)}</td><td class="text-right text-red-400 font-bold">${d.epc.toFixed(2)} ₽</td><td class="text-right">${d.clicks.toLocaleString('ru-RU')}</td><td class="text-right">${Math.round(d.revenue).toLocaleString('ru-RU')} ₽</td><td class="text-right text-red-400">${d.deviation.toFixed(1)}%</td></tr>`).join('');
 }
 
+// ========================== MATRIX ANALYTICS ==========================
+function renderMatrixAnalytics() {
+  if(!globalRawData.length) return;
+  const metric=document.getElementById('matrixMetric').value;
+  const sources=[...new Set(globalRawData.map(r=>r.source))].sort();
+  const months=[...new Set(globalRawData.map(r=>r.month))].sort();
+
+  const header=document.getElementById('matrixSourceHeader');
+  header.innerHTML='<th class="sort-th">Площадка</th>'+months.map(m=>`<th class="text-right">${m}</th>`).join('')+'<th class="text-right font-bold">Итого</th>';
+
+  const bodyRows=sources.map(src=>{
+    let total=0;
+    const cells=months.map(m=>{
+      const rows=globalRawData.filter(r=>r.source===src&&r.month===m);
+      let val=0;
+      if(metric==='epc'){const c=rows.reduce((s,r)=>s+r.clicks,0);const rv=rows.reduce((s,r)=>s+r.revenue,0);val=c>0?rv/c:0;}
+      else val=rows.reduce((s,r)=>s+r[metric],0);
+      total+=(metric==='epc'?0:val);
+      const fmt=metric==='revenue'?`${Math.round(val).toLocaleString('ru-RU')} ₽`:metric==='epc'?`${val.toFixed(2)} ₽`:val.toLocaleString('ru-RU');
+      return `<td class="text-right">${fmt}</td>`;
+    }).join('');
+    if(metric==='epc'){const tc=globalRawData.filter(r=>r.source===src).reduce((s,r)=>s+r.clicks,0);const tr=globalRawData.filter(r=>r.source===src).reduce((s,r)=>s+r.revenue,0);total=tc>0?tr/tc:0;}
+    const tf=metric==='revenue'?`${Math.round(total).toLocaleString('ru-RU')} ₽`:metric==='epc'?`${total.toFixed(2)} ₽`:total.toLocaleString('ru-RU');
+    return `<tr class="hover:bg-slate-800"><td class="font-semibold">${escapeHtml(src)}</td>${cells}<td class="text-right font-bold">${tf}</td></tr>`;
+  });
+
+  let grandCells=months.map(m=>{
+    const rows=globalRawData.filter(r=>r.month===m);let val=0;
+    if(metric==='epc'){const c=rows.reduce((s,r)=>s+r.clicks,0);const rv=rows.reduce((s,r)=>s+r.revenue,0);val=c>0?rv/c:0;}
+    else val=rows.reduce((s,r)=>s+r[metric],0);
+    const fmt=metric==='revenue'?`${Math.round(val).toLocaleString('ru-RU')} ₽`:metric==='epc'?`${val.toFixed(2)} ₽`:val.toLocaleString('ru-RU');
+    return `<td class="text-right font-bold text-blue-400">${fmt}</td>`;
+  }).join('');
+  let gt=0;
+  if(metric==='epc'){const tc=globalRawData.reduce((s,r)=>s+r.clicks,0);const tr=globalRawData.reduce((s,r)=>s+r.revenue,0);gt=tc>0?tr/tc:0;}
+  else gt=globalRawData.reduce((s,r)=>s+r[metric],0);
+  const gf=metric==='revenue'?`${Math.round(gt).toLocaleString('ru-RU')} ₽`:metric==='epc'?`${gt.toFixed(2)} ₽`:gt.toLocaleString('ru-RU');
+  document.getElementById('matrixSourceBody').innerHTML=bodyRows.join('')+`<tr class="border-t-2 border-blue-500"><td class="font-bold text-blue-400">ИТОГО</td>${grandCells}<td class="text-right font-bold text-blue-400">${gf}</td></tr>`;
+
+  renderMonthlyShareTable(sources,months);
+  renderMatrixShareChart(sources,months);
+}
+
+function renderMonthlyShareTable(sources,months) {
+  document.getElementById('matrixMonthlyHeader').innerHTML='<th>Месяц</th><th class="text-right">Трафик</th><th class="text-right">Выручка</th>'+sources.map(s=>`<th class="text-right">${escapeHtml(s)} (%)</th>`).join('');
+  document.getElementById('matrixMonthlyBody').innerHTML=months.map(m=>{
+    const mr=globalRawData.filter(r=>r.month===m);
+    const tc=mr.reduce((s,r)=>s+r.clicks,0);const tr=mr.reduce((s,r)=>s+r.revenue,0);
+    const shares=sources.map(src=>{const sc=mr.filter(r=>r.source===src).reduce((s,r)=>s+r.clicks,0);return `<td class="text-right">${tc>0?(sc/tc*100).toFixed(1):0}%</td>`;}).join('');
+    return `<tr class="hover:bg-slate-800"><td class="font-bold">${m}</td><td class="text-right">${tc.toLocaleString('ru-RU')}</td><td class="text-right">${Math.round(tr).toLocaleString('ru-RU')} ₽</td>${shares}</tr>`;
+  }).join('');
+}
+
+function renderMatrixShareChart(sources,months) {
+  const datasets=sources.map((src,i)=>({
+    label:src,data:months.map(m=>{const mr=globalRawData.filter(r=>r.month===m);const tc=mr.reduce((s,r)=>s+r.clicks,0);const sc=mr.filter(r=>r.source===src).reduce((s,r)=>s+r.clicks,0);return tc>0?(sc/tc*100):0;}),
+    backgroundColor:colorPalette[i%colorPalette.length],borderRadius:2
+  }));
+  if(matrixShareChartInstance)matrixShareChartInstance.destroy();
+  matrixShareChartInstance=new Chart(document.getElementById('matrixShareChart'),{
+    type:'bar',data:{labels:months,datasets},
+    options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
+      plugins:{legend:{labels:{color:'#cbd5e1'}},tooltip:{...sharedTooltipConfig,callbacks:{label:ctx=>` ${ctx.dataset.label}: ${Number(ctx.raw).toFixed(1)}%`}}},
+      scales:{x:{stacked:true,ticks:{color:'#94a3b8'}},y:{stacked:true,max:100,ticks:{color:'#94a3b8',callback:v=>v+'%'},grid:{color:'#1e293b'}}}}
+  });
+}
+
+// ========================== SORTING ==========================
 function sortTable(tableId, field) {
+  if (!tableSort[tableId]) tableSort[tableId] = { field, desc: true };
   if (tableSort[tableId].field === field) tableSort[tableId].desc = !tableSort[tableId].desc;
   else { tableSort[tableId].field = field; tableSort[tableId].desc = true; }
-  renderTables();
+  if (tableId === 'epcDropsTable') renderEPCAnalytics();
+  else renderTables();
 }
 
-// ========================== ЗАГРУЗКА EXCEL ==========================
+// ========================== EXCEL UPLOAD ==========================
 document.getElementById('uploadBannerBtn').addEventListener('click', async () => {
   const fileInput = document.getElementById('bannerExcelFile');
   const file = fileInput.files[0];
@@ -794,30 +903,18 @@ document.getElementById('uploadBannerBtn').addEventListener('click', async () =>
   const startRow = (rows[0][0] && rows[0][0].toString().match(/дата/i)) ? 1 : 0;
   const stats = [];
   for (let i = startRow; i < rows.length; i++) {
-    const row = rows[i];
-    if (!row || row.length < 3) continue;
+    const row = rows[i]; if (!row || row.length < 3) continue;
     let date = row[0];
-    if (typeof date === 'number') {
-      const d = new Date((date - 25569) * 86400 * 1000);
-      date = d.toISOString().split('T')[0];
-    } else {
-      date = date.toString().trim();
-      if (date.match(/\d{2}\.\d{2}\.\d{4}/)) {
-        const parts = date.split('.');
-        date = `${parts[2]}-${parts[1]}-${parts[0]}`;
-      }
-    }
-    const impressions = parseInt(row[1], 10);
-    const clicks = parseInt(row[2], 10);
+    if (typeof date === 'number') { const d = new Date((date - 25569) * 86400 * 1000); date = d.toISOString().split('T')[0]; }
+    else { date = date.toString().trim(); if (date.match(/\d{2}\.\d{2}\.\d{4}/)) { const p = date.split('.'); date = `${p[2]}-${p[1]}-${p[0]}`; } }
+    const impressions = parseInt(row[1], 10); const clicks = parseInt(row[2], 10);
     if (isNaN(impressions) || isNaN(clicks)) continue;
     stats.push({ date, impressions, clicks });
   }
   const msgDiv = document.getElementById('bannerUploadMsg');
   try {
     const res = await fetch('./leads-proxy.php?action=save_banner_stats', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ data: stats })
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ data: stats })
     });
     const result = await res.json();
     if (result.status === 'success') {
@@ -825,32 +922,18 @@ document.getElementById('uploadBannerBtn').addEventListener('click', async () =>
       msgDiv.classList.remove('hidden');
       setTimeout(() => msgDiv.classList.add('hidden'), 3000);
       await applyGlobalFilters();
-    } else {
-      throw new Error(result.message || 'Ошибка');
-    }
-  } catch (err) {
-    msgDiv.textContent = '❌ Ошибка загрузки: ' + err.message;
-    msgDiv.classList.remove('hidden');
-  }
+    } else throw new Error(result.message || 'Ошибка');
+  } catch (err) { msgDiv.textContent = '❌ Ошибка: ' + err.message; msgDiv.classList.remove('hidden'); }
 });
 
 // ========================== ИНИЦИАЛИЗАЦИЯ ==========================
 window.addEventListener('DOMContentLoaded', () => {
-  const to = new Date();
-  const from = new Date();
-  from.setDate(to.getDate() - 30);
+  const to = new Date(); const from = new Date(); from.setDate(to.getDate() - 30);
   document.getElementById('dateTo').value = to.toISOString().split('T')[0];
   document.getElementById('dateFrom').value = from.toISOString().split('T')[0];
-  
-  const dateFromInput = document.getElementById('dateFrom');
-  const dateToInput = document.getElementById('dateTo');
-  function onDateChange() { if (originalData.length) applyGlobalFilters(); }
-  dateFromInput.addEventListener('change', onDateChange);
-  dateToInput.addEventListener('change', onDateChange);
-  document.getElementById('epcGrouping').addEventListener('change', renderEPCAnalytics);
-  document.getElementById('epcOfferSelect').addEventListener('change', renderEPCAnalytics);
-  
-  // Автоматически загружаем сохранённые данные из кэша
+  document.getElementById('dateFrom').addEventListener('change', () => { if (originalData.length) applyGlobalFilters(); });
+  document.getElementById('dateTo').addEventListener('change', () => { if (originalData.length) applyGlobalFilters(); });
+  startAutoRefresh();
   autoLoadSavedStats();
 });
 </script>
