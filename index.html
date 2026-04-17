@@ -479,6 +479,7 @@ function startAutoRefresh() {
   if (autoRefreshTimer) clearInterval(autoRefreshTimer);
   updateNextRefreshTime();
   autoRefreshTimer = setInterval(() => {
+    if (document.hidden) { console.log('[Auto-refresh] Страница не видна, пропуск'); return; }
     console.log('[Auto-refresh] Обновление данных...');
     loadFromAPI();
     updateNextRefreshTime();
