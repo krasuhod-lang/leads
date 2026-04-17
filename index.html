@@ -406,7 +406,7 @@ async function loadFromAPI() {
         updateProgress(pct, `Загрузка отчетов: площадка ${loaded + 1} из ${activePlatformIds.length}`);
         const pData = await fetchAll('reports/summary', {
           token, start_date: `${dFrom} 00:00:00`, end_date: `${dTo} 23:59:59`,
-          grouping: 'day', fields: 'offer_id,source,sub1', platform_id: pid
+          grouping: 'day', field: 'offer_id,source,aff_sub1', platform_id: pid
         });
         for (const row of pData) row.platformid = String(pid);
         reportData = reportData.concat(pData);
@@ -416,7 +416,7 @@ async function loadFromAPI() {
       updateProgress(50, 'Загрузка общего отчета...');
       reportData = await fetchAll('reports/summary', {
         token, start_date: `${dFrom} 00:00:00`, end_date: `${dTo} 23:59:59`,
-        grouping: 'day', fields: 'offer_id,source,sub1'
+        grouping: 'day', field: 'offer_id,source,aff_sub1'
       });
     }
     updateProgress(95, 'Обработка данных...');
@@ -434,7 +434,7 @@ async function loadFromAPI() {
       let sourceName = 'Unknown';
       if (platformId && platformMap[platformId]) sourceName = platformMap[platformId];
       else if (row.source) sourceName = String(row.source).trim();
-      const sub1 = row.sub1 ?? '';
+      const sub1 = row.aff_sub1 ?? row.sub1 ?? '';
       sourceName = mergeSourceName(sourceName);
       originalData.push({
         date: dateStr, week: getWeekNumber(new Date(dateStr)), month: dateStr.slice(0, 7),
