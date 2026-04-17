@@ -27,7 +27,7 @@ $token  = $_GET['token'] ?? '';
 $start_date = $_GET['start_date'] ?? '';
 $end_date   = $_GET['end_date']   ?? '';
 $grouping   = $_GET['grouping']   ?? 'day';
-$fields     = $_GET['fields']     ?? '';
+$fields     = $_GET['field']      ?? $_GET['fields'] ?? '';
 $platform_id= $_GET['platform_id']?? '';
 $offset     = (int)($_GET['offset'] ?? 0);
 $limit      = (int)($_GET['limit']  ?? 500);
@@ -182,7 +182,7 @@ function saveReportRows($db, $rows, $offerMap) {
         $sourceName = $row['source'] ?? $row['platform_name'] ?? 'Unknown';
         $offerId = (string)($row['offer_id'] ?? $row['offerid'] ?? '');
         $offerName = $offerMap[$offerId] ?? ($offerId ? "Offer #{$offerId}" : 'Unknown');
-        $sub1 = $row['sub1'] ?? '';
+        $sub1 = $row['aff_sub1'] ?? $row['sub1'] ?? '';
         $clicks = (int)($row['unique_clicks'] ?? $row['clicks'] ?? 0);
         $conversions = (int)($row['unique_conversions'] ?? $row['conversions'] ?? 0);
         $approved = (int)($row['conversions_approved'] ?? $row['conversionsapproved'] ?? 0);
@@ -287,7 +287,7 @@ if ($action === 'update_stats') {
     $limit = 500;
     while (true) {
         $url = "https://api.leads.su/webmaster/reports/summary?token={$token}"
-             . "&start_date={$start_date}&end_date={$end_date}&grouping={$grouping}&fields={$fields}"
+             . "&start_date={$start_date}&end_date={$end_date}&grouping={$grouping}&field={$fields}"
              . "&offset={$offset}&limit={$limit}";
         if ($platform_id) $url .= "&platform_id={$platform_id}";
         
