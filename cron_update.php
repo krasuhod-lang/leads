@@ -25,7 +25,7 @@ if (php_sapi_name() === 'cli') {
     $_GET['end_date'] = $endDate;
     $_GET['method'] = 'reports/summary';
     $_GET['grouping'] = 'day';
-    $_GET['fields'] = 'offer_id,source';
+    $_GET['fields'] = 'offer_id,source,sub1';
     $_SERVER['REQUEST_METHOD'] = 'GET';
 
     ob_start();
@@ -46,7 +46,7 @@ $selfBase = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https' : 
     . '://' . ($_SERVER['HTTP_HOST'] ?? 'localhost')
     . dirname($_SERVER['SCRIPT_NAME']) . '/leads-proxy.php';
 
-$url = "{$selfBase}?action=update_stats&token={$token}&start_date={$startDate}&end_date={$endDate}&method=reports/summary&grouping=day&fields=offer_id,source";
+$url = "{$selfBase}?action=update_stats&token={$token}&start_date={$startDate}&end_date={$endDate}&method=reports/summary&grouping=day&fields=offer_id,source,sub1";
 
 $ch = curl_init();
 curl_setopt($ch, CURLOPT_URL, $url);

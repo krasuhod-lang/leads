@@ -48,21 +48,47 @@ try {
         source_id TEXT,
         source_name TEXT,
         offer_name TEXT NOT NULL DEFAULT \'Unknown\',
+        sub1 TEXT NOT NULL DEFAULT \'\',
         clicks INTEGER DEFAULT 0,
         conversions INTEGER DEFAULT 0,
         approved INTEGER DEFAULT 0,
         revenue REAL DEFAULT 0,
-        UNIQUE(date, source_id, offer_name)
+        UNIQUE(date, source_id, offer_name, sub1)
     )');
     
     // Добавляем колонку offer_name, если её нет (миграция)
     $res = $db->query("PRAGMA table_info(daily_stats)");
     $hasOffer = false;
+    $hasSub1 = false;
     while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
         if ($row['name'] === 'offer_name') $hasOffer = true;
+        if ($row['name'] === 'sub1') $hasSub1 = true;
     }
     if (!$hasOffer) {
         $db->exec('ALTER TABLE daily_stats ADD COLUMN offer_name TEXT');
+    }
+    
+    // Миграция: добавляем sub1 и обновляем UNIQUE constraint
+    if (!$hasSub1) {
+        $db->exec('BEGIN TRANSACTION');
+        $db->exec('CREATE TABLE daily_stats_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date TEXT NOT NULL,
+            source_id TEXT,
+            source_name TEXT,
+            offer_name TEXT NOT NULL DEFAULT \'Unknown\',
+            sub1 TEXT NOT NULL DEFAULT \'\',
+            clicks INTEGER DEFAULT 0,
+            conversions INTEGER DEFAULT 0,
+            approved INTEGER DEFAULT 0,
+            revenue REAL DEFAULT 0,
+            UNIQUE(date, source_id, offer_name, sub1)
+        )');
+        $db->exec('INSERT INTO daily_stats_new (date, source_id, source_name, offer_name, sub1, clicks, conversions, approved, revenue)
+            SELECT date, source_id, source_name, offer_name, \'\', clicks, conversions, approved, revenue FROM daily_stats');
+        $db->exec('DROP TABLE daily_stats');
+        $db->exec('ALTER TABLE daily_stats_new RENAME TO daily_stats');
+        $db->exec('COMMIT');
     }
     
     // Таблица для отказов
@@ -140,13 +166,14 @@ function fetchOffersMap($token) {
  */
 function saveReportRows($db, $rows, $offerMap) {
     $inserted = 0;
-    $stmt = $db->prepare('INSERT INTO daily_stats (date, source_id, source_name, offer_name, clicks, conversions, approved, revenue)
-        VALUES (:date, :source_id, :source_name, :offer_name, :clicks, :conversions, :approved, :revenue)
-        ON CONFLICT(date, source_id, offer_name) DO UPDATE SET
-            clicks = clicks + excluded.clicks,
-            conversions = conversions + excluded.conversions,
-            approved = approved + excluded.approved,
-            revenue = revenue + excluded.revenue');
+    $stmt = $db->prepare('INSERT INTO daily_stats (date, source_id, source_name, offer_name, sub1, clicks, conversions, approved, revenue)
+        VALUES (:date, :source_id, :source_name, :offer_name, :sub1, :clicks, :conversions, :approved, :revenue)
+        ON CONFLICT(date, source_id, offer_name, sub1) DO UPDATE SET
+            source_name = excluded.source_name,
+            clicks = excluded.clicks,
+            conversions = excluded.conversions,
+            approved = excluded.approved,
+            revenue = excluded.revenue');
     
     foreach ($rows as $row) {
         $date = $row['period_day'] ?? $row['period'] ?? null;
@@ -155,6 +182,7 @@ function saveReportRows($db, $rows, $offerMap) {
         $sourceName = $row['source'] ?? $row['platform_name'] ?? 'Unknown';
         $offerId = (string)($row['offer_id'] ?? $row['offerid'] ?? '');
         $offerName = $offerMap[$offerId] ?? ($offerId ? "Offer #{$offerId}" : 'Unknown');
+        $sub1 = $row['sub1'] ?? '';
         $clicks = (int)($row['unique_clicks'] ?? $row['clicks'] ?? 0);
         $conversions = (int)($row['unique_conversions'] ?? $row['conversions'] ?? 0);
         $approved = (int)($row['conversions_approved'] ?? $row['conversionsapproved'] ?? 0);
@@ -164,6 +192,7 @@ function saveReportRows($db, $rows, $offerMap) {
         $stmt->bindValue(':source_id', $sourceId, SQLITE3_TEXT);
         $stmt->bindValue(':source_name', $sourceName, SQLITE3_TEXT);
         $stmt->bindValue(':offer_name', $offerName, SQLITE3_TEXT);
+        $stmt->bindValue(':sub1', $sub1, SQLITE3_TEXT);
         $stmt->bindValue(':clicks', $clicks, SQLITE3_INTEGER);
         $stmt->bindValue(':conversions', $conversions, SQLITE3_INTEGER);
         $stmt->bindValue(':approved', $approved, SQLITE3_INTEGER);
@@ -181,7 +210,7 @@ if ($action === 'get_stats') {
         echo json_encode(['error' => 'start_date and end_date required']);
         exit;
     }
-    $stmt = $db->prepare('SELECT date, source_id, source_name, offer_name, clicks, conversions, approved, revenue 
+    $stmt = $db->prepare('SELECT date, source_id, source_name, offer_name, sub1, clicks, conversions, approved, revenue 
         FROM daily_stats WHERE date BETWEEN :start AND :end ORDER BY date');
     $stmt->bindValue(':start', $start_date, SQLITE3_TEXT);
     $stmt->bindValue(':end', $end_date, SQLITE3_TEXT);
@@ -208,14 +237,15 @@ if ($action === 'save_stats') {
         $sourceId = $row['source_id'] ?? 'all';
         $sourceName = $row['source'] ?? $row['source_name'] ?? 'Unknown';
         $offerName = $row['offer'] ?? 'Unknown';
+        $sub1 = $row['sub1'] ?? '';
         $clicks = (int)($row['clicks'] ?? 0);
         $conversions = (int)($row['conversions'] ?? 0);
         $approved = (int)($row['approved'] ?? 0);
         $revenue = (float)($row['revenue'] ?? 0);
         
-        $stmt = $db->prepare('INSERT INTO daily_stats (date, source_id, source_name, offer_name, clicks, conversions, approved, revenue)
-            VALUES (:date, :source_id, :source_name, :offer_name, :clicks, :conversions, :approved, :revenue)
-            ON CONFLICT(date, source_id, offer_name) DO UPDATE SET
+        $stmt = $db->prepare('INSERT INTO daily_stats (date, source_id, source_name, offer_name, sub1, clicks, conversions, approved, revenue)
+            VALUES (:date, :source_id, :source_name, :offer_name, :sub1, :clicks, :conversions, :approved, :revenue)
+            ON CONFLICT(date, source_id, offer_name, sub1) DO UPDATE SET
                 source_name = excluded.source_name,
                 clicks = excluded.clicks,
                 conversions = excluded.conversions,
@@ -225,6 +255,7 @@ if ($action === 'save_stats') {
         $stmt->bindValue(':source_id', $sourceId, SQLITE3_TEXT);
         $stmt->bindValue(':source_name', $sourceName, SQLITE3_TEXT);
         $stmt->bindValue(':offer_name', $offerName, SQLITE3_TEXT);
+        $stmt->bindValue(':sub1', $sub1, SQLITE3_TEXT);
         $stmt->bindValue(':clicks', $clicks, SQLITE3_INTEGER);
         $stmt->bindValue(':conversions', $conversions, SQLITE3_INTEGER);
         $stmt->bindValue(':approved', $approved, SQLITE3_INTEGER);

@@ -88,6 +88,9 @@
             <select id="chartSourceFilter" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm focus:outline-none" onchange="refreshChart(); renderUI();">
               <option value="all">Все площадки</option>
             </select>
+            <select id="chartSub1Filter" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm focus:outline-none" onchange="refreshChart(); renderUI();">
+              <option value="all">Все Sub1</option>
+            </select>
           </div>
         </div>
         <div class="chart-wrap"><canvas id="trendChart"></canvas></div>
@@ -368,6 +371,7 @@ function processDataFromDb(rows) {
     dayOfWeek: daysOfWeek[new Date(row.date).getDay()],
     offer: row.offer_name || 'Unknown',
     source: mergeSourceName(row.source_name),
+    sub1: row.sub1 || '',
     clicks: row.clicks, conversions: row.conversions, approved: row.approved, revenue: row.revenue
   }));
 }
@@ -382,16 +386,6 @@ async function loadFromAPI() {
   btn.disabled = true;
   updateProgress(5, 'Проверка наличия данных...');
   try {
-    const saved = await fetchSavedStats(dFrom, dTo);
-    if (saved && saved.length) {
-      updateProgress(50, 'Загрузка из базы данных...');
-      processDataFromDb(saved);
-      await applyGlobalFilters();
-      updateProgress(100, 'Готово (из кэша)');
-      setTimeout(() => updateProgress(0), 1500);
-      btn.disabled = false;
-      return;
-    }
     updateProgress(10, 'Получение структуры API...');
     const [offersData, platformsData] = await Promise.all([
       fetchAll('offers', { token }), fetchAll('platforms', { token })
@@ -412,7 +406,7 @@ async function loadFromAPI() {
         updateProgress(pct, `Загрузка отчетов: площадка ${loaded + 1} из ${activePlatformIds.length}`);
         const pData = await fetchAll('reports/summary', {
           token, start_date: `${dFrom} 00:00:00`, end_date: `${dTo} 23:59:59`,
-          grouping: 'day', fields: 'offer_id,source', platform_id: pid
+          grouping: 'day', fields: 'offer_id,source,sub1', platform_id: pid
         });
         for (const row of pData) row.platformid = String(pid);
         reportData = reportData.concat(pData);
@@ -422,7 +416,7 @@ async function loadFromAPI() {
       updateProgress(50, 'Загрузка общего отчета...');
       reportData = await fetchAll('reports/summary', {
         token, start_date: `${dFrom} 00:00:00`, end_date: `${dTo} 23:59:59`,
-        grouping: 'day', fields: 'offer_id,source'
+        grouping: 'day', fields: 'offer_id,source,sub1'
       });
     }
     updateProgress(95, 'Обработка данных...');
@@ -438,14 +432,15 @@ async function loadFromAPI() {
       const approved = Number(row.conversions_approved ?? row.conversionsapproved ?? 0);
       const revenue = Number(row.payout ?? 0);
       let sourceName = 'Unknown';
-      if (platformId && platformMap[platformId]) sourceName = `${platformId}, ${platformMap[platformId]}`;
+      if (platformId && platformMap[platformId]) sourceName = platformMap[platformId];
       else if (row.source) sourceName = String(row.source).trim();
+      const sub1 = row.sub1 ?? '';
       sourceName = mergeSourceName(sourceName);
       originalData.push({
         date: dateStr, week: getWeekNumber(new Date(dateStr)), month: dateStr.slice(0, 7),
         dayOfWeek: daysOfWeek[new Date(dateStr).getDay()],
-        offer: offerId ? `${offerId}, ${offerMap[offerId] || 'Unknown offer'}` : 'Unknown offer',
-        source: sourceName, clicks, conversions, approved, revenue
+        offer: offerMap[offerId] || 'Unknown offer',
+        source: sourceName, sub1, clicks, conversions, approved, revenue
       });
     }
     try {
@@ -557,6 +552,14 @@ async function applyGlobalFilters() {
     sel.innerHTML = '<option value="all">Все площадки</option>' + sources.map(s => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join('');
     if (sources.includes(current)) sel.value = current;
   }
+  // Populate sub1 filter
+  const sub1Values = [...new Set(globalRawData.map(r => r.sub1).filter(s => s))].sort();
+  const sub1Sel = document.getElementById('chartSub1Filter');
+  if (sub1Sel) {
+    const curSub1 = sub1Sel.value;
+    sub1Sel.innerHTML = '<option value="all">Все Sub1</option>' + sub1Values.map(s => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join('');
+    if (sub1Values.includes(curSub1)) sub1Sel.value = curSub1;
+  }
   const epcOfferSelect = document.getElementById('epcOfferSelect');
   const offers = [...new Set(globalRawData.map(r => r.offer))].sort();
   const curOffer = epcOfferSelect.value;
@@ -569,7 +572,10 @@ async function applyGlobalFilters() {
 
 function renderUI() {
   const sf = document.getElementById('chartSourceFilter').value;
-  let data = sf !== 'all' ? globalRawData.filter(r => r.source === sf) : [...globalRawData];
+  const sub1f = document.getElementById('chartSub1Filter').value;
+  let data = [...globalRawData];
+  if (sf !== 'all') data = data.filter(r => r.source === sf);
+  if (sub1f !== 'all') data = data.filter(r => r.sub1 === sub1f);
   const t = data.reduce((a,i) => { a.clicks+=i.clicks; a.conversions+=i.conversions; a.approved+=i.approved; a.revenue+=i.revenue; return a; }, {clicks:0,conversions:0,approved:0,revenue:0});
   const cr = t.clicks ? (t.conversions/t.clicks*100) : 0;
   const ar = t.conversions ? (t.approved/t.conversions*100) : 0;
@@ -627,7 +633,10 @@ function refreshChart() {
   const grouping = document.getElementById('chartGrouping').value;
   const metricType = document.getElementById('chartMetric').value;
   const sf = document.getElementById('chartSourceFilter').value;
-  let data = sf !== 'all' ? globalRawData.filter(r => r.source === sf) : [...globalRawData];
+  const sub1f = document.getElementById('chartSub1Filter').value;
+  let data = [...globalRawData];
+  if (sf !== 'all') data = data.filter(r => r.source === sf);
+  if (sub1f !== 'all') data = data.filter(r => r.sub1 === sub1f);
   const grouped = {};
   for (const row of data) {
     const key = row[grouping];
@@ -821,12 +830,15 @@ function renderMatrixAnalytics() {
   const metric=document.getElementById('matrixMetric').value;
   const sources=[...new Set(globalRawData.map(r=>r.source))].sort();
   const months=[...new Set(globalRawData.map(r=>r.month))].sort();
+  const totalRevAll=globalRawData.reduce((s,r)=>s+r.revenue,0);
 
   const header=document.getElementById('matrixSourceHeader');
-  header.innerHTML='<th class="sort-th">Площадка</th>'+months.map(m=>`<th class="text-right">${m}</th>`).join('')+'<th class="text-right font-bold">Итого</th>';
+  header.innerHTML='<th class="sort-th">Площадка</th>'+months.map(m=>`<th class="text-right">${m}</th>`).join('')+'<th class="text-right font-bold">Итого</th><th class="text-right font-bold text-emerald-400">Выручка (₽)</th><th class="text-right font-bold text-emerald-400">Доля выручки</th>';
 
   const bodyRows=sources.map(src=>{
     let total=0;
+    const srcRevenue=globalRawData.filter(r=>r.source===src).reduce((s,r)=>s+r.revenue,0);
+    const srcShare=totalRevAll>0?(srcRevenue/totalRevAll*100):0;
     const cells=months.map(m=>{
       const rows=globalRawData.filter(r=>r.source===src&&r.month===m);
       let val=0;
@@ -838,7 +850,7 @@ function renderMatrixAnalytics() {
     }).join('');
     if(metric==='epc'){const tc=globalRawData.filter(r=>r.source===src).reduce((s,r)=>s+r.clicks,0);const tr=globalRawData.filter(r=>r.source===src).reduce((s,r)=>s+r.revenue,0);total=tc>0?tr/tc:0;}
     const tf=metric==='revenue'?`${Math.round(total).toLocaleString('ru-RU')} ₽`:metric==='epc'?`${total.toFixed(2)} ₽`:total.toLocaleString('ru-RU');
-    return `<tr class="hover:bg-slate-800"><td class="font-semibold">${escapeHtml(src)}</td>${cells}<td class="text-right font-bold">${tf}</td></tr>`;
+    return `<tr class="hover:bg-slate-800"><td class="font-semibold">${escapeHtml(src)}</td>${cells}<td class="text-right font-bold">${tf}</td><td class="text-right text-emerald-400 font-semibold">${Math.round(srcRevenue).toLocaleString('ru-RU')} ₽</td><td class="text-right text-emerald-400 font-semibold">${srcShare.toFixed(1)}%</td></tr>`;
   });
 
   let grandCells=months.map(m=>{
@@ -852,7 +864,7 @@ function renderMatrixAnalytics() {
   if(metric==='epc'){const tc=globalRawData.reduce((s,r)=>s+r.clicks,0);const tr=globalRawData.reduce((s,r)=>s+r.revenue,0);gt=tc>0?tr/tc:0;}
   else gt=globalRawData.reduce((s,r)=>s+r[metric],0);
   const gf=metric==='revenue'?`${Math.round(gt).toLocaleString('ru-RU')} ₽`:metric==='epc'?`${gt.toFixed(2)} ₽`:gt.toLocaleString('ru-RU');
-  document.getElementById('matrixSourceBody').innerHTML=bodyRows.join('')+`<tr class="border-t-2 border-blue-500"><td class="font-bold text-blue-400">ИТОГО</td>${grandCells}<td class="text-right font-bold text-blue-400">${gf}</td></tr>`;
+  document.getElementById('matrixSourceBody').innerHTML=bodyRows.join('')+`<tr class="border-t-2 border-blue-500"><td class="font-bold text-blue-400">ИТОГО</td>${grandCells}<td class="text-right font-bold text-blue-400">${gf}</td><td class="text-right font-bold text-emerald-400">${Math.round(totalRevAll).toLocaleString('ru-RU')} ₽</td><td class="text-right font-bold text-emerald-400">100%</td></tr>`;
 
   renderMonthlyShareTable(sources,months);
   renderMatrixShareChart(sources,months);
