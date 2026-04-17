@@ -1,0 +1,858 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Top Analyst BI — Leads.su</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.sheetjs.com/xlsx-0.20.2/package/dist/xlsx.full.min.js"></script>
+  <style>
+    body { font-family: 'Inter', system-ui, sans-serif; background: #0f172a; color: #e2e8f0; }
+    .card { background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 20px; }
+    .btn { background: #2563eb; color: #fff; padding: 10px 16px; border-radius: 8px; font-weight: 700; border: none; cursor: pointer; transition: background 0.2s; }
+    .btn:hover:not(:disabled) { background: #1d4ed8; }
+    .btn:disabled { background: #475569; cursor: not-allowed; }
+    .chart-wrap { height: 340px; position: relative; }
+    table th, table td { padding: 10px 12px; border-bottom: 1px solid rgba(51,65,85,.5); text-align: left; }
+    table th { color: #94a3b8; text-transform: uppercase; font-size: 11px; }
+    table th.text-right, table td.text-right { text-align: right; }
+  </style>
+</head>
+<body>
+
+<div class="max-w-7xl mx-auto px-4 py-8 space-y-6">
+  <div class="flex flex-col lg:flex-row gap-4 lg:items-center lg:justify-between">
+    <div>
+      <h1 class="text-3xl font-black text-white">Leads.su Dashboard</h1>
+      <p class="text-slate-400 text-sm mt-1">PRO Analytics Edition</p>
+    </div>
+    
+    <div>
+      <div class="flex flex-wrap gap-3 items-center">
+        <input id="dateFrom" type="date" class="bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-blue-500">
+        <input id="dateTo" type="date" class="bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-blue-500">
+        <input id="leadsToken" type="text" placeholder="Leads.su token..." class="bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm w-80 focus:outline-none focus:border-blue-500">
+        <button id="btnLoadAPI" class="btn" onclick="loadFromAPI()">⚡ Загрузить из кабинета</button>
+      </div>
+      
+      <div id="loadStatusWrap" class="hidden mt-3">
+        <div class="flex items-center justify-between text-xs text-slate-400 mb-1">
+          <span id="loadStatusText">Подготовка...</span>
+          <span id="loadStatusPercent">0%</span>
+        </div>
+        <div class="w-full bg-slate-800 rounded-full h-2 overflow-hidden border border-slate-700">
+          <div id="loadProgressBar" class="h-2 bg-emerald-500 transition-all duration-300" style="width: 0%;"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- KPI для Leads.su -->
+  <div id="kpiCards" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4"></div>
+
+  <!-- KPI для баннера -->
+  <div id="bannerKpiCards" class="grid grid-cols-1 md:grid-cols-4 gap-4"></div>
+
+  <!-- Основные графики -->
+  <div class="grid grid-cols-1 xl:grid-cols-3 gap-6">
+    <div class="card xl:col-span-2">
+      <div class="flex flex-wrap gap-3 justify-between items-center mb-4">
+        <h2 class="text-white font-bold">Динамика</h2>
+        <div class="flex gap-2">
+          <select id="chartGrouping" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm focus:outline-none" onchange="refreshChart()">
+            <option value="date">По дням</option>
+            <option value="week">По неделям</option>
+            <option value="month">По месяцам</option>
+          </select>
+          <select id="chartMetric" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm focus:outline-none" onchange="refreshChart()">
+            <option value="absolute">Доход + Клики</option>
+            <option value="conversion">CR + Approve</option>
+          </select>
+          <select id="chartSourceFilter" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm focus:outline-none" onchange="refreshChart(); renderUI();">
+            <option value="all">Все площадки</option>
+          </select>
+        </div>
+      </div>
+      <div class="chart-wrap"><canvas id="trendChart"></canvas></div>
+    </div>
+    <div class="card">
+      <h2 class="text-white font-bold mb-4">Воронка</h2>
+      <div id="funnelBox" class="space-y-3 text-sm text-slate-300"></div>
+    </div>
+  </div>
+
+  <!-- График конверсии баннера -->
+  <div class="card">
+    <h2 class="text-white font-bold mb-4">📈 Динамика конверсии баннера (показы → переходы)</h2>
+    <div class="chart-wrap"><canvas id="bannerConvChart"></canvas></div>
+  </div>
+
+  <!-- Остальные графики -->
+  <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
+    <div class="card">
+      <h2 class="text-white font-bold mb-4">Доли площадок (Доход ₽)</h2>
+      <div class="chart-wrap flex justify-center"><canvas id="donutChart"></canvas></div>
+    </div>
+    <div class="card">
+      <h2 class="text-white font-bold mb-4">Топ-5 Офферов по EPC (от 100 кликов)</h2>
+      <div class="chart-wrap"><canvas id="barChart"></canvas></div>
+    </div>
+  </div>
+
+  <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
+    <div class="card">
+      <h2 class="text-white font-bold mb-4">Площадки</h2>
+      <div class="overflow-auto">
+        <table class="w-full text-sm" id="sourceTable">
+          <thead>
+            <tr>
+              <th class="cursor-pointer hover:text-white" onclick="sortTable('sourceTable', 'name')">Площадка ↕</th>
+              <th class="cursor-pointer hover:text-white text-right" onclick="sortTable('sourceTable', 'clicks')">Клики ↕</th>
+              <th class="cursor-pointer hover:text-white text-right" onclick="sortTable('sourceTable', 'conversions')">Лиды ↕</th>
+              <th class="cursor-pointer hover:text-white text-right" onclick="sortTable('sourceTable', 'approveRate')">Approve % ↕</th>
+              <th class="cursor-pointer hover:text-white text-right" onclick="sortTable('sourceTable', 'revenue')">Доход ↕</th>
+              <th class="cursor-pointer hover:text-white text-right" onclick="sortTable('sourceTable', 'epc')">EPC ↕</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <div class="flex flex-wrap gap-3 justify-between items-center mb-4">
+        <h2 class="text-white font-bold">Офферы</h2>
+        <select id="offerSourceFilter" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm max-w-[200px] focus:outline-none" onchange="renderTables()">
+          <option value="all">Все площадки</option>
+        </select>
+      </div>
+      <div class="overflow-auto">
+        <table class="w-full text-sm" id="offerTable">
+          <thead>
+            <tr>
+              <th class="cursor-pointer hover:text-white" onclick="sortTable('offerTable', 'name')">Оффер ↕</th>
+              <th class="cursor-pointer hover:text-white text-right" onclick="sortTable('offerTable', 'clicks')">Клики ↕</th>
+              <th class="cursor-pointer hover:text-white text-right" onclick="sortTable('offerTable', 'conversions')">Лиды ↕</th>
+              <th class="cursor-pointer hover:text-white text-right" onclick="sortTable('offerTable', 'approveRate')">Approve % ↕</th>
+              <th class="cursor-pointer hover:text-white text-right" onclick="sortTable('offerTable', 'revenue')">Доход ↕</th>
+              <th class="cursor-pointer hover:text-white text-right" onclick="sortTable('offerTable', 'epc')">EPC ↕</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Аналитика EPC -->
+  <div class="card col-span-full">
+    <div class="flex flex-wrap gap-3 justify-between items-center mb-4">
+      <h2 class="text-white font-bold">Анализ EPC (доход на клик)</h2>
+      <div class="flex gap-2">
+        <select id="epcOfferSelect" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm focus:outline-none">
+          <option value="all">Все офферы</option>
+        </select>
+        <select id="epcGrouping" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm focus:outline-none">
+          <option value="day">По дням</option>
+          <option value="week">По неделям</option>
+        </select>
+      </div>
+    </div>
+    <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
+      <div class="chart-wrap" style="height: 320px;">
+        <canvas id="epcLineChart"></canvas>
+      </div>
+      <div class="chart-wrap" style="height: 320px;">
+        <canvas id="epcWeekdayChart"></canvas>
+      </div>
+    </div>
+    <div class="mt-4 text-sm text-slate-300" id="epcStats"></div>
+  </div>
+
+  <!-- Блок загрузки Excel (статистика баннера) -->
+  <div class="card">
+    <h2 class="text-white font-bold mb-4">📊 Загрузка статистики баннера (Excel)</h2>
+    <p class="text-sm text-slate-400 mb-4">Файл должен содержать колонки: Дата (YYYY-MM-DD), Показы, Переходы</p>
+    <div class="flex flex-wrap gap-4 items-end">
+      <div class="flex-1">
+        <input type="file" id="bannerExcelFile" accept=".xlsx, .xls, .csv" class="bg-slate-800 border border-slate-700 rounded px-3 py-2 w-full">
+      </div>
+      <button id="uploadBannerBtn" class="btn">📤 Загрузить и обновить</button>
+    </div>
+    <div id="bannerUploadMsg" class="mt-3 text-sm hidden"></div>
+  </div>
+</div>
+
+<script>
+// ========================== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ==========================
+const API_BASE = './leads-proxy.php';
+
+let originalData = [];
+let globalRawData = [];
+let bouncesData = [];
+let bannerData = [];
+
+let epcLineChart = null;
+let epcWeekdayChart = null;
+let trendChartInstance = null;
+let donutChartInstance = null;
+let barChartInstance = null;
+let bannerConvChart = null;
+
+let tableSort = {
+  sourceTable: { field: 'revenue', desc: true },
+  offerTable: { field: 'revenue', desc: true }
+};
+
+const daysOfWeek = ['Вс','Пн','Вт','Ср','Чт','Пт','Сб'];
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const colorPalette = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316', '#06b6d4', '#6366f1'];
+
+// ========================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========================
+function getWeekNumber(d) {
+  d = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+  d.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDay() || 7));
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  const weekNo = Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+  return d.getUTCFullYear() + '-W' + String(weekNo).padStart(2, '0');
+}
+
+function parseDateSmart(rawD) {
+  if (!rawD || typeof rawD !== 'string') return null;
+  let clean = rawD.trim();
+  const dateOnly = clean.split(' ')[0];
+  if (/^\d{4}-\d{2}-\d{2}$/.test(dateOnly)) return dateOnly;
+  if (/^\d{1,2}\.\d{1,2}\.\d{4}$/.test(dateOnly)) {
+    const [d, m, y] = dateOnly.split('.');
+    return `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+  }
+  return null;
+}
+
+function escapeHtml(str) {
+  return String(str).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#039;');
+}
+
+// ========================== ЗАГРУЗКА ДАННЫХ ИЗ LEADS.SU ==========================
+async function fetchJSON(url, attempt = 0) {
+  const res = await fetch(url, { method: 'GET', headers: { Accept: 'application/json' }});
+  if (res.status === 429) {
+    if (attempt >= 8) throw new Error('API Leads.su перегружен. Попробуйте позже.');
+    let waitMs = Math.min(2000 * Math.pow(1.5, attempt), 15000);
+    console.warn(`[Rate Limit] 429. Ждем ${waitMs}мс...`);
+    await sleep(waitMs);
+    return fetchJSON(url, attempt + 1);
+  }
+  if ([502, 503, 504].includes(res.status)) {
+    if (attempt < 4) {
+      await sleep(3000);
+      return fetchJSON(url, attempt + 1);
+    }
+  }
+  const text = await res.text();
+  let json = null;
+  try { json = text ? JSON.parse(text) : null; }
+  catch (e) { throw new Error(`Ответ сервера не JSON. HTTP: ${res.status}`); }
+  if (!res.ok) {
+      let errorMsg = `HTTP ${res.status}`;
+      if (json && json.error && Array.isArray(json.error.params)) {
+          errorMsg = json.error.params.map(p => p.message).join(' | ');
+      } else if (json && json.message) {
+          errorMsg = json.message;
+      }
+      throw new Error(errorMsg);
+  }
+  if (json && json.status && json.status !== 'success') throw new Error(json.message || 'API error');
+  return json;
+}
+
+async function fetchAll(method, params = {}) {
+  let offset = 0;
+  const limit = 500;
+  let all = [];
+  while (true) {
+    const query = new URLSearchParams({ method, ...params, offset: String(offset), limit: String(limit) });
+    const json = await fetchJSON(`${API_BASE}?${query.toString()}`);
+    const rows = Array.isArray(json.data) ? json.data : [];
+    if (rows.length === 0) break;
+    all = all.concat(rows);
+    if (rows.length < limit) break;
+    offset += rows.length;
+    await sleep(400);
+  }
+  return all;
+}
+
+async function fetchSavedStats(start, end) {
+  try {
+    const res = await fetch(`${API_BASE}?action=get_stats&start_date=${start}&end_date=${end}`);
+    const json = await res.json();
+    if (json.status === 'success' && json.data.length) return json.data;
+  } catch(e) { console.warn(e); }
+  return null;
+}
+
+function processDataFromDb(rows) {
+  originalData = rows.map(row => ({
+    date: row.date,
+    week: getWeekNumber(new Date(row.date)),
+    month: row.date.slice(0, 7),
+    dayOfWeek: daysOfWeek[new Date(row.date).getDay()],
+    offer: 'Unknown',
+    source: row.source_name,
+    clicks: row.clicks,
+    conversions: row.conversions,
+    approved: row.approved,
+    revenue: row.revenue
+  }));
+}
+
+async function loadFromAPI() {
+  const token = document.getElementById('leadsToken').value.trim();
+  const dFrom = document.getElementById('dateFrom').value;
+  const dTo = document.getElementById('dateTo').value;
+  const btn = document.getElementById('btnLoadAPI');
+  const originalText = btn.innerHTML;
+
+  if (!token) return alert('Введите Leads.su token');
+  if (!dFrom || !dTo) return alert('Укажите даты');
+
+  btn.disabled = true;
+  updateProgress(5, 'Проверка наличия данных...');
+
+  try {
+    const saved = await fetchSavedStats(dFrom, dTo);
+    if (saved && saved.length) {
+      updateProgress(50, 'Загрузка из базы данных...');
+      processDataFromDb(saved);
+      await applyGlobalFilters();
+      updateProgress(100, 'Готово (из кэша)');
+      setTimeout(() => updateProgress(0), 1500);
+      btn.disabled = false;
+      return;
+    }
+
+    updateProgress(10, 'Получение структуры API...');
+    const [offersData, platformsData] = await Promise.all([
+      fetchAll('offers', { token }),
+      fetchAll('platforms', { token })
+    ]);
+
+    const offerMap = {};
+    for (const o of offersData) offerMap[String(o.id)] = o.name || `Offer #${o.id}`;
+
+    const platformMap = {};
+    const activePlatformIds = [];
+    for (const p of platformsData) {
+      if (p?.id == null) continue;
+      platformMap[String(p.id)] = p.name || `Platform #${p.id}`;
+      activePlatformIds.push(String(p.id));
+    }
+
+    let reportData = [];
+    if (activePlatformIds.length > 0) {
+      let loaded = 0;
+      for (const pid of activePlatformIds) {
+        let pct = 10 + Math.round((loaded / activePlatformIds.length) * 80);
+        updateProgress(pct, `Загрузка отчетов: площадка ${loaded + 1} из ${activePlatformIds.length}`);
+        const pData = await fetchAll('reports/summary', {
+          token: token, start_date: `${dFrom} 00:00:00`, end_date: `${dTo} 23:59:59`,
+          grouping: 'day', fields: 'offer_id,source', platform_id: pid
+        });
+        for (const row of pData) row.platformid = String(pid);
+        reportData = reportData.concat(pData);
+        loaded++;
+      }
+    } else {
+      updateProgress(50, 'Загрузка общего отчета...');
+      reportData = await fetchAll('reports/summary', {
+        token: token, start_date: `${dFrom} 00:00:00`, end_date: `${dTo} 23:59:59`,
+        grouping: 'day', fields: 'offer_id,source'
+      });
+    }
+
+    updateProgress(95, 'Обработка данных...');
+    originalData = [];
+    for (const row of reportData) {
+      const rawDate = row.period_day || row.period_hour || row.periodday || row.period || row.date || null;
+      const dateStr = parseDateSmart(rawDate);
+      if (!dateStr) continue;
+      const offerId = String(row.offer_id ?? row.offerid ?? '');
+      const platformId = String(row.platform_id ?? row.platformid ?? '');
+      const clicks = Number(row.unique_clicks ?? row.clicks ?? row.uniqueclicks ?? 0);
+      const conversions = Number(row.unique_conversions ?? row.conversions ?? row.uniqueconversions ?? 0);
+      const approved = Number(row.conversions_approved ?? row.conversionsapproved ?? 0);
+      const revenue = Number(row.payout ?? 0);
+      let sourceName = 'Unknown';
+      if (platformId && platformMap[platformId]) {
+        sourceName = `${platformId}, ${platformMap[platformId]}`;
+      } else if (row.source) {
+        sourceName = String(row.source).trim();
+      }
+      const lowerSource = sourceName.toLowerCase();
+      if (lowerSource.includes('хочузайм') || lowerSource.includes('заимберис') || lowerSource.includes('займберис')) {
+          sourceName = 'Займберис';
+      }
+      originalData.push({
+        date: dateStr, week: getWeekNumber(new Date(dateStr)), month: dateStr.slice(0, 7),
+        dayOfWeek: daysOfWeek[new Date(dateStr).getDay()],
+        offer: offerId ? `${offerId}, ${offerMap[offerId] || 'Unknown offer'}` : 'Unknown offer',
+        source: sourceName, clicks, conversions, approved, revenue
+      });
+    }
+
+    try {
+      await fetch(`${API_BASE}?action=save_stats`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ data: originalData })
+      });
+      console.log('Данные сохранены в базу');
+    } catch(e) { console.warn('Ошибка сохранения:', e); }
+
+    await applyGlobalFilters();
+    updateProgress(100, 'Готово!');
+    setTimeout(() => updateProgress(0), 1500);
+  } catch (e) {
+    console.error('API ERROR:', e);
+    alert(`Ошибка загрузки:\n${e.message}`);
+    updateProgress(0);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = originalText;
+  }
+}
+
+function updateProgress(percent, text) {
+  const wrap = document.getElementById('loadStatusWrap');
+  if (percent > 0) wrap.classList.remove('hidden');
+  else wrap.classList.add('hidden');
+  document.getElementById('loadProgressBar').style.width = `${percent}%`;
+  document.getElementById('loadStatusPercent').textContent = `${Math.round(percent)}%`;
+  if (text) document.getElementById('loadStatusText').textContent = text;
+}
+
+// ========================== АВТОМАТИЧЕСКАЯ ЗАГРУЗКА КЭША ПРИ СТАРТЕ ==========================
+async function autoLoadSavedStats() {
+  const dFrom = document.getElementById('dateFrom').value;
+  const dTo = document.getElementById('dateTo').value;
+  if (!dFrom || !dTo) return;
+  const saved = await fetchSavedStats(dFrom, dTo);
+  if (saved && saved.length) {
+    console.log('Автозагрузка из кэша:', saved.length, 'записей');
+    processDataFromDb(saved);
+    await applyGlobalFilters();
+    // Показываем сообщение в логах (можно добавить в UI)
+    const statusDiv = document.getElementById('loadStatusText');
+    if (statusDiv) statusDiv.textContent = 'Данные загружены из кэша (последние 30 дней)';
+    setTimeout(() => { if (statusDiv) statusDiv.textContent = 'Подготовка...'; }, 3000);
+  } else {
+    console.log('Нет сохранённых данных, нажмите "Загрузить из кабинета"');
+  }
+}
+
+// ========================== ЗАГРУЗКА ДАННЫХ БАННЕРА ==========================
+async function fetchBannerStats(start, end) {
+  const res = await fetch(`${API_BASE}?action=get_banner_stats&start_date=${start}&end_date=${end}`);
+  const data = await res.json();
+  if (data.status === 'success') bannerData = data.data;
+}
+
+function renderBannerKPI() {
+  const totalImpressions = bannerData.reduce((sum, d) => sum + d.impressions, 0);
+  const totalClicks = bannerData.reduce((sum, d) => sum + d.clicks, 0);
+  const overallConv = totalImpressions ? (totalClicks / totalImpressions * 100) : 0;
+  const avgConv = bannerData.length ? (bannerData.reduce((sum, d) => sum + d.conversion_rate, 0) / bannerData.length) : 0;
+  const container = document.getElementById('bannerKpiCards');
+  if (container) {
+    container.innerHTML = `
+      <div class="card"><div class="text-slate-400 text-xs uppercase">Показы баннера</div><div class="text-3xl font-black mt-2">${totalImpressions.toLocaleString('ru-RU')}</div></div>
+      <div class="card"><div class="text-slate-400 text-xs uppercase">Переходы на витрину</div><div class="text-3xl font-black mt-2">${totalClicks.toLocaleString('ru-RU')}</div></div>
+      <div class="card"><div class="text-slate-400 text-xs uppercase">Общая конверсия</div><div class="text-3xl font-black mt-2">${overallConv.toFixed(2)}%</div></div>
+      <div class="card"><div class="text-slate-400 text-xs uppercase">Средняя конверсия (по дням)</div><div class="text-3xl font-black mt-2">${avgConv.toFixed(2)}%</div></div>
+    `;
+  }
+}
+
+function renderBannerChart() {
+  if (!bannerData.length) return;
+  const labels = bannerData.map(d => d.date.slice(5));
+  const convData = bannerData.map(d => d.conversion_rate);
+  const ctx = document.getElementById('bannerConvChart').getContext('2d');
+  if (bannerConvChart) bannerConvChart.destroy();
+  bannerConvChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: labels,
+      datasets: [{
+        label: 'Конверсия (%)',
+        data: convData,
+        borderColor: '#f97316',
+        backgroundColor: 'rgba(249,115,22,0.1)',
+        fill: true,
+        tension: 0.3
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: {
+        y: { title: { display: true, text: '%', color: '#94a3b8' }, ticks: { color: '#94a3b8' } },
+        x: { ticks: { color: '#94a3b8' } }
+      }
+    }
+  });
+}
+
+// ========================== ОБНОВЛЕНИЕ ИНТЕРФЕЙСА ==========================
+async function applyGlobalFilters() {
+  const dFrom = document.getElementById('dateFrom').value || '2000-01-01';
+  const dTo = document.getElementById('dateTo').value || '2099-01-01';
+
+  globalRawData = originalData.filter(r => r.date >= dFrom && r.date <= dTo);
+  await fetchBannerStats(dFrom, dTo);
+  renderBannerKPI();
+  renderBannerChart();
+
+  const sources = [...new Set(globalRawData.map(r => r.source))].sort();
+
+  const sourceSelect = document.getElementById('chartSourceFilter');
+  const current = sourceSelect.value;
+  sourceSelect.innerHTML = '<option value="all">Все площадки</option>' + sources.map(s => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join('');
+  if (sources.includes(current)) sourceSelect.value = current;
+
+  const offerSelect = document.getElementById('offerSourceFilter');
+  const currentOffer = offerSelect.value;
+  offerSelect.innerHTML = '<option value="all">Все площадки</option>' + sources.map(s => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join('');
+  if (sources.includes(currentOffer)) offerSelect.value = currentOffer;
+
+  renderUI();
+  renderTables();
+  refreshChart();
+  drawExtraCharts();
+
+  const epcOfferSelect = document.getElementById('epcOfferSelect');
+  const offers = [...new Set(globalRawData.map(r => r.offer))].sort();
+  const currentEpcOffer = epcOfferSelect.value;
+  epcOfferSelect.innerHTML = '<option value="all">Все офферы</option>' + offers.map(o => `<option value="${escapeHtml(o)}">${escapeHtml(o)}</option>`).join('');
+  if (offers.includes(currentEpcOffer)) epcOfferSelect.value = currentEpcOffer;
+  renderEPCAnalytics();
+}
+
+function renderUI() {
+  const sourceFilter = document.getElementById('chartSourceFilter').value;
+  let data = [...globalRawData];
+  if (sourceFilter !== 'all') data = data.filter(r => r.source === sourceFilter);
+  const totals = data.reduce((acc, item) => {
+    acc.clicks += item.clicks; acc.conversions += item.conversions; acc.approved += item.approved; acc.revenue += item.revenue;
+    return acc;
+  }, { clicks:0, conversions:0, approved:0, revenue:0 });
+  const cr = totals.clicks ? (totals.conversions / totals.clicks * 100) : 0;
+  const approveRate = totals.conversions ? (totals.approved / totals.conversions * 100) : 0;
+  const epc = totals.clicks ? (totals.revenue / totals.clicks) : 0;
+
+  document.getElementById('kpiCards').innerHTML = `
+    <div class="card"><div class="text-slate-400 text-xs uppercase">Клики</div><div class="text-3xl font-black mt-2">${totals.clicks.toLocaleString('ru-RU')}</div></div>
+    <div class="card"><div class="text-slate-400 text-xs uppercase">Лиды</div><div class="text-3xl font-black mt-2">${totals.conversions.toLocaleString('ru-RU')}</div></div>
+    <div class="card"><div class="text-slate-400 text-xs uppercase">Approve %</div><div class="text-3xl font-black mt-2">${approveRate.toFixed(2)}%</div></div>
+    <div class="card"><div class="text-slate-400 text-xs uppercase">Доход (₽)</div><div class="text-3xl font-black mt-2">${Math.round(totals.revenue).toLocaleString('ru-RU')} ₽</div></div>
+  `;
+  document.getElementById('funnelBox').innerHTML = `
+    <div class="flex justify-between"><span>Клики:</span><strong>${totals.clicks.toLocaleString('ru-RU')}</strong></div>
+    <div class="flex justify-between"><span>Лиды:</span><strong>${totals.conversions.toLocaleString('ru-RU')}</strong></div>
+    <div class="flex justify-between"><span>Approve:</span><strong>${totals.approved.toLocaleString('ru-RU')}</strong></div>
+    <div class="flex justify-between"><span>CR:</span><strong>${cr.toFixed(2)}%</strong></div>
+    <div class="flex justify-between"><span>Approve Rate:</span><strong>${approveRate.toFixed(2)}%</strong></div>
+    <div class="flex justify-between"><span>EPC:</span><strong>${epc.toFixed(2)} ₽</strong></div>
+  `;
+}
+
+function aggregateBy(field, sourceFilter = 'all') {
+  const map = {};
+  for (const r of globalRawData) {
+    if (sourceFilter !== 'all' && r.source !== sourceFilter) continue;
+    const key = r[field];
+    if (!map[key]) map[key] = { clicks:0, conversions:0, approved:0, revenue:0 };
+    map[key].clicks += r.clicks; map[key].conversions += r.conversions; map[key].approved += r.approved; map[key].revenue += r.revenue;
+  }
+  return map;
+}
+
+function renderTables() {
+  const selectedOfferSource = document.getElementById('offerSourceFilter').value;
+  const sourceMap = aggregateBy('source', 'all');
+  const offerMap = aggregateBy('offer', selectedOfferSource);
+  const applySort = (arr, sortConfig) => {
+    return arr.sort((a, b) => {
+      let valA = a[sortConfig.field]; let valB = b[sortConfig.field];
+      if (typeof valA === 'string') return sortConfig.desc ? valB.localeCompare(valA) : valA.localeCompare(valB);
+      return sortConfig.desc ? valB - valA : valA - valB;
+    });
+  };
+  let sourceRows = Object.entries(sourceMap).map(([name, v]) => ({
+    name, clicks: v.clicks, conversions: v.conversions, approved: v.approved, revenue: v.revenue,
+    epc: v.clicks ? (v.revenue / v.clicks) : 0, approveRate: v.conversions ? (v.approved / v.conversions * 100) : 0
+  }));
+  let offerRows = Object.entries(offerMap).map(([name, v]) => ({
+    name, clicks: v.clicks, conversions: v.conversions, approved: v.approved, revenue: v.revenue,
+    epc: v.clicks ? (v.revenue / v.clicks) : 0, approveRate: v.conversions ? (v.approved / v.conversions * 100) : 0
+  }));
+  sourceRows = applySort(sourceRows, tableSort.sourceTable);
+  offerRows = applySort(offerRows, tableSort.offerTable);
+  document.querySelector('#sourceTable tbody').innerHTML = sourceRows.map(r => `
+    <tr class="hover:bg-slate-800 transition-colors">
+      <td>${escapeHtml(r.name)}</td>
+      <td class="text-right">${r.clicks.toLocaleString('ru-RU')}</td>
+      <td class="text-right">${r.conversions.toLocaleString('ru-RU')}</td>
+      <td class="text-right">${r.approveRate.toFixed(1)}%</td>
+      <td class="text-right">${Math.round(r.revenue).toLocaleString('ru-RU')} ₽</td>
+      <td class="text-right font-semibold">${r.epc.toFixed(2)} ₽</td>
+    </tr>`).join('');
+  document.querySelector('#offerTable tbody').innerHTML = offerRows.map(r => {
+    let epcColorClass = 'text-red-400';
+    if (r.epc >= 80 && r.epc < 100) epcColorClass = 'text-yellow-400';
+    else if (r.epc >= 100 && r.epc < 140) epcColorClass = 'text-green-500';
+    else if (r.epc >= 140) epcColorClass = 'text-emerald-300 drop-shadow-[0_0_8px_rgba(52,211,153,0.8)]';
+    if (r.clicks === 0) epcColorClass = 'text-slate-400';
+    return `
+    <tr class="hover:bg-slate-800 transition-colors">
+      <td>${escapeHtml(r.name)}</td>
+      <td class="text-right">${r.clicks.toLocaleString('ru-RU')}</td>
+      <td class="text-right">${r.conversions.toLocaleString('ru-RU')}</td>
+      <td class="text-right">${r.approveRate.toFixed(1)}%</td>
+      <td class="text-right">${Math.round(r.revenue).toLocaleString('ru-RU')} ₽</td>
+      <td class="text-right font-bold ${epcColorClass}">${r.epc.toFixed(2)} ₽</td>
+    </tr>`;
+  }).join('');
+}
+
+function refreshChart() {
+  const grouping = document.getElementById('chartGrouping').value;
+  const metricType = document.getElementById('chartMetric').value;
+  const sourceFilter = document.getElementById('chartSourceFilter').value;
+  let data = [...globalRawData];
+  if (sourceFilter !== 'all') data = data.filter(r => r.source === sourceFilter);
+  const grouped = {};
+  for (const row of data) {
+    const key = row[grouping];
+    if (!grouped[key]) grouped[key] = { clicks:0, conv:0, app:0, rev:0 };
+    grouped[key].clicks += row.clicks; grouped[key].conv += row.conversions; grouped[key].app += row.approved; grouped[key].rev += row.revenue;
+  }
+  const labels = Object.keys(grouped).sort();
+  let datasets = [];
+  if (metricType === 'absolute') {
+    datasets = [
+      { label: 'Доход (₽)', data: labels.map(l => grouped[l].rev), borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,.12)', fill: true, yAxisID: 'y', tension: 0.3 },
+      { label: 'Клики', data: labels.map(l => grouped[l].clicks), borderColor: '#38bdf8', borderDash: [5,5], yAxisID: 'y1', tension: 0.3 }
+    ];
+  } else {
+    datasets = [
+      { label: 'CR (%)', data: labels.map(l => grouped[l].clicks ? (grouped[l].conv / grouped[l].clicks * 100).toFixed(2) : 0), borderColor: '#f59e0b', yAxisID: 'y', tension: 0.3 },
+      { label: 'Approve (%)', data: labels.map(l => grouped[l].conv ? (grouped[l].app / grouped[l].conv * 100).toFixed(2) : 0), borderColor: '#10b981', yAxisID: 'y', tension: 0.3 }
+    ];
+  }
+  if (trendChartInstance) trendChartInstance.destroy();
+  trendChartInstance = new Chart(document.getElementById('trendChart'), {
+    type: 'line', data: { labels, datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false },
+      plugins: { legend: { labels: { color: '#cbd5e1' } } },
+      scales: {
+        x: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } },
+        y: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } },
+        y1: { display: metricType==='absolute', position: 'right', ticks: { color: '#94a3b8' }, grid: { drawOnChartArea: false } }
+      }
+    }
+  });
+}
+
+function drawExtraCharts() {
+  const sourceMap = aggregateBy('source', 'all');
+  const offerMap = aggregateBy('offer', 'all');
+  let donutData = Object.entries(sourceMap).map(([name, stats]) => ({ name, revenue: stats.revenue })).filter(item => item.revenue > 0).sort((a, b) => b.revenue - a.revenue);
+  if (donutData.length > 5) {
+    const top5 = donutData.slice(0, 5);
+    const othersRev = donutData.slice(5).reduce((sum, item) => sum + item.revenue, 0);
+    top5.push({ name: 'Другие', revenue: othersRev });
+    donutData = top5;
+  }
+  const totalRevenue = donutData.reduce((sum, item) => sum + item.revenue, 0);
+  if (donutChartInstance) donutChartInstance.destroy();
+  donutChartInstance = new Chart(document.getElementById('donutChart'), {
+    type: 'doughnut',
+    data: { labels: donutData.map(d => d.name), datasets: [{ data: donutData.map(d => d.revenue), backgroundColor: colorPalette, borderWidth: 0, hoverOffset: 4 }] },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { position: 'right', labels: { color: '#cbd5e1', padding: 20, generateLabels: function(chart) {
+          const data = chart.data;
+          if (data.labels.length && data.datasets.length) {
+            return data.labels.map((label, i) => {
+              const value = data.datasets[0].data[i];
+              const percent = totalRevenue > 0 ? ((value / totalRevenue) * 100).toFixed(1) : 0;
+              return { text: `${label} (${percent}%)`, fillStyle: data.datasets[0].backgroundColor[i], index: i };
+            });
+          }
+          return [];
+        } } },
+        tooltip: { callbacks: { label: function(context) {
+          const value = context.raw;
+          const percent = totalRevenue > 0 ? ((value / totalRevenue) * 100).toFixed(1) : 0;
+          return ` ${Math.round(value).toLocaleString('ru-RU')} ₽ (${percent}%)`;
+        } } }
+      }
+    }
+  });
+  let barData = Object.entries(offerMap).map(([name, stats]) => ({ name: name.split(',')[1] ? name.split(',')[1].trim() : name, epc: stats.clicks > 0 ? (stats.revenue / stats.clicks) : 0, clicks: stats.clicks })).filter(item => item.clicks > 100 && item.epc > 0).sort((a, b) => b.epc - a.epc).slice(0, 5);
+  if (barChartInstance) barChartInstance.destroy();
+  barChartInstance = new Chart(document.getElementById('barChart'), {
+    type: 'bar',
+    data: { labels: barData.map(d => d.name.substring(0, 20) + (d.name.length > 20 ? '...' : '')), datasets: [{ label: 'EPC (₽)', data: barData.map(d => d.epc.toFixed(2)), backgroundColor: '#10b981', borderRadius: 4 }] },
+    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { ticks: { color: '#94a3b8' }, grid: { display: false } }, y: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } } } }
+  });
+}
+
+function aggregateEPCByPeriod(grouping, offerFilter = 'all') {
+  let data = [...globalRawData];
+  if (offerFilter !== 'all') data = data.filter(r => r.offer === offerFilter);
+  const map = {};
+  for (const row of data) {
+    let key = (grouping === 'week') ? row.week : row.date;
+    if (!map[key]) map[key] = { clicks: 0, revenue: 0 };
+    map[key].clicks += row.clicks;
+    map[key].revenue += row.revenue;
+  }
+  const labels = Object.keys(map).sort();
+  const epcValues = labels.map(l => map[l].clicks > 0 ? map[l].revenue / map[l].clicks : 0);
+  return { labels, epcValues };
+}
+
+function aggregateEPCByWeekday(offerFilter = 'all') {
+  let data = [...globalRawData];
+  if (offerFilter !== 'all') data = data.filter(r => r.offer === offerFilter);
+  const weekdayMap = Array(7).fill().map(() => ({ clicks: 0, revenue: 0 }));
+  for (const row of data) {
+    const dayIdx = new Date(row.date).getDay();
+    weekdayMap[dayIdx].clicks += row.clicks;
+    weekdayMap[dayIdx].revenue += row.revenue;
+  }
+  const weekdayNames = ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'];
+  return weekdayNames.map((name, idx) => {
+    const epc = weekdayMap[idx].clicks > 0 ? weekdayMap[idx].revenue / weekdayMap[idx].clicks : 0;
+    return { name, epc, clicks: weekdayMap[idx].clicks };
+  });
+}
+
+function renderEPCAnalytics() {
+  if (!globalRawData.length) return;
+  const grouping = document.getElementById('epcGrouping').value;
+  const offerFilter = document.getElementById('epcOfferSelect').value;
+  const { labels, epcValues } = aggregateEPCByPeriod(grouping, offerFilter);
+  if (epcLineChart) epcLineChart.destroy();
+  const ctxLine = document.getElementById('epcLineChart').getContext('2d');
+  epcLineChart = new Chart(ctxLine, {
+    type: 'line',
+    data: { labels: labels.map(l => grouping === 'week' ? l : l.slice(5)), datasets: [{ label: 'EPC (₽)', data: epcValues.map(v => v.toFixed(2)), borderColor: '#f59e0b', backgroundColor: 'rgba(245,158,11,0.1)', fill: true, tension: 0.3, pointRadius: 2, pointBackgroundColor: '#f59e0b' }] },
+    options: { responsive: true, maintainAspectRatio: false, plugins: { tooltip: { callbacks: { label: ctx => `${ctx.raw.toFixed(2)} ₽` } } }, scales: { y: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } }, x: { ticks: { color: '#94a3b8' }, grid: { display: false } } } }
+  });
+  const weekdayData = aggregateEPCByWeekday(offerFilter);
+  if (epcWeekdayChart) epcWeekdayChart.destroy();
+  const ctxWeek = document.getElementById('epcWeekdayChart').getContext('2d');
+  epcWeekdayChart = new Chart(ctxWeek, {
+    type: 'bar',
+    data: { labels: weekdayData.map(d => d.name), datasets: [{ label: 'Средний EPC (₽)', data: weekdayData.map(d => d.epc.toFixed(2)), backgroundColor: '#3b82f6', borderRadius: 4 }] },
+    options: { responsive: true, maintainAspectRatio: false, plugins: { tooltip: { callbacks: { label: ctx => `${ctx.raw.toFixed(2)} ₽ (кликов: ${weekdayData[ctx.dataIndex].clicks.toLocaleString('ru-RU')})` } } }, scales: { y: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } }, x: { ticks: { color: '#94a3b8' }, grid: { display: false } } } }
+  });
+  const validEpc = epcValues.filter(v => v > 0);
+  const avgEpc = validEpc.length ? validEpc.reduce((a,b) => a+b,0) / validEpc.length : 0;
+  const threshold = avgEpc * 0.7;
+  const lowDays = labels.filter((_, i) => epcValues[i] > 0 && epcValues[i] < threshold);
+  document.getElementById('epcStats').innerHTML = `
+    <div class="flex flex-wrap gap-4">
+      <div><span class="text-slate-400">Средний EPC за период:</span> <strong class="text-emerald-400">${avgEpc.toFixed(2)} ₽</strong></div>
+      <div><span class="text-slate-400">Дней с низким EPC (ниже среднего на 30%):</span> <strong class="text-rose-400">${lowDays.length}</strong></div>
+    </div>
+    ${lowDays.length ? `<div class="mt-2 text-xs text-slate-400">Дни с низким EPC: ${lowDays.slice(0, 10).join(', ')}${lowDays.length > 10 ? '...' : ''}</div>` : ''}
+  `;
+}
+
+function sortTable(tableId, field) {
+  if (tableSort[tableId].field === field) tableSort[tableId].desc = !tableSort[tableId].desc;
+  else { tableSort[tableId].field = field; tableSort[tableId].desc = true; }
+  renderTables();
+}
+
+// ========================== ЗАГРУЗКА EXCEL ==========================
+document.getElementById('uploadBannerBtn').addEventListener('click', async () => {
+  const fileInput = document.getElementById('bannerExcelFile');
+  const file = fileInput.files[0];
+  if (!file) { alert('Выберите файл'); return; }
+  const data = await file.arrayBuffer();
+  const workbook = XLSX.read(data);
+  const sheet = workbook.Sheets[workbook.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+  const startRow = (rows[0][0] && rows[0][0].toString().match(/дата/i)) ? 1 : 0;
+  const stats = [];
+  for (let i = startRow; i < rows.length; i++) {
+    const row = rows[i];
+    if (!row || row.length < 3) continue;
+    let date = row[0];
+    if (typeof date === 'number') {
+      const d = new Date((date - 25569) * 86400 * 1000);
+      date = d.toISOString().split('T')[0];
+    } else {
+      date = date.toString().trim();
+      if (date.match(/\d{2}\.\d{2}\.\d{4}/)) {
+        const parts = date.split('.');
+        date = `${parts[2]}-${parts[1]}-${parts[0]}`;
+      }
+    }
+    const impressions = parseInt(row[1], 10);
+    const clicks = parseInt(row[2], 10);
+    if (isNaN(impressions) || isNaN(clicks)) continue;
+    stats.push({ date, impressions, clicks });
+  }
+  const msgDiv = document.getElementById('bannerUploadMsg');
+  try {
+    const res = await fetch('./leads-proxy.php?action=save_banner_stats', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ data: stats })
+    });
+    const result = await res.json();
+    if (result.status === 'success') {
+      msgDiv.textContent = `✅ Загружено ${result.inserted} записей`;
+      msgDiv.classList.remove('hidden');
+      setTimeout(() => msgDiv.classList.add('hidden'), 3000);
+      await applyGlobalFilters();
+    } else {
+      throw new Error(result.message || 'Ошибка');
+    }
+  } catch (err) {
+    msgDiv.textContent = '❌ Ошибка загрузки: ' + err.message;
+    msgDiv.classList.remove('hidden');
+  }
+});
+
+// ========================== ИНИЦИАЛИЗАЦИЯ ==========================
+window.addEventListener('DOMContentLoaded', () => {
+  const to = new Date();
+  const from = new Date();
+  from.setDate(to.getDate() - 30);
+  document.getElementById('dateTo').value = to.toISOString().split('T')[0];
+  document.getElementById('dateFrom').value = from.toISOString().split('T')[0];
+  
+  const dateFromInput = document.getElementById('dateFrom');
+  const dateToInput = document.getElementById('dateTo');
+  function onDateChange() { if (originalData.length) applyGlobalFilters(); }
+  dateFromInput.addEventListener('change', onDateChange);
+  dateToInput.addEventListener('change', onDateChange);
+  document.getElementById('epcGrouping').addEventListener('change', renderEPCAnalytics);
+  document.getElementById('epcOfferSelect').addEventListener('change', renderEPCAnalytics);
+  
+  // Автоматически загружаем сохранённые данные из кэша
+  autoLoadSavedStats();
+});
+</script>
+</body>
+</html>
