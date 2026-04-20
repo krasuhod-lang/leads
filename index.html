@@ -569,7 +569,22 @@ async function autoLoadSavedStats() {
   if (!dFrom || !dTo) return;
   const saved = await fetchSavedStats(dFrom, dTo);
   if (saved && saved.length) {
-    processDataFromDb(saved);
+    // Merge DB data with existing in-memory data:
+    // DB data takes priority for its date range, keep any in-memory data outside the fetched range
+    const dbRows = saved.map(row => ({
+      date: row.date,
+      week: getWeekNumber(new Date(row.date)),
+      month: row.date.slice(0, 7),
+      dayOfWeek: daysOfWeek[new Date(row.date).getDay()],
+      offer: row.offer_name || 'Unknown',
+      source: mergeSourceName(row.source_name),
+      source_id: row.source_id || 'all',
+      sub1: row.sub1 || '',
+      clicks: row.clicks, conversions: row.conversions, approved: row.approved, revenue: row.revenue
+    }));
+    // Keep existing data outside the fetched range, use DB data for the fetched range
+    const kept = originalData.filter(r => r.date < dFrom || r.date > dTo);
+    originalData = kept.concat(dbRows);
   }
   // Always apply filters to update dashboard (banner data may exist even without leads data)
   await applyGlobalFilters();
@@ -1151,12 +1166,8 @@ window.addEventListener('DOMContentLoaded', () => {
   const to = new Date(); const from = new Date(); from.setDate(to.getDate() - 30);
   document.getElementById('dateTo').value = to.toISOString().split('T')[0];
   document.getElementById('dateFrom').value = from.toISOString().split('T')[0];
-  document.getElementById('dateFrom').addEventListener('change', () => {
-    if (originalData.length) { applyGlobalFilters(); } else { autoLoadSavedStats(); }
-  });
-  document.getElementById('dateTo').addEventListener('change', () => {
-    if (originalData.length) { applyGlobalFilters(); } else { autoLoadSavedStats(); }
-  });
+  document.getElementById('dateFrom').addEventListener('change', () => autoLoadSavedStats());
+  document.getElementById('dateTo').addEventListener('change', () => autoLoadSavedStats());
   // Yandex Metrika OAuth
   (async () => {
     try {
