@@ -36,7 +36,8 @@ $limit      = (int)($_GET['limit']  ?? 500);
 $YM_CLIENT_ID  = 'afb919b40a0d4963bd37a931829c8f34';
 $YM_CLIENT_SECRET = '5311f2a8dd9543138ea4730bf25e7a06';
 $YM_COUNTER_ID = '19405381';
-$YM_IMPRESSION_GOAL_ID = 181; // "показ отказной заявки - новый счетчик"
+$YM_IMPRESSION_GOAL_ID = 468033799; // Показы
+$YM_CLICK_GOAL_ID     = 468033800; // Клики
 // =======================================================
 
 // ---- Подключение к SQLite (один файл stats.db) ----
@@ -162,10 +163,20 @@ function apiGet($url, $timeout = 30) {
  */
 function cleanSourceName($name) {
     if (!$name) return $name;
-    if (preg_match('/^\s*\d+[\s,.:;\-]+(.+)$/', trim($name), $m)) {
+    $trimmed = trim($name);
+    // Remove leading numeric ID with separator: "1318157, Займон" → "Займон"
+    if (preg_match('/^\s*\d+[\s,.:;\-]+(.+)$/', $trimmed, $m)) {
         return trim($m[1]);
     }
-    return trim($name);
+    // Remove trailing ID in parentheses: "Займон (1318157)" → "Займон"
+    if (preg_match('/^(.+?)\s*\(\d+\)\s*$/', $trimmed, $m)) {
+        return trim($m[1]);
+    }
+    // Remove standalone numeric-only name
+    if (preg_match('/^\d+$/', $trimmed)) {
+        return "Platform #{$trimmed}";
+    }
+    return $trimmed;
 }
 
 /**
@@ -570,31 +581,9 @@ if ($action === 'ym_fetch_banner') {
 
     $counterId = $YM_COUNTER_ID;
     $impressionGoalId = $YM_IMPRESSION_GOAL_ID;
+    $clickGoalId = $YM_CLICK_GOAL_ID;
 
-    // Найти ID цели "Клик на банер Партнера"
-    $goalsData = ymApiGet("https://api-metrika.yandex.net/management/v1/counter/{$counterId}/goals", $ymToken);
-    if (isset($goalsData['error'])) {
-        echo json_encode(['error' => 'Failed to fetch goals', 'details' => $goalsData['error']]);
-        exit;
-    }
-
-    $clickGoalId = null;
-    $goals = $goalsData['goals'] ?? [];
-    foreach ($goals as $goal) {
-        $goalName = mb_strtolower($goal['name'] ?? '', 'UTF-8');
-        if (mb_strpos($goalName, 'клик на банер') !== false || mb_strpos($goalName, 'клик на баннер') !== false) {
-            $clickGoalId = $goal['id'];
-            break;
-        }
-    }
-
-    if (!$clickGoalId) {
-        $goalsList = array_map(function($g) { return $g['id'] . ': ' . ($g['name'] ?? ''); }, $goals);
-        echo json_encode(['error' => 'Goal "Клик на баннер Партнера" not found', 'available_goals' => $goalsList]);
-        exit;
-    }
-
-    // Запрос данных по обеим целям
+    // Запрос данных по обеим целям (показы и клики)
     $metrics = "ym:s:goal{$impressionGoalId}reaches,ym:s:goal{$clickGoalId}reaches";
     $apiUrl = "https://api-metrika.yandex.net/stat/v1/data"
         . "?ids={$counterId}"
@@ -635,7 +624,7 @@ if ($action === 'ym_fetch_banner') {
         if ($stmt->execute()) $saved++;
     }
 
-    echo json_encode(['status' => 'success', 'saved' => $saved, 'click_goal_id' => $clickGoalId]);
+    echo json_encode(['status' => 'success', 'saved' => $saved, 'impression_goal_id' => $impressionGoalId, 'click_goal_id' => $clickGoalId]);
     exit;
 }
 

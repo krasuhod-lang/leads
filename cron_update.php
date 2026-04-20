@@ -19,6 +19,7 @@ if (php_sapi_name() === 'cli') {
     $endDate = date('Y-m-d');
     $startDate = date('Y-m-d', strtotime('-3 days'));
 
+    // 1. Обновление статистики Leads.su
     $_GET['action'] = 'update_stats';
     $_GET['token'] = $token;
     $_GET['start_date'] = $startDate;
@@ -32,9 +33,24 @@ if (php_sapi_name() === 'cli') {
     include __DIR__ . '/leads-proxy.php';
     $response = ob_get_clean();
 
-    $logMessage = date('Y-m-d H:i:s') . " [CLI] {$startDate} → {$endDate}: {$response}\n";
+    $logMessage = date('Y-m-d H:i:s') . " [CLI] Leads.su {$startDate} → {$endDate}: {$response}\n";
     file_put_contents(__DIR__ . '/cron.log', $logMessage, FILE_APPEND);
     echo $logMessage;
+
+    // 2. Обновление данных Яндекс.Метрики (баннерная статистика)
+    $_GET['action'] = 'ym_fetch_banner';
+    $_GET['start_date'] = $startDate;
+    $_GET['end_date'] = $endDate;
+    unset($_GET['token'], $_GET['method'], $_GET['grouping'], $_GET['field']);
+
+    ob_start();
+    include __DIR__ . '/leads-proxy.php';
+    $ymResponse = ob_get_clean();
+
+    $ymLogMessage = date('Y-m-d H:i:s') . " [CLI] YM Banner {$startDate} → {$endDate}: {$ymResponse}\n";
+    file_put_contents(__DIR__ . '/cron.log', $ymLogMessage, FILE_APPEND);
+    echo $ymLogMessage;
+
     exit;
 }
 
