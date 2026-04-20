@@ -31,6 +31,12 @@ $fields     = $_GET['field']      ?? $_GET['fields'] ?? '';
 $platform_id= $_GET['platform_id']?? '';
 $offset     = (int)($_GET['offset'] ?? 0);
 $limit      = (int)($_GET['limit']  ?? 500);
+
+// Yandex Metrika config
+$YM_CLIENT_ID  = 'afb919b40a0d4963bd37a931829c8f34';
+$YM_CLIENT_SECRET = '5311f2a8dd9543138ea4730bf25e7a06';
+$YM_COUNTER_ID = '19405381';
+$YM_IMPRESSION_GOAL_ID = 181; // "показ отказной заявки - новый счетчик"
 // =======================================================
 
 // ---- Подключение к SQLite (один файл stats.db) ----
@@ -479,8 +485,7 @@ if ($action === 'save_banner_stats') {
 
 // 8. Yandex Metrika: получить URL авторизации
 if ($action === 'ym_auth_url') {
-    $clientId = 'afb919b40a0d4963bd37a931829c8f34';
-    $url = "https://oauth.yandex.ru/authorize?response_type=token&client_id={$clientId}";
+    $url = "https://oauth.yandex.ru/authorize?response_type=token&client_id={$YM_CLIENT_ID}";
     echo json_encode(['status' => 'success', 'url' => $url]);
     exit;
 }
@@ -529,7 +534,7 @@ if ($action === 'ym_goals') {
         echo json_encode(['error' => 'Yandex Metrika token not set']);
         exit;
     }
-    $counterId = '19405381';
+    $counterId = $YM_COUNTER_ID;
     $data = ymApiGet("https://api-metrika.yandex.net/management/v1/counter/{$counterId}/goals", $ymToken);
     if (isset($data['error'])) {
         echo json_encode(['error' => 'Failed to fetch goals', 'details' => $data['error']]);
@@ -555,8 +560,8 @@ if ($action === 'ym_fetch_banner') {
         exit;
     }
 
-    $counterId = '19405381';
-    $impressionGoalId = 181; // "показ отказной заявки - новый счетчик"
+    $counterId = $YM_COUNTER_ID;
+    $impressionGoalId = $YM_IMPRESSION_GOAL_ID;
 
     // Найти ID цели "Клик на банер Партнера"
     $goalsData = ymApiGet("https://api-metrika.yandex.net/management/v1/counter/{$counterId}/goals", $ymToken);
@@ -577,7 +582,7 @@ if ($action === 'ym_fetch_banner') {
 
     if (!$clickGoalId) {
         $goalsList = array_map(function($g) { return $g['id'] . ': ' . ($g['name'] ?? ''); }, $goals);
-        echo json_encode(['error' => 'Goal "Клик на банер Партнера" not found', 'available_goals' => $goalsList]);
+        echo json_encode(['error' => 'Goal "Клик на баннер Партнера" not found', 'available_goals' => $goalsList]);
         exit;
     }
 

@@ -508,6 +508,8 @@ function updateProgress(percent, text) {
 }
 
 // ========================== АВТООБНОВЛЕНИЕ КАЖДЫЙ ЧАС ==========================
+let visibilityListenerAdded = false;
+
 function startAutoRefresh() {
   if (autoRefreshTimer) clearInterval(autoRefreshTimer);
   updateNextRefreshTime();
@@ -525,13 +527,16 @@ function startAutoRefresh() {
     updateNextRefreshTime();
   }, AUTO_REFRESH_INTERVAL_MS);
 
-  // Handle visibility change - refresh when tab becomes visible
-  document.addEventListener('visibilitychange', () => {
-    if (!document.hidden && originalData.length) {
-      console.log('[Visibility] Tab visible, reloading data...');
-      autoLoadSavedStats();
-    }
-  });
+  // Handle visibility change - refresh when tab becomes visible (register once)
+  if (!visibilityListenerAdded) {
+    visibilityListenerAdded = true;
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden && originalData.length) {
+        console.log('[Visibility] Tab visible, reloading data...');
+        autoLoadSavedStats();
+      }
+    });
+  }
 }
 
 function updateNextRefreshTime() {
@@ -1032,8 +1037,6 @@ document.getElementById('uploadBannerBtn').addEventListener('click', async () =>
 });
 
 // ========================== YANDEX METRIKA ==========================
-const YM_CLIENT_ID = 'afb919b40a0d4963bd37a931829c8f34';
-
 async function checkYMConnection() {
   try {
     const res = await fetch(`${API_BASE}?action=ym_get_token`);
@@ -1133,8 +1136,14 @@ window.addEventListener('DOMContentLoaded', () => {
   document.getElementById('dateFrom').addEventListener('change', () => autoLoadSavedStats());
   document.getElementById('dateTo').addEventListener('change', () => autoLoadSavedStats());
   // Yandex Metrika OAuth
-  const ymAuthLink = document.getElementById('ymAuthLink');
-  if (ymAuthLink) ymAuthLink.href = `https://oauth.yandex.ru/authorize?response_type=token&client_id=${YM_CLIENT_ID}`;
+  (async () => {
+    try {
+      const res = await fetch(`${API_BASE}?action=ym_auth_url`);
+      const data = await res.json();
+      const ymAuthLink = document.getElementById('ymAuthLink');
+      if (ymAuthLink && data.url) ymAuthLink.href = data.url;
+    } catch(e) {}
+  })();
   checkYMOAuthCallback();
   checkYMConnection();
   startAutoRefresh();
