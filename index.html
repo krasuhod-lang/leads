@@ -754,7 +754,7 @@ function drawExtraCharts() {
     options:{responsive:true,maintainAspectRatio:false,plugins:{
       legend:{position:'right',labels:{color:'#ffffff',padding:20,generateLabels:function(chart){
         const data=chart.data;if(!data.labels.length||!data.datasets.length)return[];
-        return data.labels.map((label,i)=>{const v=data.datasets[0].data[i];const p=totalRev>0?((v/totalRev)*100).toFixed(1):0;return{text:`${label} (${p}%)`,fillStyle:data.datasets[0].backgroundColor[i],fontColor:'#ffffff',index:i};});
+        return data.labels.map((label,i)=>{const v=data.datasets[0].data[i];const p=totalRev>0?((v/totalRev)*100).toFixed(1):0;return{text:`${label} (${p}%)`,fillStyle:data.datasets[0].backgroundColor[i],index:i};});
       }}},tooltip:{...sharedTooltipConfig,callbacks:{label:function(context){const v=context.raw;const p=totalRev>0?((v/totalRev)*100).toFixed(1):0;return ` ${Math.round(v).toLocaleString('ru-RU')} ₽ (${p}%)`;}}}}
     }
   });
