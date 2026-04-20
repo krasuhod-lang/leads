@@ -218,7 +218,19 @@
   <!-- TAB: BANNER -->
   <div id="tab-banner" class="tab-content space-y-6">
     <div id="bannerKpiCards" class="grid grid-cols-1 md:grid-cols-4 gap-4"></div>
-    <div class="card"><h2 class="text-white font-bold mb-4">📈 Динамика конверсии баннера (показы → переходы)</h2><div class="chart-wrap"><canvas id="bannerConvChart"></canvas></div></div>
+    <div class="card">
+      <div class="flex flex-wrap gap-3 justify-between items-center mb-4">
+        <h2 class="text-white font-bold">📈 Динамика баннера</h2>
+        <select id="bannerChartMetric" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm focus:outline-none" onchange="renderBannerChart()">
+          <option value="all">Показы + Клики + Конверсия</option>
+          <option value="impressions">Показы</option>
+          <option value="clicks">Клики</option>
+          <option value="conversion">Конверсия (%)</option>
+          <option value="imp_clicks">Показы + Клики</option>
+        </select>
+      </div>
+      <div class="chart-wrap"><canvas id="bannerConvChart"></canvas></div>
+    </div>
     <div class="card">
       <h2 class="text-white font-bold mb-4">🔗 Яндекс.Метрика — автозагрузка баннерной статистики</h2>
       <p class="text-sm text-slate-400 mb-4">Подключите Яндекс.Метрику для автоматической загрузки данных по целям (Показы и Клики по баннеру).</p>
@@ -328,6 +340,20 @@ function parseDateSmart(rawD) {
 
 function escapeHtml(str) {
   return String(str).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#039;');
+}
+
+// Deduplicates data array by composite key (date+source_id+offer+sub1).
+// keepLast=false: first occurrence wins (for fresh API data where dupes are exact copies).
+// keepLast=true: last occurrence wins (for DB merge where DB data should overwrite in-memory).
+function deduplicateData(data, keepLast = false) {
+  const dedup = new Map();
+  for (const r of data) {
+    const key = `${r.date}|${r.source_id}|${r.offer}|${r.sub1}`;
+    if (keepLast || !dedup.has(key)) {
+      dedup.set(key, r);
+    }
+  }
+  return Array.from(dedup.values());
 }
 
 function mergeSourceName(name) {
@@ -487,6 +513,8 @@ async function loadFromAPI() {
         source: sourceName, source_id: platformId || 'all', sub1, clicks, conversions, approved, revenue
       });
     }
+    // Deduplicate originalData by composite key (date + source_id + offer + sub1)
+    originalData = deduplicateData(originalData, false);
     // Save data to DB via server-side update (more reliable with source_id handling)
     try {
       await fetch(`${API_BASE}?action=save_stats`, {
@@ -587,7 +615,7 @@ async function autoLoadSavedStats() {
     });
     // Keep existing data outside the fetched range, use DB data for the fetched range
     const kept = originalData.filter(r => r.date < dFrom || r.date > dTo);
-    originalData = kept.concat(dbRows);
+    originalData = deduplicateData(kept.concat(dbRows), true);
   }
   // Always apply filters to update dashboard (banner data may exist even without leads data)
   await applyGlobalFilters();
@@ -619,12 +647,61 @@ function renderBannerChart() {
   if (!bannerData.length) return;
   const ctx = document.getElementById('bannerConvChart').getContext('2d');
   if (bannerConvChart) bannerConvChart.destroy();
+  const metric = (document.getElementById('bannerChartMetric') || {}).value || 'all';
+  const labels = bannerData.map(d => d.date.slice(5));
+  let datasets = [];
+  let scalesConfig = {};
+  if (metric === 'impressions') {
+    datasets = [{
+      label: 'Показы', data: bannerData.map(d => d.impressions),
+      borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,0.1)', fill: true, tension: 0.3, pointRadius: 3
+    }];
+    scalesConfig = { y: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } } };
+  } else if (metric === 'clicks') {
+    datasets = [{
+      label: 'Клики', data: bannerData.map(d => d.clicks),
+      borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,0.1)', fill: true, tension: 0.3, pointRadius: 3
+    }];
+    scalesConfig = { y: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } } };
+  } else if (metric === 'conversion') {
+    datasets = [{
+      label: 'Конверсия (%)', data: bannerData.map(d => d.conversion_rate),
+      borderColor: '#f97316', backgroundColor: 'rgba(249,115,22,0.1)', fill: true, tension: 0.3, pointRadius: 3
+    }];
+    scalesConfig = { y: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } } };
+  } else if (metric === 'imp_clicks') {
+    datasets = [
+      { label: 'Показы', data: bannerData.map(d => d.impressions), borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,0.1)', fill: true, tension: 0.3, pointRadius: 3, yAxisID: 'y' },
+      { label: 'Клики', data: bannerData.map(d => d.clicks), borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,0.1)', fill: true, tension: 0.3, pointRadius: 3, yAxisID: 'y' }
+    ];
+    scalesConfig = { y: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } } };
+  } else {
+    // "all" — show impressions + clicks on left axis, conversion on right axis
+    datasets = [
+      { label: 'Показы', data: bannerData.map(d => d.impressions), borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,0.08)', fill: true, tension: 0.3, pointRadius: 3, yAxisID: 'y' },
+      { label: 'Клики', data: bannerData.map(d => d.clicks), borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,0.08)', fill: true, tension: 0.3, pointRadius: 3, yAxisID: 'y' },
+      { label: 'Конверсия (%)', data: bannerData.map(d => d.conversion_rate), borderColor: '#f97316', borderDash: [5, 5], tension: 0.3, pointRadius: 3, yAxisID: 'y1' }
+    ];
+    scalesConfig = {
+      y: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } },
+      y1: { display: true, position: 'right', ticks: { color: '#94a3b8', callback: v => v.toFixed(1) + '%' }, grid: { drawOnChartArea: false } }
+    };
+  }
   bannerConvChart = new Chart(ctx, {
     type: 'line',
-    data: { labels: bannerData.map(d => d.date.slice(5)), datasets: [{ label: 'Конверсия (%)', data: bannerData.map(d => d.conversion_rate), borderColor: '#f97316', backgroundColor: 'rgba(249,115,22,0.1)', fill: true, tension: 0.3, pointRadius: 3 }] },
-    options: { responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false },
-      plugins: { tooltip: { ...sharedTooltipConfig, callbacks: { label: ctx => ` ${Number(ctx.raw).toFixed(2)}%` } } },
-      scales: { y: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } }, x: { ticks: { color: '#94a3b8' }, grid: { display: false } } }
+    data: { labels, datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { labels: { color: '#cbd5e1' } },
+        tooltip: { ...sharedTooltipConfig, callbacks: { label: function(ctx) {
+          const v = Number(ctx.raw);
+          if (ctx.dataset.label.includes('%')) return ` ${ctx.dataset.label}: ${v.toFixed(2)}%`;
+          return ` ${ctx.dataset.label}: ${v.toLocaleString('ru-RU')}`;
+        }}}
+      },
+      scales: { x: { ticks: { color: '#94a3b8' }, grid: { display: false } }, ...scalesConfig }
     }
   });
 }
