@@ -162,7 +162,7 @@ function apiGet($url, $timeout = 30) {
  */
 function cleanSourceName($name) {
     if (!$name) return $name;
-    if (preg_match('/^\d+[,\s]+(.+)$/', trim($name), $m)) {
+    if (preg_match('/^\s*\d+[\s,.:;\-]+(.+)$/', trim($name), $m)) {
         return trim($m[1]);
     }
     return trim($name);
@@ -218,7 +218,15 @@ function ymApiGet($url, $ymToken) {
     curl_close($ch);
 
     if ($error) return ['error' => "CURL error: $error"];
-    if ($httpCode !== 200) return ['error' => "HTTP $httpCode", 'response' => substr($response, 0, 500)];
+    if ($httpCode !== 200) {
+        $detail = "HTTP $httpCode";
+        if ($httpCode === 403) {
+            $detail = "HTTP 403 — доступ запрещён. Убедитесь, что OAuth-токен имеет права на доступ к счётчику (counter_id), и что счётчик принадлежит вашему аккаунту.";
+        } elseif ($httpCode === 401) {
+            $detail = "HTTP 401 — невалидный или истёкший OAuth-токен. Переподключите Яндекс.Метрику.";
+        }
+        return ['error' => $detail, 'response' => substr($response, 0, 500)];
+    }
 
     $data = json_decode($response, true);
     if (json_last_error() !== JSON_ERROR_NONE) {
