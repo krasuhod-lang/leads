@@ -342,6 +342,20 @@ function escapeHtml(str) {
   return String(str).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#039;');
 }
 
+// Deduplicates data array by composite key (date+source_id+offer+sub1).
+// keepLast=false: first occurrence wins (for fresh API data where dupes are exact copies).
+// keepLast=true: last occurrence wins (for DB merge where DB data should overwrite in-memory).
+function deduplicateData(data, keepLast = false) {
+  const dedup = new Map();
+  for (const r of data) {
+    const key = `${r.date}|${r.source_id}|${r.offer}|${r.sub1}`;
+    if (keepLast || !dedup.has(key)) {
+      dedup.set(key, r);
+    }
+  }
+  return Array.from(dedup.values());
+}
+
 function mergeSourceName(name) {
   // Remove numeric IDs: "1318157, Займон" → "Займон", "1318157 Займон" → "Займон"
   let cleaned = (name || '').replace(/^\s*\d+[\s,.:;\-]+/, '').trim();
@@ -500,17 +514,7 @@ async function loadFromAPI() {
       });
     }
     // Deduplicate originalData by composite key (date + source_id + offer + sub1)
-    {
-      const dedup = new Map();
-      for (const r of originalData) {
-        const key = `${r.date}|${r.source_id}|${r.offer}|${r.sub1}`;
-        if (!dedup.has(key)) {
-          dedup.set(key, r);
-        }
-        // ON CONFLICT → keep first occurrence (same as DB UPSERT behavior)
-      }
-      originalData = Array.from(dedup.values());
-    }
+    originalData = deduplicateData(originalData, false);
     // Save data to DB via server-side update (more reliable with source_id handling)
     try {
       await fetch(`${API_BASE}?action=save_stats`, {
@@ -611,16 +615,7 @@ async function autoLoadSavedStats() {
     });
     // Keep existing data outside the fetched range, use DB data for the fetched range
     const kept = originalData.filter(r => r.date < dFrom || r.date > dTo);
-    originalData = kept.concat(dbRows);
-    // Deduplicate by composite key
-    {
-      const dedup = new Map();
-      for (const r of originalData) {
-        const key = `${r.date}|${r.source_id}|${r.offer}|${r.sub1}`;
-        dedup.set(key, r); // DB data overwrites in-memory data (last wins)
-      }
-      originalData = Array.from(dedup.values());
-    }
+    originalData = deduplicateData(kept.concat(dbRows), true);
   }
   // Always apply filters to update dashboard (banner data may exist even without leads data)
   await applyGlobalFilters();
