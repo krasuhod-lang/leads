@@ -45,7 +45,7 @@
       <div class="flex flex-wrap gap-3 items-center">
         <input id="dateFrom" type="date" class="bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-blue-500">
         <input id="dateTo" type="date" class="bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-blue-500">
-        <button id="btnLoadAPI" class="btn" onclick="loadFromAPI()">⚡ Загрузить из кабинета</button>
+        <button id="btnLoadAPI" class="btn" onclick="loadFromAPI()">⚡ Загрузить данные</button>
         <div class="auto-refresh-indicator" id="autoRefreshStatus">
           <span class="dot"></span>
           <span>Автообновление: <span id="nextRefreshTime">--:--</span></span>
@@ -289,7 +289,7 @@ const colorPalette = ['#3b82f6','#10b981','#f59e0b','#ef4444','#8b5cf6','#ec4899
 
 const sharedTooltipConfig = {
   mode: 'index', intersect: false,
-  backgroundColor: 'rgba(15,23,42,0.95)', titleColor: '#e2e8f0', bodyColor: '#cbd5e1',
+  backgroundColor: 'rgba(15,23,42,0.95)', titleColor: '#ffffff', bodyColor: '#f1f5f9',
   borderColor: '#334155', borderWidth: 1, padding: 12, displayColors: true, caretSize: 6
 };
 
@@ -333,6 +333,8 @@ function escapeHtml(str) {
 function mergeSourceName(name) {
   // Remove numeric IDs: "1318157, Займон" → "Займон", "1318157 Займон" → "Займон"
   let cleaned = (name || '').replace(/^\s*\d+[\s,.:;\-]+/, '').trim();
+  // Remove trailing ID in parentheses: "Займон (1318157)" → "Займон"
+  cleaned = cleaned.replace(/\s*\(\d+\)\s*$/, '').trim();
   if (!cleaned) cleaned = (name || '').trim();
   const lower = cleaned.toLowerCase();
   if (lower.includes('хочузайм') || lower.includes('заимберис') || lower.includes('займберис')) return 'Займберис';
@@ -397,6 +399,7 @@ function processDataFromDb(rows) {
     dayOfWeek: daysOfWeek[new Date(row.date).getDay()],
     offer: row.offer_name || 'Unknown',
     source: mergeSourceName(row.source_name),
+    source_id: row.source_id || 'all',
     sub1: row.sub1 || '',
     clicks: row.clicks, conversions: row.conversions, approved: row.approved, revenue: row.revenue
   }));
@@ -479,15 +482,21 @@ async function loadFromAPI() {
         date: dateStr, week: getWeekNumber(new Date(dateStr)), month: dateStr.slice(0, 7),
         dayOfWeek: daysOfWeek[new Date(dateStr).getDay()],
         offer: offerName,
-        source: sourceName, sub1, clicks, conversions, approved, revenue
+        source: sourceName, source_id: platformId || 'all', sub1, clicks, conversions, approved, revenue
       });
     }
+    // Save data to DB via server-side update (more reliable with source_id handling)
     try {
       await fetch(`${API_BASE}?action=save_stats`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ data: originalData })
+        body: JSON.stringify({ data: originalData.map(r => ({
+          date: r.date, source_id: r.source_id || 'all', source_name: r.source,
+          offer: r.offer, sub1: r.sub1 || '', clicks: r.clicks,
+          conversions: r.conversions, approved: r.approved, revenue: r.revenue
+        })) })
       });
     } catch(e) { console.warn('Ошибка сохранения:', e); }
+    // Refresh dashboard with loaded data
     await applyGlobalFilters();
     updateProgress(100, 'Готово!');
     setTimeout(() => updateProgress(0), 1500);
@@ -519,10 +528,14 @@ function startAutoRefresh() {
     const dFrom = document.getElementById('dateFrom').value;
     const dTo = document.getElementById('dateTo').value;
     if (!dFrom || !dTo) return;
-    // Trigger server-side update first (like cron)
+    // Trigger server-side Leads.su update (like cron)
     try {
       await fetch(`${API_BASE}?action=update_stats&token=${HARDCODED_TOKEN}&start_date=${dFrom}&end_date=${dTo}&grouping=day&field=offer_id,source,aff_sub1`);
-    } catch(e) { console.warn('[Auto-refresh] Server update error:', e); }
+    } catch(e) { console.warn('[Auto-refresh] Leads.su update error:', e); }
+    // Trigger server-side Yandex Metrika banner update
+    try {
+      await fetch(`${API_BASE}?action=ym_fetch_banner&start_date=${dFrom}&end_date=${dTo}`);
+    } catch(e) { console.warn('[Auto-refresh] YM update error:', e); }
     // Then reload from DB and refresh all dashboards
     await autoLoadSavedStats();
     updateNextRefreshTime();
@@ -555,8 +568,9 @@ async function autoLoadSavedStats() {
   const saved = await fetchSavedStats(dFrom, dTo);
   if (saved && saved.length) {
     processDataFromDb(saved);
-    await applyGlobalFilters();
   }
+  // Always apply filters to update dashboard (banner data may exist even without leads data)
+  await applyGlobalFilters();
 }
 
 // ========================== БАННЕР ==========================
@@ -752,10 +766,10 @@ function drawExtraCharts() {
   donutChartInstance = new Chart(document.getElementById('donutChart'),{
     type:'doughnut',data:{labels:dd.map(d=>d.name),datasets:[{data:dd.map(d=>d.revenue),backgroundColor:colorPalette,borderWidth:0,hoverOffset:8}]},
     options:{responsive:true,maintainAspectRatio:false,plugins:{
-      legend:{position:'right',labels:{color:'#ffffff',padding:20,generateLabels:function(chart){
+      legend:{position:'right',labels:{color:'#ffffff',font:{size:13},padding:20,generateLabels:function(chart){
         const data=chart.data;if(!data.labels.length||!data.datasets.length)return[];
-        return data.labels.map((label,i)=>{const v=data.datasets[0].data[i];const p=totalRev>0?((v/totalRev)*100).toFixed(1):0;return{text:`${label} (${p}%)`,fillStyle:data.datasets[0].backgroundColor[i],index:i};});
-      }}},tooltip:{...sharedTooltipConfig,callbacks:{label:function(context){const v=context.raw;const p=totalRev>0?((v/totalRev)*100).toFixed(1):0;return ` ${Math.round(v).toLocaleString('ru-RU')} ₽ (${p}%)`;}}}}
+        return data.labels.map((label,i)=>{const v=data.datasets[0].data[i];const p=totalRev>0?((v/totalRev)*100).toFixed(1):0;return{text:`${label} (${p}%)`,fillStyle:data.datasets[0].backgroundColor[i],fontColor:'#ffffff',index:i};});
+      }}},tooltip:{...sharedTooltipConfig,titleColor:'#ffffff',bodyColor:'#ffffff',callbacks:{label:function(context){const v=context.raw;const p=totalRev>0?((v/totalRev)*100).toFixed(1):0;return ` ${Math.round(v).toLocaleString('ru-RU')} ₽ (${p}%)`;}}}}
     }
   });
   let bd = Object.entries(offMap).map(([n,s])=>({name:n.split(',')[1]?n.split(',')[1].trim():n,epc:s.clicks>0?(s.revenue/s.clicks):0,clicks:s.clicks})).filter(i=>i.clicks>100&&i.epc>0).sort((a,b)=>b.epc-a.epc).slice(0,5);
