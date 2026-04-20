@@ -109,6 +109,12 @@ try {
         conversion_rate REAL DEFAULT 0
     )');
     
+    // Таблица для настроек Яндекс.Метрики
+    $db->exec('CREATE TABLE IF NOT EXISTS ym_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT
+    )');
+    
 } catch (Exception $e) {
     http_response_code(500);
     echo json_encode(['error' => 'Database init failed', 'message' => $e->getMessage()]);
@@ -146,19 +152,73 @@ function apiGet($url, $timeout = 30) {
 }
 
 /**
+ * Убирает числовой ID из названия площадки: "1318157, Займон" → "Займон"
+ */
+function cleanSourceName($name) {
+    if (!$name) return $name;
+    if (preg_match('/^\d+[,\s]+(.+)$/', trim($name), $m)) {
+        return trim($m[1]);
+    }
+    return trim($name);
+}
+
+/**
  * Загружает список офферов и возвращает массив [offer_id => offer_name]
  */
 function fetchOffersMap($token) {
     $url = "https://api.leads.su/webmaster/offers?token={$token}&limit=1000";
     $result = apiGet($url);
-    if (isset($result['error'])) return [];
-    $offers = $result['data'] ?? [];
+    if (isset($result['error'])) {
+        error_log('fetchOffersMap error: ' . json_encode($result['error']));
+        return [];
+    }
+    // Handle multiple response formats
+    $offers = $result['data'] ?? $result['offers'] ?? $result['items'] ?? [];
+    if (!is_array($offers) && is_array($result)) {
+        // Response might be a direct array
+        $offers = $result;
+    }
     $map = [];
     foreach ($offers as $offer) {
-        $id = (string)($offer['id'] ?? '');
-        if ($id) $map[$id] = $offer['name'] ?? "Offer #{$id}";
+        if (!is_array($offer)) continue;
+        $id = (string)($offer['id'] ?? $offer['offer_id'] ?? $offer['offerId'] ?? '');
+        $name = $offer['name'] ?? $offer['title'] ?? '';
+        if ($id && $name) $map[$id] = $name;
+        elseif ($id) $map[$id] = "Offer #{$id}";
     }
     return $map;
+}
+
+/**
+ * Выполняет GET-запрос к Yandex Metrika API
+ */
+function ymApiGet($url, $ymToken) {
+    $ch = curl_init();
+    curl_setopt_array($ch, [
+        CURLOPT_URL => $url,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_TIMEOUT => 30,
+        CURLOPT_SSL_VERIFYPEER => false,
+        CURLOPT_HTTPHEADER => [
+            'Authorization: OAuth ' . $ymToken,
+            'Accept: application/json',
+            'User-Agent: leads-proxy/3.0'
+        ]
+    ]);
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $error = curl_error($ch);
+    curl_close($ch);
+
+    if ($error) return ['error' => "CURL error: $error"];
+    if ($httpCode !== 200) return ['error' => "HTTP $httpCode", 'response' => substr($response, 0, 500)];
+
+    $data = json_decode($response, true);
+    if (json_last_error() !== JSON_ERROR_NONE) {
+        return ['error' => 'Invalid JSON response', 'raw' => substr($response, 0, 500)];
+    }
+    return $data;
 }
 
 /**
@@ -179,9 +239,19 @@ function saveReportRows($db, $rows, $offerMap) {
         $date = $row['period_day'] ?? $row['period'] ?? null;
         if (!$date) continue;
         $sourceId = $row['platform_id'] ?? 'all';
-        $sourceName = $row['source'] ?? $row['platform_name'] ?? 'Unknown';
+        $sourceName = cleanSourceName($row['source'] ?? $row['platform_name'] ?? 'Unknown');
         $offerId = (string)($row['offer_id'] ?? $row['offerid'] ?? '');
-        $offerName = $offerMap[$offerId] ?? ($offerId ? "Offer #{$offerId}" : 'Unknown');
+        // Try to resolve offer name from map, then from row data, then fallback
+        $offerName = '';
+        if ($offerId && isset($offerMap[$offerId])) {
+            $offerName = $offerMap[$offerId];
+        }
+        if (!$offerName) {
+            $offerName = $row['offer_name'] ?? $row['offername'] ?? $row['offer'] ?? '';
+        }
+        if (!$offerName) {
+            $offerName = $offerId ? "Offer #{$offerId}" : 'Unknown';
+        }
         $sub1 = $row['aff_sub1'] ?? $row['sub1'] ?? '';
         $clicks = (int)($row['unique_clicks'] ?? $row['clicks'] ?? 0);
         $conversions = (int)($row['unique_conversions'] ?? $row['conversions'] ?? 0);
@@ -286,8 +356,17 @@ if ($action === 'update_stats') {
     $offset = 0;
     $limit = 500;
     while (true) {
+        // Build field[] parameters for Leads.su API
+        $fieldQuery = '';
+        if ($fields) {
+            $fieldArr = array_filter(array_map('trim', explode(',', $fields)));
+            foreach ($fieldArr as $f) {
+                $fieldQuery .= '&field[]=' . urlencode($f);
+            }
+        }
         $url = "https://api.leads.su/webmaster/reports/summary?token={$token}"
-             . "&start_date={$start_date}&end_date={$end_date}&grouping={$grouping}&field={$fields}"
+             . "&start_date={$start_date}&end_date={$end_date}&grouping={$grouping}"
+             . $fieldQuery
              . "&offset={$offset}&limit={$limit}";
         if ($platform_id) $url .= "&platform_id={$platform_id}";
         
@@ -398,7 +477,156 @@ if ($action === 'save_banner_stats') {
     exit;
 }
 
-// 8. Прокси для остальных запросов (offers, platforms и т.д.)
+// 8. Yandex Metrika: получить URL авторизации
+if ($action === 'ym_auth_url') {
+    $clientId = 'afb919b40a0d4963bd37a931829c8f34';
+    $url = "https://oauth.yandex.ru/authorize?response_type=token&client_id={$clientId}";
+    echo json_encode(['status' => 'success', 'url' => $url]);
+    exit;
+}
+
+// 9. Yandex Metrika: сохранить OAuth токен
+if ($action === 'ym_save_token') {
+    $input = json_decode(file_get_contents('php://input'), true);
+    $ymToken = $input['token'] ?? '';
+    if (!$ymToken) {
+        echo json_encode(['error' => 'token required']);
+        exit;
+    }
+    $stmt = $db->prepare('INSERT OR REPLACE INTO ym_settings (key, value) VALUES (:key, :value)');
+    $stmt->bindValue(':key', 'oauth_token', SQLITE3_TEXT);
+    $stmt->bindValue(':value', $ymToken, SQLITE3_TEXT);
+    $stmt->execute();
+    echo json_encode(['status' => 'success']);
+    exit;
+}
+
+// 9b. Yandex Metrika: удалить токен
+if ($action === 'ym_delete_token') {
+    $db->exec("DELETE FROM ym_settings WHERE key = 'oauth_token'");
+    echo json_encode(['status' => 'success']);
+    exit;
+}
+
+// 10. Yandex Metrika: проверить наличие токена
+if ($action === 'ym_get_token') {
+    $stmt = $db->prepare('SELECT value FROM ym_settings WHERE key = :key');
+    $stmt->bindValue(':key', 'oauth_token', SQLITE3_TEXT);
+    $res = $stmt->execute();
+    $row = $res->fetchArray(SQLITE3_ASSOC);
+    echo json_encode(['status' => 'success', 'has_token' => !empty($row['value'])]);
+    exit;
+}
+
+// 11. Yandex Metrika: получить список целей
+if ($action === 'ym_goals') {
+    $stmt = $db->prepare('SELECT value FROM ym_settings WHERE key = :key');
+    $stmt->bindValue(':key', 'oauth_token', SQLITE3_TEXT);
+    $res = $stmt->execute();
+    $row = $res->fetchArray(SQLITE3_ASSOC);
+    $ymToken = $row['value'] ?? '';
+    if (!$ymToken) {
+        echo json_encode(['error' => 'Yandex Metrika token not set']);
+        exit;
+    }
+    $counterId = '19405381';
+    $data = ymApiGet("https://api-metrika.yandex.net/management/v1/counter/{$counterId}/goals", $ymToken);
+    if (isset($data['error'])) {
+        echo json_encode(['error' => 'Failed to fetch goals', 'details' => $data['error']]);
+        exit;
+    }
+    echo json_encode(['status' => 'success', 'goals' => $data['goals'] ?? []]);
+    exit;
+}
+
+// 12. Yandex Metrika: загрузить данные баннера из целей
+if ($action === 'ym_fetch_banner') {
+    if (!$start_date || !$end_date) {
+        echo json_encode(['error' => 'start_date and end_date required']);
+        exit;
+    }
+    $stmt = $db->prepare('SELECT value FROM ym_settings WHERE key = :key');
+    $stmt->bindValue(':key', 'oauth_token', SQLITE3_TEXT);
+    $res = $stmt->execute();
+    $row = $res->fetchArray(SQLITE3_ASSOC);
+    $ymToken = $row['value'] ?? '';
+    if (!$ymToken) {
+        echo json_encode(['error' => 'Yandex Metrika token not set']);
+        exit;
+    }
+
+    $counterId = '19405381';
+    $impressionGoalId = 181; // "показ отказной заявки - новый счетчик"
+
+    // Найти ID цели "Клик на банер Партнера"
+    $goalsData = ymApiGet("https://api-metrika.yandex.net/management/v1/counter/{$counterId}/goals", $ymToken);
+    if (isset($goalsData['error'])) {
+        echo json_encode(['error' => 'Failed to fetch goals', 'details' => $goalsData['error']]);
+        exit;
+    }
+
+    $clickGoalId = null;
+    $goals = $goalsData['goals'] ?? [];
+    foreach ($goals as $goal) {
+        $goalName = mb_strtolower($goal['name'] ?? '', 'UTF-8');
+        if (mb_strpos($goalName, 'клик на банер') !== false || mb_strpos($goalName, 'клик на баннер') !== false) {
+            $clickGoalId = $goal['id'];
+            break;
+        }
+    }
+
+    if (!$clickGoalId) {
+        $goalsList = array_map(function($g) { return $g['id'] . ': ' . ($g['name'] ?? ''); }, $goals);
+        echo json_encode(['error' => 'Goal "Клик на банер Партнера" not found', 'available_goals' => $goalsList]);
+        exit;
+    }
+
+    // Запрос данных по обеим целям
+    $metrics = "ym:s:goal{$impressionGoalId}reaches,ym:s:goal{$clickGoalId}reaches";
+    $apiUrl = "https://api-metrika.yandex.net/stat/v1/data"
+        . "?ids={$counterId}"
+        . "&metrics=" . urlencode($metrics)
+        . "&dimensions=ym:s:date"
+        . "&date1={$start_date}&date2={$end_date}"
+        . "&sort=ym:s:date";
+
+    $data = ymApiGet($apiUrl, $ymToken);
+    if (isset($data['error'])) {
+        echo json_encode(['error' => 'Failed to fetch metrika data', 'details' => $data['error']]);
+        exit;
+    }
+
+    $dataRows = $data['data'] ?? [];
+    $saved = 0;
+    foreach ($dataRows as $dRow) {
+        $date = $dRow['dimensions'][0]['name'] ?? null;
+        if (!$date) continue;
+        // Формат даты из Метрики может быть "YYYYMMDD" или "YYYY-MM-DD"
+        if (strlen($date) === 8 && ctype_digit($date)) {
+            $date = substr($date, 0, 4) . '-' . substr($date, 4, 2) . '-' . substr($date, 6, 2);
+        }
+        $impressions = (int)($dRow['metrics'][0] ?? 0);
+        $clicks = (int)($dRow['metrics'][1] ?? 0);
+        $convRate = $impressions > 0 ? ($clicks / $impressions * 100) : 0;
+
+        $stmt = $db->prepare('INSERT INTO banner_stats (date, impressions, clicks, conversion_rate)
+            VALUES (:date, :impressions, :clicks, :conv)
+            ON CONFLICT(date) DO UPDATE SET
+                impressions = excluded.impressions,
+                clicks = excluded.clicks,
+                conversion_rate = excluded.conversion_rate');
+        $stmt->bindValue(':date', $date, SQLITE3_TEXT);
+        $stmt->bindValue(':impressions', $impressions, SQLITE3_INTEGER);
+        $stmt->bindValue(':clicks', $clicks, SQLITE3_INTEGER);
+        $stmt->bindValue(':conv', $convRate, SQLITE3_FLOAT);
+        if ($stmt->execute()) $saved++;
+    }
+
+    echo json_encode(['status' => 'success', 'saved' => $saved, 'click_goal_id' => $clickGoalId]);
+    exit;
+}
+
+// 13. Прокси для остальных запросов (offers, platforms и т.д.)
 if (!$method) {
     http_response_code(400);
     echo json_encode(['error' => 'method required']);
@@ -407,7 +635,18 @@ if (!$method) {
 
 $params = $_GET;
 unset($params['method'], $params['action']);
-$url = "https://api.leads.su/webmaster/" . $method . (empty($params) ? '' : '?' . http_build_query($params));
+
+// Handle field parameter: split comma-separated into field[] for Leads.su API
+$fieldParts = '';
+if (isset($params['field']) && is_string($params['field']) && strpos($params['field'], ',') !== false) {
+    $fieldValues = array_filter(array_map('trim', explode(',', $params['field'])));
+    unset($params['field']);
+    foreach ($fieldValues as $f) {
+        $fieldParts .= '&field[]=' . urlencode($f);
+    }
+}
+
+$url = "https://api.leads.su/webmaster/" . $method . (empty($params) ? '' : '?' . http_build_query($params)) . $fieldParts;
 $result = apiGet($url);
 if (isset($result['error'])) {
     http_response_code(502);

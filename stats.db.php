@@ -11,3 +11,8 @@ CREATE TABLE IF NOT EXISTS daily_stats (
     revenue REAL DEFAULT 0,
     UNIQUE(date, source_id, offer_name, sub1)
 );
+
+CREATE TABLE IF NOT EXISTS ym_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT
+);

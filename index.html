@@ -220,6 +220,29 @@
     <div id="bannerKpiCards" class="grid grid-cols-1 md:grid-cols-4 gap-4"></div>
     <div class="card"><h2 class="text-white font-bold mb-4">📈 Динамика конверсии баннера (показы → переходы)</h2><div class="chart-wrap"><canvas id="bannerConvChart"></canvas></div></div>
     <div class="card">
+      <h2 class="text-white font-bold mb-4">🔗 Яндекс.Метрика — автозагрузка баннерной статистики</h2>
+      <p class="text-sm text-slate-400 mb-4">Подключите Яндекс.Метрику для автоматической загрузки данных по целям (Показы и Клики по баннеру).</p>
+      <div id="ymStatusBlock" class="mb-4">
+        <div id="ymNotConnected" class="flex flex-wrap gap-4 items-end">
+          <div>
+            <label class="text-xs text-slate-400 block mb-1">1. Авторизуйтесь в Яндексе и скопируйте токен</label>
+            <a id="ymAuthLink" href="#" target="_blank" class="text-blue-400 underline text-sm">Открыть страницу авторизации Яндекса →</a>
+          </div>
+          <div class="flex-1">
+            <label class="text-xs text-slate-400 block mb-1">2. Вставьте OAuth токен</label>
+            <input id="ymTokenInput" type="text" placeholder="OAuth токен Яндекс.Метрики" class="bg-slate-800 border border-slate-700 rounded px-3 py-2 w-full text-sm focus:outline-none focus:border-blue-500">
+          </div>
+          <button class="btn" onclick="saveYMToken()">💾 Сохранить токен</button>
+        </div>
+        <div id="ymConnected" class="hidden flex flex-wrap gap-4 items-center">
+          <span class="text-emerald-400 font-semibold">✅ Яндекс.Метрика подключена</span>
+          <button class="btn" onclick="fetchYMBannerData()">📥 Загрузить из Метрики</button>
+          <button class="btn" style="background:#ef4444" onclick="disconnectYM()">🔌 Отключить</button>
+        </div>
+        <div id="ymMessage" class="mt-3 text-sm hidden"></div>
+      </div>
+    </div>
+    <div class="card">
       <h2 class="text-white font-bold mb-4">📊 Загрузка статистики баннера (Excel)</h2>
       <p class="text-sm text-slate-400 mb-4">Файл должен содержать колонки: Дата (YYYY-MM-DD), Показы, Переходы</p>
       <div class="flex flex-wrap gap-4 items-end">
@@ -308,9 +331,11 @@ function escapeHtml(str) {
 }
 
 function mergeSourceName(name) {
-  const lower = (name || '').toLowerCase();
+  // Remove numeric IDs: "1318157, Займон" → "Займон"
+  let cleaned = (name || '').replace(/^\d+[,\s]+/, '').trim() || name || '';
+  const lower = cleaned.toLowerCase();
   if (lower.includes('хочузайм') || lower.includes('заимберис') || lower.includes('займберис')) return 'Займберис';
-  return name;
+  return cleaned;
 }
 
 // ========================== ЗАГРУЗКА ДАННЫХ ИЗ LEADS.SU ==========================
@@ -387,11 +412,20 @@ async function loadFromAPI() {
   updateProgress(5, 'Проверка наличия данных...');
   try {
     updateProgress(10, 'Получение структуры API...');
-    const [offersData, platformsData] = await Promise.all([
-      fetchAll('offers', { token }), fetchAll('platforms', { token })
-    ]);
+    // Fetch offers with robust error handling
+    let offersData = [];
+    try {
+      const offersRes = await fetchJSON(`${API_BASE}?method=offers&token=${token}&limit=1000`);
+      offersData = offersRes.data || offersRes.offers || offersRes.items || (Array.isArray(offersRes) ? offersRes : []);
+    } catch(e) { console.warn('Failed to fetch offers:', e); }
+    const platformsData = await fetchAll('platforms', { token });
     const offerMap = {};
-    for (const o of offersData) offerMap[String(o.id)] = o.name || `Offer #${o.id}`;
+    for (const o of offersData) {
+      const id = String(o.id ?? o.offer_id ?? o.offerId ?? '');
+      const name = o.name ?? o.title ?? '';
+      if (id && name) offerMap[id] = name;
+      else if (id) offerMap[id] = `Offer #${id}`;
+    }
     const platformMap = {}; const activePlatformIds = [];
     for (const p of platformsData) {
       if (p?.id == null) continue;
@@ -436,10 +470,14 @@ async function loadFromAPI() {
       else if (row.source) sourceName = String(row.source).trim();
       const sub1 = row.aff_sub1 ?? row.sub1 ?? '';
       sourceName = mergeSourceName(sourceName);
+      // Resolve offer name: map → row data → fallback
+      let offerName = offerMap[offerId] || '';
+      if (!offerName) offerName = row.offer_name || row.offername || row.offer || '';
+      if (!offerName) offerName = offerId ? `Offer #${offerId}` : 'Unknown offer';
       originalData.push({
         date: dateStr, week: getWeekNumber(new Date(dateStr)), month: dateStr.slice(0, 7),
         dayOfWeek: daysOfWeek[new Date(dateStr).getDay()],
-        offer: offerMap[offerId] || 'Unknown offer',
+        offer: offerName,
         source: sourceName, sub1, clicks, conversions, approved, revenue
       });
     }
@@ -473,12 +511,27 @@ function updateProgress(percent, text) {
 function startAutoRefresh() {
   if (autoRefreshTimer) clearInterval(autoRefreshTimer);
   updateNextRefreshTime();
-  autoRefreshTimer = setInterval(() => {
-    if (document.hidden) { console.log('[Auto-refresh] Страница не видна, пропуск'); return; }
+  autoRefreshTimer = setInterval(async () => {
     console.log('[Auto-refresh] Обновление данных...');
-    loadFromAPI();
+    const dFrom = document.getElementById('dateFrom').value;
+    const dTo = document.getElementById('dateTo').value;
+    if (!dFrom || !dTo) return;
+    // Trigger server-side update first (like cron)
+    try {
+      await fetch(`${API_BASE}?action=update_stats&token=${HARDCODED_TOKEN}&start_date=${dFrom}&end_date=${dTo}&grouping=day&field=offer_id,source,aff_sub1`);
+    } catch(e) { console.warn('[Auto-refresh] Server update error:', e); }
+    // Then reload from DB and refresh all dashboards
+    await autoLoadSavedStats();
     updateNextRefreshTime();
   }, AUTO_REFRESH_INTERVAL_MS);
+
+  // Handle visibility change - refresh when tab becomes visible
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && originalData.length) {
+      console.log('[Visibility] Tab visible, reloading data...');
+      autoLoadSavedStats();
+    }
+  });
 }
 
 function updateNextRefreshTime() {
@@ -825,6 +878,8 @@ function renderEPCAnalytics() {
 }
 
 // ========================== MATRIX ANALYTICS ==========================
+let matrixSortState = { field: 'total', desc: true };
+
 function renderMatrixAnalytics() {
   if(!globalRawData.length) return;
   const metric=document.getElementById('matrixMetric').value;
@@ -832,42 +887,80 @@ function renderMatrixAnalytics() {
   const months=[...new Set(globalRawData.map(r=>r.month))].sort();
   const totalRevAll=globalRawData.reduce((s,r)=>s+r.revenue,0);
 
-  const header=document.getElementById('matrixSourceHeader');
-  header.innerHTML='<th class="sort-th">Площадка</th>'+months.map(m=>`<th class="text-right">${m}</th>`).join('')+'<th class="text-right font-bold">Итого</th><th class="text-right font-bold text-emerald-400">Выручка (₽)</th><th class="text-right font-bold text-emerald-400">Доля выручки</th>';
+  // Pre-calculate all values for sorting
+  const sourceRows = sources.map(src => {
+    const srcData = globalRawData.filter(r => r.source === src);
+    const srcRevenue = srcData.reduce((s,r) => s + r.revenue, 0);
+    const srcShare = totalRevAll > 0 ? (srcRevenue / totalRevAll * 100) : 0;
+    const monthValues = {};
+    let total = 0;
+    months.forEach(m => {
+      const rows = srcData.filter(r => r.month === m);
+      let val = 0;
+      if (metric === 'epc') {
+        const c = rows.reduce((s,r) => s + r.clicks, 0);
+        const rv = rows.reduce((s,r) => s + r.revenue, 0);
+        val = c > 0 ? rv / c : 0;
+      } else {
+        val = rows.reduce((s,r) => s + r[metric], 0);
+      }
+      monthValues[m] = val;
+      if (metric !== 'epc') total += val;
+    });
+    if (metric === 'epc') {
+      const tc = srcData.reduce((s,r) => s + r.clicks, 0);
+      const tr = srcData.reduce((s,r) => s + r.revenue, 0);
+      total = tc > 0 ? tr / tc : 0;
+    }
+    return { name: src, monthValues, total, revenue: srcRevenue, share: srcShare };
+  });
 
-  const bodyRows=sources.map(src=>{
-    let total=0;
-    const srcRevenue=globalRawData.filter(r=>r.source===src).reduce((s,r)=>s+r.revenue,0);
-    const srcShare=totalRevAll>0?(srcRevenue/totalRevAll*100):0;
-    const cells=months.map(m=>{
-      const rows=globalRawData.filter(r=>r.source===src&&r.month===m);
-      let val=0;
-      if(metric==='epc'){const c=rows.reduce((s,r)=>s+r.clicks,0);const rv=rows.reduce((s,r)=>s+r.revenue,0);val=c>0?rv/c:0;}
-      else val=rows.reduce((s,r)=>s+r[metric],0);
-      total+=(metric==='epc'?0:val);
-      const fmt=metric==='revenue'?`${Math.round(val).toLocaleString('ru-RU')} ₽`:metric==='epc'?`${val.toFixed(2)} ₽`:val.toLocaleString('ru-RU');
-      return `<td class="text-right">${fmt}</td>`;
-    }).join('');
-    if(metric==='epc'){const tc=globalRawData.filter(r=>r.source===src).reduce((s,r)=>s+r.clicks,0);const tr=globalRawData.filter(r=>r.source===src).reduce((s,r)=>s+r.revenue,0);total=tc>0?tr/tc:0;}
-    const tf=metric==='revenue'?`${Math.round(total).toLocaleString('ru-RU')} ₽`:metric==='epc'?`${total.toFixed(2)} ₽`:total.toLocaleString('ru-RU');
-    return `<tr class="hover:bg-slate-800"><td class="font-semibold">${escapeHtml(src)}</td>${cells}<td class="text-right font-bold">${tf}</td><td class="text-right text-emerald-400 font-semibold">${Math.round(srcRevenue).toLocaleString('ru-RU')} ₽</td><td class="text-right text-emerald-400 font-semibold">${srcShare.toFixed(1)}%</td></tr>`;
+  // Sort
+  const sf = matrixSortState.field;
+  sourceRows.sort((a, b) => {
+    let va, vb;
+    if (sf === 'name') { va = a.name; vb = b.name; }
+    else if (sf === 'total') { va = a.total; vb = b.total; }
+    else if (sf === 'revenue') { va = a.revenue; vb = b.revenue; }
+    else if (sf === 'share') { va = a.share; vb = b.share; }
+    else { va = a.monthValues[sf] || 0; vb = b.monthValues[sf] || 0; }
+    if (typeof va === 'string') return matrixSortState.desc ? vb.localeCompare(va) : va.localeCompare(vb);
+    return matrixSortState.desc ? vb - va : va - vb;
+  });
+
+  const header=document.getElementById('matrixSourceHeader');
+  header.innerHTML=`<th class="sort-th" onclick="sortMatrix('name')">Площадка ↕</th>`
+    +months.map(m=>`<th class="sort-th text-right" onclick="sortMatrix('${m}')">${m} ↕</th>`).join('')
+    +`<th class="sort-th text-right font-bold" onclick="sortMatrix('total')">Итого ↕</th>`
+    +`<th class="sort-th text-right font-bold text-emerald-400" onclick="sortMatrix('revenue')">Выручка (₽) ↕</th>`
+    +`<th class="sort-th text-right font-bold text-emerald-400" onclick="sortMatrix('share')">Доля выручки ↕</th>`;
+
+  const fmtVal = (val) => metric==='revenue'?`${Math.round(val).toLocaleString('ru-RU')} ₽`:metric==='epc'?`${val.toFixed(2)} ₽`:val.toLocaleString('ru-RU');
+
+  const bodyRows=sourceRows.map(row=>{
+    const cells=months.map(m=>`<td class="text-right">${fmtVal(row.monthValues[m]||0)}</td>`).join('');
+    return `<tr class="hover:bg-slate-800"><td class="font-semibold">${escapeHtml(row.name)}</td>${cells}<td class="text-right font-bold">${fmtVal(row.total)}</td><td class="text-right text-emerald-400 font-semibold">${Math.round(row.revenue).toLocaleString('ru-RU')} ₽</td><td class="text-right text-emerald-400 font-semibold">${row.share.toFixed(1)}%</td></tr>`;
   });
 
   let grandCells=months.map(m=>{
     const rows=globalRawData.filter(r=>r.month===m);let val=0;
     if(metric==='epc'){const c=rows.reduce((s,r)=>s+r.clicks,0);const rv=rows.reduce((s,r)=>s+r.revenue,0);val=c>0?rv/c:0;}
     else val=rows.reduce((s,r)=>s+r[metric],0);
-    const fmt=metric==='revenue'?`${Math.round(val).toLocaleString('ru-RU')} ₽`:metric==='epc'?`${val.toFixed(2)} ₽`:val.toLocaleString('ru-RU');
-    return `<td class="text-right font-bold text-blue-400">${fmt}</td>`;
+    return `<td class="text-right font-bold text-blue-400">${fmtVal(val)}</td>`;
   }).join('');
   let gt=0;
   if(metric==='epc'){const tc=globalRawData.reduce((s,r)=>s+r.clicks,0);const tr=globalRawData.reduce((s,r)=>s+r.revenue,0);gt=tc>0?tr/tc:0;}
   else gt=globalRawData.reduce((s,r)=>s+r[metric],0);
-  const gf=metric==='revenue'?`${Math.round(gt).toLocaleString('ru-RU')} ₽`:metric==='epc'?`${gt.toFixed(2)} ₽`:gt.toLocaleString('ru-RU');
-  document.getElementById('matrixSourceBody').innerHTML=bodyRows.join('')+`<tr class="border-t-2 border-blue-500"><td class="font-bold text-blue-400">ИТОГО</td>${grandCells}<td class="text-right font-bold text-blue-400">${gf}</td><td class="text-right font-bold text-emerald-400">${Math.round(totalRevAll).toLocaleString('ru-RU')} ₽</td><td class="text-right font-bold text-emerald-400">100%</td></tr>`;
+  document.getElementById('matrixSourceBody').innerHTML=bodyRows.join('')+`<tr class="border-t-2 border-blue-500"><td class="font-bold text-blue-400">ИТОГО</td>${grandCells}<td class="text-right font-bold text-blue-400">${fmtVal(gt)}</td><td class="text-right font-bold text-emerald-400">${Math.round(totalRevAll).toLocaleString('ru-RU')} ₽</td><td class="text-right font-bold text-emerald-400">100%</td></tr>`;
 
   renderMonthlyShareTable(sources,months);
   renderMatrixShareChart(sources,months);
+}
+
+function sortMatrix(field) {
+  if (matrixSortState.field === field) matrixSortState.desc = !matrixSortState.desc;
+  else { matrixSortState.field = field; matrixSortState.desc = true; }
+  renderMatrixAnalytics();
 }
 
 function renderMonthlyShareTable(sources,months) {
@@ -938,13 +1031,112 @@ document.getElementById('uploadBannerBtn').addEventListener('click', async () =>
   } catch (err) { msgDiv.textContent = '❌ Ошибка: ' + err.message; msgDiv.classList.remove('hidden'); }
 });
 
+// ========================== YANDEX METRIKA ==========================
+const YM_CLIENT_ID = 'afb919b40a0d4963bd37a931829c8f34';
+
+async function checkYMConnection() {
+  try {
+    const res = await fetch(`${API_BASE}?action=ym_get_token`);
+    const data = await res.json();
+    if (data.status === 'success' && data.has_token) {
+      document.getElementById('ymNotConnected').classList.add('hidden');
+      document.getElementById('ymConnected').classList.remove('hidden');
+    } else {
+      document.getElementById('ymNotConnected').classList.remove('hidden');
+      document.getElementById('ymConnected').classList.add('hidden');
+    }
+  } catch(e) { console.warn('YM check failed:', e); }
+}
+
+async function saveYMToken() {
+  const token = document.getElementById('ymTokenInput').value.trim();
+  if (!token) { alert('Введите OAuth токен'); return; }
+  const msgDiv = document.getElementById('ymMessage');
+  try {
+    const res = await fetch(`${API_BASE}?action=ym_save_token`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token })
+    });
+    const data = await res.json();
+    if (data.status === 'success') {
+      msgDiv.textContent = '✅ Токен сохранён. Яндекс.Метрика подключена.';
+      msgDiv.className = 'mt-3 text-sm text-emerald-400';
+      msgDiv.classList.remove('hidden');
+      document.getElementById('ymTokenInput').value = '';
+      await checkYMConnection();
+      setTimeout(() => msgDiv.classList.add('hidden'), 3000);
+    } else {
+      throw new Error(data.error || 'Unknown error');
+    }
+  } catch(e) {
+    msgDiv.textContent = '❌ Ошибка: ' + e.message;
+    msgDiv.className = 'mt-3 text-sm text-red-400';
+    msgDiv.classList.remove('hidden');
+  }
+}
+
+async function disconnectYM() {
+  try {
+    await fetch(`${API_BASE}?action=ym_delete_token`);
+  } catch(e) {}
+  document.getElementById('ymNotConnected').classList.remove('hidden');
+  document.getElementById('ymConnected').classList.add('hidden');
+  const msgDiv = document.getElementById('ymMessage');
+  msgDiv.textContent = '🔌 Яндекс.Метрика отключена';
+  msgDiv.className = 'mt-3 text-sm text-slate-400';
+  msgDiv.classList.remove('hidden');
+  setTimeout(() => msgDiv.classList.add('hidden'), 3000);
+}
+
+async function fetchYMBannerData() {
+  const dFrom = document.getElementById('dateFrom').value;
+  const dTo = document.getElementById('dateTo').value;
+  if (!dFrom || !dTo) { alert('Укажите даты'); return; }
+  const msgDiv = document.getElementById('ymMessage');
+  msgDiv.textContent = '⏳ Загрузка данных из Яндекс.Метрики...';
+  msgDiv.className = 'mt-3 text-sm text-blue-400';
+  msgDiv.classList.remove('hidden');
+  try {
+    const res = await fetch(`${API_BASE}?action=ym_fetch_banner&start_date=${dFrom}&end_date=${dTo}`);
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    msgDiv.textContent = `✅ Загружено ${data.saved} записей из Яндекс.Метрики`;
+    msgDiv.className = 'mt-3 text-sm text-emerald-400';
+    // Refresh banner data
+    await applyGlobalFilters();
+    setTimeout(() => msgDiv.classList.add('hidden'), 5000);
+  } catch(e) {
+    msgDiv.textContent = '❌ Ошибка: ' + e.message;
+    msgDiv.className = 'mt-3 text-sm text-red-400';
+  }
+}
+
+// Check for OAuth token in URL hash (after Yandex redirect)
+function checkYMOAuthCallback() {
+  const hash = window.location.hash;
+  if (hash && hash.includes('access_token')) {
+    const params = new URLSearchParams(hash.substring(1));
+    const token = params.get('access_token');
+    if (token) {
+      window.location.hash = '';
+      document.getElementById('ymTokenInput').value = token;
+      saveYMToken();
+    }
+  }
+}
+
 // ========================== ИНИЦИАЛИЗАЦИЯ ==========================
 window.addEventListener('DOMContentLoaded', () => {
   const to = new Date(); const from = new Date(); from.setDate(to.getDate() - 30);
   document.getElementById('dateTo').value = to.toISOString().split('T')[0];
   document.getElementById('dateFrom').value = from.toISOString().split('T')[0];
-  document.getElementById('dateFrom').addEventListener('change', () => { if (originalData.length) applyGlobalFilters(); });
-  document.getElementById('dateTo').addEventListener('change', () => { if (originalData.length) applyGlobalFilters(); });
+  document.getElementById('dateFrom').addEventListener('change', () => autoLoadSavedStats());
+  document.getElementById('dateTo').addEventListener('change', () => autoLoadSavedStats());
+  // Yandex Metrika OAuth
+  const ymAuthLink = document.getElementById('ymAuthLink');
+  if (ymAuthLink) ymAuthLink.href = `https://oauth.yandex.ru/authorize?response_type=token&client_id=${YM_CLIENT_ID}`;
+  checkYMOAuthCallback();
+  checkYMConnection();
   startAutoRefresh();
   autoLoadSavedStats();
 });
