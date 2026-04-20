@@ -330,7 +330,7 @@ if ($action === 'save_stats') {
         $date = $row['date'] ?? null;
         if (!$date) continue;
         $sourceId = $row['source_id'] ?? 'all';
-        $sourceName = $row['source'] ?? $row['source_name'] ?? 'Unknown';
+        $sourceName = cleanSourceName($row['source'] ?? $row['source_name'] ?? 'Unknown');
         $offerName = $row['offer'] ?? 'Unknown';
         $sub1 = $row['sub1'] ?? '';
         $clicks = (int)($row['clicks'] ?? 0);
