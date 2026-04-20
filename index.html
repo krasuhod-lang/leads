@@ -571,17 +571,20 @@ async function autoLoadSavedStats() {
   if (saved && saved.length) {
     // Merge DB data with existing in-memory data:
     // DB data takes priority for its date range, keep any in-memory data outside the fetched range
-    const dbRows = saved.map(row => ({
-      date: row.date,
-      week: getWeekNumber(new Date(row.date)),
-      month: row.date.slice(0, 7),
-      dayOfWeek: daysOfWeek[new Date(row.date).getDay()],
-      offer: row.offer_name || 'Unknown',
-      source: mergeSourceName(row.source_name),
-      source_id: row.source_id || 'all',
-      sub1: row.sub1 || '',
-      clicks: row.clicks, conversions: row.conversions, approved: row.approved, revenue: row.revenue
-    }));
+    const dbRows = saved.map(row => {
+      const d = new Date(row.date);
+      return {
+        date: row.date,
+        week: getWeekNumber(d),
+        month: row.date.slice(0, 7),
+        dayOfWeek: daysOfWeek[d.getDay()],
+        offer: row.offer_name || 'Unknown',
+        source: mergeSourceName(row.source_name),
+        source_id: row.source_id || 'all',
+        sub1: row.sub1 || '',
+        clicks: row.clicks, conversions: row.conversions, approved: row.approved, revenue: row.revenue
+      };
+    });
     // Keep existing data outside the fetched range, use DB data for the fetched range
     const kept = originalData.filter(r => r.date < dFrom || r.date > dTo);
     originalData = kept.concat(dbRows);
