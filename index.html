@@ -336,6 +336,8 @@ function mergeSourceName(name) {
   // Remove trailing ID in parentheses: "Займон (1318157)" → "Займон"
   cleaned = cleaned.replace(/\s*\(\d+\)\s*$/, '').trim();
   if (!cleaned) cleaned = (name || '').trim();
+  // If the name is still just a numeric ID, label it
+  if (/^\d+$/.test(cleaned)) cleaned = 'Platform #' + cleaned;
   const lower = cleaned.toLowerCase();
   if (lower.includes('хочузайм') || lower.includes('заимберис') || lower.includes('займберис')) return 'Займберис';
   return cleaned;
@@ -1149,8 +1151,12 @@ window.addEventListener('DOMContentLoaded', () => {
   const to = new Date(); const from = new Date(); from.setDate(to.getDate() - 30);
   document.getElementById('dateTo').value = to.toISOString().split('T')[0];
   document.getElementById('dateFrom').value = from.toISOString().split('T')[0];
-  document.getElementById('dateFrom').addEventListener('change', () => autoLoadSavedStats());
-  document.getElementById('dateTo').addEventListener('change', () => autoLoadSavedStats());
+  document.getElementById('dateFrom').addEventListener('change', () => {
+    if (originalData.length) { applyGlobalFilters(); } else { autoLoadSavedStats(); }
+  });
+  document.getElementById('dateTo').addEventListener('change', () => {
+    if (originalData.length) { applyGlobalFilters(); } else { autoLoadSavedStats(); }
+  });
   // Yandex Metrika OAuth
   (async () => {
     try {

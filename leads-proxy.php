@@ -584,7 +584,10 @@ if ($action === 'ym_fetch_banner') {
     $clickGoalId = $YM_CLICK_GOAL_ID;
 
     // Запрос данных по обеим целям (показы и клики)
-    $metrics = "ym:s:goal{$impressionGoalId}reaches,ym:s:goal{$clickGoalId}reaches";
+    // Используем goalXvisits (целевые визиты) — соответствует данным в интерфейсе Яндекс.Метрики.
+    // goalXreaches считает все достижения цели (включая повторные в одном визите),
+    // а goalXvisits — количество визитов, в которых цель была достигнута хотя бы раз.
+    $metrics = "ym:s:goal{$impressionGoalId}visits,ym:s:goal{$clickGoalId}visits";
     $apiUrl = "https://api-metrika.yandex.net/stat/v1/data"
         . "?ids={$counterId}"
         . "&metrics=" . urlencode($metrics)
