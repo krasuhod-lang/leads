@@ -331,8 +331,9 @@ function escapeHtml(str) {
 }
 
 function mergeSourceName(name) {
-  // Remove numeric IDs: "1318157, Займон" → "Займон"
-  let cleaned = (name || '').replace(/^\d+[,\s]+/, '').trim() || name || '';
+  // Remove numeric IDs: "1318157, Займон" → "Займон", "1318157 Займон" → "Займон"
+  let cleaned = (name || '').replace(/^\s*\d+[\s,.:;\-]+/, '').trim();
+  if (!cleaned) cleaned = (name || '').trim();
   const lower = cleaned.toLowerCase();
   if (lower.includes('хочузайм') || lower.includes('заимберис') || lower.includes('займберис')) return 'Займберис';
   return cleaned;
@@ -638,7 +639,8 @@ function renderUI() {
   const cr = t.clicks ? (t.conversions/t.clicks*100) : 0;
   const ar = t.conversions ? (t.approved/t.conversions*100) : 0;
   const epc = t.clicks ? (t.revenue/t.clicks) : 0;
-  document.getElementById('kpiCards').innerHTML = `
+  const noDataHint = !globalRawData.length ? '<div class="col-span-full text-center text-slate-500 text-sm py-2">Нет данных за выбранный период. Нажмите «⚡ Загрузить из кабинета» для загрузки.</div>' : '';
+  document.getElementById('kpiCards').innerHTML = noDataHint + `
     <div class="card"><div class="text-slate-400 text-xs uppercase">Клики</div><div class="text-3xl font-black mt-2">${t.clicks.toLocaleString('ru-RU')}</div></div>
     <div class="card"><div class="text-slate-400 text-xs uppercase">Лиды</div><div class="text-3xl font-black mt-2">${t.conversions.toLocaleString('ru-RU')}</div></div>
     <div class="card"><div class="text-slate-400 text-xs uppercase">Approve %</div><div class="text-3xl font-black mt-2">${ar.toFixed(2)}%</div></div>
@@ -750,7 +752,7 @@ function drawExtraCharts() {
   donutChartInstance = new Chart(document.getElementById('donutChart'),{
     type:'doughnut',data:{labels:dd.map(d=>d.name),datasets:[{data:dd.map(d=>d.revenue),backgroundColor:colorPalette,borderWidth:0,hoverOffset:8}]},
     options:{responsive:true,maintainAspectRatio:false,plugins:{
-      legend:{position:'right',labels:{color:'#cbd5e1',padding:20,generateLabels:function(chart){
+      legend:{position:'right',labels:{color:'#ffffff',padding:20,generateLabels:function(chart){
         const data=chart.data;if(!data.labels.length||!data.datasets.length)return[];
         return data.labels.map((label,i)=>{const v=data.datasets[0].data[i];const p=totalRev>0?((v/totalRev)*100).toFixed(1):0;return{text:`${label} (${p}%)`,fillStyle:data.datasets[0].backgroundColor[i],index:i};});
       }}},tooltip:{...sharedTooltipConfig,callbacks:{label:function(context){const v=context.raw;const p=totalRev>0?((v/totalRev)*100).toFixed(1):0;return ` ${Math.round(v).toLocaleString('ru-RU')} ₽ (${p}%)`;}}}}
@@ -1102,7 +1104,7 @@ async function fetchYMBannerData() {
   try {
     const res = await fetch(`${API_BASE}?action=ym_fetch_banner&start_date=${dFrom}&end_date=${dTo}`);
     const data = await res.json();
-    if (data.error) throw new Error(data.error);
+    if (data.error) throw new Error(data.details ? `${data.error}: ${data.details}` : data.error);
     msgDiv.textContent = `✅ Загружено ${data.saved} записей из Яндекс.Метрики`;
     msgDiv.className = 'mt-3 text-sm text-emerald-400';
     // Refresh banner data
