@@ -235,7 +235,10 @@ try {
                                 || substr(replace(lower(offer_name), \' \', \'_\'), 1, 24)
                        END,
                        offer_name, COALESCE(sub1, \'\'),
-                       clicks, COALESCE(raw_clicks, clicks),
+                       clicks,
+                       -- raw_clicks для старых строк всегда 0 (DEFAULT после ALTER TABLE),
+                       -- поэтому используем clicks как лучший доступный источник «сырых» кликов.
+                       CASE WHEN raw_clicks IS NOT NULL AND raw_clicks > 0 THEN raw_clicks ELSE clicks END,
                        conversions, approved, revenue
                 FROM daily_stats');
             $db->exec('DROP TABLE daily_stats');
