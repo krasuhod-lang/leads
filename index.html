@@ -67,8 +67,10 @@
   <div class="flex gap-1 border-b border-slate-700">
     <button class="tab-btn active" data-tab="dashboard" onclick="switchTab('dashboard')">📊 Дашборд</button>
     <button class="tab-btn" data-tab="epc" onclick="switchTab('epc')">📈 EPC-анализ</button>
+    <button class="tab-btn" data-tab="market" onclick="switchTab('market')">🌐 Рынок офферов</button>
     <button class="tab-btn" data-tab="matrix" onclick="switchTab('matrix')">🧩 Матрица</button>
     <button class="tab-btn" data-tab="banner" onclick="switchTab('banner')">🎯 Баннер</button>
+    <button class="tab-btn" data-tab="ai" onclick="switchTab('ai')">🤖 AI-аналитика</button>
   </div>
 
   <!-- TAB: DASHBOARD -->
@@ -133,8 +135,29 @@
             <th class="sort-th text-right" onclick="sortTable('offerTable','approveRate')">Approve % ↕</th>
             <th class="sort-th text-right" onclick="sortTable('offerTable','revenue')">Доход ↕</th>
             <th class="sort-th text-right" onclick="sortTable('offerTable','epc')">EPC ↕</th>
+            <th class="sort-th text-right" onclick="sortTable('offerTable','marketEpc')" title="Рыночный EPC (общий по бирже)">EPC рынка ↕</th>
+            <th class="sort-th text-right" onclick="sortTable('offerTable','epcDelta')" title="Отклонение вашего EPC от рыночного">Δ ↕</th>
           </tr></thead><tbody></tbody></table>
         </div>
+      </div>
+    </div>
+    <!-- Sub1 breakdown (issue 4) -->
+    <div class="card">
+      <div class="flex flex-wrap gap-3 justify-between items-center mb-4">
+        <h2 class="text-white font-bold">🏷️ Статистика по Sub1</h2>
+        <select id="sub1SourceFilter" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm max-w-[200px] focus:outline-none" onchange="renderSub1Table()">
+          <option value="all">Все площадки</option>
+        </select>
+      </div>
+      <div class="overflow-auto" style="max-height:500px">
+        <table class="w-full text-sm" id="sub1Table"><thead><tr>
+          <th class="sort-th" onclick="sortTable('sub1Table','name')">Sub1 ↕</th>
+          <th class="sort-th text-right" onclick="sortTable('sub1Table','clicks')">Клики ↕</th>
+          <th class="sort-th text-right" onclick="sortTable('sub1Table','conversions')">Лиды ↕</th>
+          <th class="sort-th text-right" onclick="sortTable('sub1Table','approveRate')">Approve % ↕</th>
+          <th class="sort-th text-right" onclick="sortTable('sub1Table','revenue')">Доход ↕</th>
+          <th class="sort-th text-right" onclick="sortTable('sub1Table','epc')">EPC ↕</th>
+        </tr></thead><tbody></tbody></table>
       </div>
     </div>
   </div>
@@ -180,6 +203,30 @@
           <th class="sort-th text-right" onclick="sortTable('epcDropsTable','clicks')">Клики ↕</th>
           <th class="sort-th text-right" onclick="sortTable('epcDropsTable','revenue')">Доход ↕</th>
           <th class="text-right">Отклонение от среднего</th>
+        </tr></thead><tbody></tbody></table>
+      </div>
+    </div>
+  </div>
+
+  <!-- TAB: MARKET (issue 8) -->
+  <div id="tab-market" class="tab-content space-y-6">
+    <div class="card">
+      <div class="flex flex-wrap gap-3 justify-between items-center mb-4">
+        <h2 class="text-white font-bold text-lg">🌐 Рыночные показатели офферов</h2>
+        <div class="flex gap-2 items-center">
+          <span id="marketUpdatedAt" class="text-xs text-slate-400"></span>
+          <button class="btn" onclick="refreshMarketData()">🔄 Обновить с Leads.su</button>
+        </div>
+      </div>
+      <p class="text-sm text-slate-400 mb-4">Источник: <code>/webmaster/offers?extendedFields=1</code> → <code>detail_stats.system.other_epc</code> (общий по бирже EPC) и <code>detail_stats.your.other_epc</code> (ваш). Помогает понять, стоит ли продолжать использовать оффер: если ваш EPC ниже рыночного — есть потенциал роста или проблема с трафиком.</p>
+      <div class="overflow-auto" style="max-height:600px">
+        <table class="w-full text-sm" id="marketOffersTable"><thead><tr>
+          <th class="sort-th" onclick="sortTable('marketOffersTable','name')">Оффер ↕</th>
+          <th class="sort-th text-right" onclick="sortTable('marketOffersTable','market_epc')">EPC рынка ↕</th>
+          <th class="sort-th text-right" onclick="sortTable('marketOffersTable','your_epc')">Ваш EPC ↕</th>
+          <th class="sort-th text-right" onclick="sortTable('marketOffersTable','epcDelta')">Δ (ваш − рынок) ↕</th>
+          <th class="sort-th text-right" onclick="sortTable('marketOffersTable','market_cr')">CR рынка ↕</th>
+          <th class="sort-th text-right" onclick="sortTable('marketOffersTable','market_ar')">AR рынка ↕</th>
         </tr></thead><tbody></tbody></table>
       </div>
     </div>
@@ -280,6 +327,28 @@
       <div id="bannerUploadMsg" class="mt-3 text-sm hidden"></div>
     </div>
   </div>
+
+  <!-- TAB: AI ANALYTICS (issue 7) -->
+  <div id="tab-ai" class="tab-content space-y-6">
+    <div class="card">
+      <div class="flex flex-wrap gap-3 justify-between items-center mb-2">
+        <h2 class="text-white font-bold text-lg">🤖 AI-аналитика и подсказки</h2>
+        <button class="btn" onclick="renderAIInsights()">🔄 Пересчитать</button>
+      </div>
+      <p class="text-sm text-slate-400 mb-4">Автоматический разбор закономерностей: динамика выручки и трафика, аномалии EPC, низкоэффективные офферы и площадки, сравнение с рынком. Подсказки строятся из текущего диапазона дат.</p>
+      <div id="aiInsightsContainer" class="space-y-3"></div>
+    </div>
+    <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
+      <div class="card">
+        <h3 class="text-white font-bold mb-3">📉 Топ-5 просадок EPC</h3>
+        <div class="overflow-auto" style="max-height:320px"><table class="w-full text-sm" id="aiDropsTable"><thead><tr><th>Период</th><th class="text-right">EPC</th><th class="text-right">Δ от среднего</th></tr></thead><tbody></tbody></table></div>
+      </div>
+      <div class="card">
+        <h3 class="text-white font-bold mb-3">⚠️ Sub1 с аномалиями</h3>
+        <div class="overflow-auto" style="max-height:320px"><table class="w-full text-sm" id="aiSub1Table"><thead><tr><th>Sub1</th><th class="text-right">Клики</th><th class="text-right">EPC</th><th class="text-right">Сигнал</th></tr></thead><tbody></tbody></table></div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -311,6 +380,8 @@ let autoRefreshTimer = null;
 let tableSort = {
   sourceTable: { field: 'revenue', desc: true },
   offerTable: { field: 'revenue', desc: true },
+  sub1Table: { field: 'revenue', desc: true },
+  marketOffersTable: { field: 'market_epc', desc: true },
   epcDropsTable: { field: 'epc', desc: false }
 };
 
@@ -830,7 +901,7 @@ async function applyGlobalFilters() {
   renderBannerKPI(); renderBannerChart();
 
   const sources = [...new Set(globalRawData.map(r => r.source))].sort();
-  for (const selectId of ['chartSourceFilter', 'offerSourceFilter', 'epcSourceSelect']) {
+  for (const selectId of ['chartSourceFilter', 'offerSourceFilter', 'sub1SourceFilter', 'epcSourceSelect']) {
     const sel = document.getElementById(selectId);
     if (!sel) continue;
     const current = sel.value;
@@ -853,6 +924,8 @@ async function applyGlobalFilters() {
 
   renderUI(); renderTables(); refreshChart(); drawExtraCharts();
   renderEPCAnalytics(); renderMatrixAnalytics(); renderPlatformCharts();
+  renderMarketTable();
+  renderAIInsights();
 }
 
 function renderUI() {
@@ -896,14 +969,34 @@ function aggregateBy(field, sourceFilter) {
 function renderTables() {
   const selSrc = document.getElementById('offerSourceFilter').value;
   const srcMap = aggregateBy('source','all');
-  const offMap = aggregateBy('offer', selSrc);
+  // Aggregate offers separately so we can keep offer_id for market EPC lookup
+  const offMap = {};
+  for (const r of globalRawData) {
+    if (selSrc !== 'all' && r.source !== selSrc) continue;
+    const key = r.offer;
+    if (!offMap[key]) offMap[key] = { clicks:0, conversions:0, approved:0, revenue:0, offer_id: r.offer_id || '' };
+    if (!offMap[key].offer_id && r.offer_id) offMap[key].offer_id = r.offer_id;
+    offMap[key].clicks += r.clicks;
+    offMap[key].conversions += r.conversions;
+    offMap[key].approved += r.approved;
+    offMap[key].revenue += r.revenue;
+  }
   const doSort = (arr, sc) => arr.sort((a,b) => {
     let va=a[sc.field], vb=b[sc.field];
     if (typeof va==='string') return sc.desc ? vb.localeCompare(va) : va.localeCompare(vb);
     return sc.desc ? vb-va : va-vb;
   });
   let sRows = Object.entries(srcMap).map(([n,v]) => ({name:n, clicks:v.clicks, conversions:v.conversions, approved:v.approved, revenue:v.revenue, epc:v.clicks?(v.revenue/v.clicks):0, approveRate:v.conversions?(v.approved/v.conversions*100):0}));
-  let oRows = Object.entries(offMap).map(([n,v]) => ({name:n, clicks:v.clicks, conversions:v.conversions, approved:v.approved, revenue:v.revenue, epc:v.clicks?(v.revenue/v.clicks):0, approveRate:v.conversions?(v.approved/v.conversions*100):0}));
+  let oRows = Object.entries(offMap).map(([n,v]) => {
+    const epc = v.clicks ? (v.revenue/v.clicks) : 0;
+    const market = (v.offer_id && offerMarketMap[v.offer_id]) || offerMarketByName[n] || null;
+    const marketEpc = market ? market.market_epc : 0;
+    return {
+      name: n, clicks: v.clicks, conversions: v.conversions, approved: v.approved, revenue: v.revenue,
+      epc, approveRate: v.conversions ? (v.approved/v.conversions*100) : 0,
+      marketEpc, epcDelta: marketEpc > 0 ? (epc - marketEpc) : 0
+    };
+  });
   doSort(sRows, tableSort.sourceTable);
   doSort(oRows, tableSort.offerTable);
   document.querySelector('#sourceTable tbody').innerHTML = sRows.map(r => `<tr class="hover:bg-slate-800"><td>${escapeHtml(r.name)}</td><td class="text-right">${r.clicks.toLocaleString('ru-RU')}</td><td class="text-right">${r.conversions.toLocaleString('ru-RU')}</td><td class="text-right">${r.approveRate.toFixed(1)}%</td><td class="text-right">${Math.round(r.revenue).toLocaleString('ru-RU')} ₽</td><td class="text-right font-semibold">${r.epc.toFixed(2)} ₽</td></tr>`).join('');
@@ -911,8 +1004,111 @@ function renderTables() {
     let cc='text-red-400';
     if(r.epc>=80&&r.epc<100)cc='text-yellow-400';else if(r.epc>=100&&r.epc<140)cc='text-green-500';else if(r.epc>=140)cc='text-emerald-300';
     if(!r.clicks)cc='text-slate-400';
-    return `<tr class="hover:bg-slate-800"><td>${escapeHtml(r.name)}</td><td class="text-right">${r.clicks.toLocaleString('ru-RU')}</td><td class="text-right">${r.conversions.toLocaleString('ru-RU')}</td><td class="text-right">${r.approveRate.toFixed(1)}%</td><td class="text-right">${Math.round(r.revenue).toLocaleString('ru-RU')} ₽</td><td class="text-right font-bold ${cc}">${r.epc.toFixed(2)} ₽</td></tr>`;
+    const mEpcCell = r.marketEpc > 0 ? `${r.marketEpc.toFixed(2)} ₽` : '<span class="text-slate-500">—</span>';
+    let deltaCell = '<span class="text-slate-500">—</span>';
+    if (r.marketEpc > 0 && r.clicks > 0) {
+      const cls = r.epcDelta >= 0 ? 'text-emerald-400' : 'text-red-400';
+      const sign = r.epcDelta >= 0 ? '+' : '';
+      deltaCell = `<span class="${cls}">${sign}${r.epcDelta.toFixed(2)} ₽</span>`;
+    }
+    return `<tr class="hover:bg-slate-800"><td>${escapeHtml(r.name)}</td><td class="text-right">${r.clicks.toLocaleString('ru-RU')}</td><td class="text-right">${r.conversions.toLocaleString('ru-RU')}</td><td class="text-right">${r.approveRate.toFixed(1)}%</td><td class="text-right">${Math.round(r.revenue).toLocaleString('ru-RU')} ₽</td><td class="text-right font-bold ${cc}">${r.epc.toFixed(2)} ₽</td><td class="text-right">${mEpcCell}</td><td class="text-right">${deltaCell}</td></tr>`;
   }).join('');
+  renderSub1Table();
+  renderMarketTable();
+}
+
+// ========================== SUB1 BREAKDOWN (issue 4) ==========================
+function renderSub1Table() {
+  const sel = document.getElementById('sub1SourceFilter');
+  if (!sel) return;
+  const filterVal = sel.value || 'all';
+  const map = {};
+  for (const r of globalRawData) {
+    if (filterVal !== 'all' && r.source !== filterVal) continue;
+    const key = r.sub1 && r.sub1.trim() ? r.sub1 : '(пусто)';
+    if (!map[key]) map[key] = { clicks: 0, conversions: 0, approved: 0, revenue: 0 };
+    map[key].clicks += r.clicks;
+    map[key].conversions += r.conversions;
+    map[key].approved += r.approved;
+    map[key].revenue += r.revenue;
+  }
+  let rows = Object.entries(map).map(([n, v]) => ({
+    name: n, clicks: v.clicks, conversions: v.conversions, approved: v.approved, revenue: v.revenue,
+    epc: v.clicks ? (v.revenue / v.clicks) : 0,
+    approveRate: v.conversions ? (v.approved / v.conversions * 100) : 0
+  }));
+  const sc = tableSort.sub1Table || { field: 'revenue', desc: true };
+  rows.sort((a, b) => {
+    let va = a[sc.field], vb = b[sc.field];
+    if (typeof va === 'string') return sc.desc ? vb.localeCompare(va) : va.localeCompare(vb);
+    return sc.desc ? vb - va : va - vb;
+  });
+  const tbody = document.querySelector('#sub1Table tbody');
+  if (!tbody) return;
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="6" class="text-center text-slate-500 py-4">Нет данных Sub1 за выбранный период</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows.map(r => `<tr class="hover:bg-slate-800"><td>${escapeHtml(r.name)}</td><td class="text-right">${r.clicks.toLocaleString('ru-RU')}</td><td class="text-right">${r.conversions.toLocaleString('ru-RU')}</td><td class="text-right">${r.approveRate.toFixed(1)}%</td><td class="text-right">${Math.round(r.revenue).toLocaleString('ru-RU')} ₽</td><td class="text-right font-semibold">${r.epc.toFixed(2)} ₽</td></tr>`).join('');
+}
+
+// ========================== MARKET OFFERS TABLE (issue 8) ==========================
+function renderMarketTable() {
+  const tbody = document.querySelector('#marketOffersTable tbody');
+  if (!tbody) return;
+  const all = Object.values(offerMarketMap);
+  if (!all.length) {
+    tbody.innerHTML = '<tr><td colspan="6" class="text-center text-slate-500 py-4">Нет данных. Нажмите «Обновить с Leads.su».</td></tr>';
+    const ts = document.getElementById('marketUpdatedAt');
+    if (ts) ts.textContent = '';
+    return;
+  }
+  // updated_at — берём максимальный из кэша
+  let lastTs = '';
+  for (const o of all) if (o.updated_at && o.updated_at > lastTs) lastTs = o.updated_at;
+  const tsEl = document.getElementById('marketUpdatedAt');
+  if (tsEl) tsEl.textContent = lastTs ? `Обновлено: ${lastTs}` : '';
+  // Build rows with computed delta
+  let rows = all.map(o => ({
+    name: o.name || '(без имени)',
+    market_epc: o.market_epc || 0,
+    your_epc: o.your_epc || 0,
+    epcDelta: (o.your_epc || 0) - (o.market_epc || 0),
+    market_cr: o.market_cr || 0,
+    market_ar: o.market_ar || 0
+  }));
+  const sc = tableSort.marketOffersTable || { field: 'market_epc', desc: true };
+  rows.sort((a, b) => {
+    let va = a[sc.field], vb = b[sc.field];
+    if (typeof va === 'string') return sc.desc ? vb.localeCompare(va) : va.localeCompare(vb);
+    return sc.desc ? vb - va : va - vb;
+  });
+  tbody.innerHTML = rows.map(r => {
+    const deltaCls = r.epcDelta >= 0 ? 'text-emerald-400' : 'text-red-400';
+    const sign = r.epcDelta >= 0 ? '+' : '';
+    const yourEpcCell = r.your_epc > 0 ? `${r.your_epc.toFixed(2)} ₽` : '<span class="text-slate-500">—</span>';
+    const deltaCell = (r.your_epc > 0 && r.market_epc > 0)
+      ? `<span class="${deltaCls}">${sign}${r.epcDelta.toFixed(2)} ₽</span>`
+      : '<span class="text-slate-500">—</span>';
+    return `<tr class="hover:bg-slate-800"><td>${escapeHtml(r.name)}</td><td class="text-right font-bold">${r.market_epc.toFixed(2)} ₽</td><td class="text-right">${yourEpcCell}</td><td class="text-right">${deltaCell}</td><td class="text-right">${r.market_cr.toFixed(2)}%</td><td class="text-right">${r.market_ar.toFixed(2)}%</td></tr>`;
+  }).join('');
+}
+
+async function refreshMarketData() {
+  const btn = event && event.target;
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Загрузка...'; }
+  try {
+    const res = await fetch(`${API_BASE}?action=fetch_offers_market&token=${HARDCODED_TOKEN}`);
+    const json = await res.json();
+    if (json.error) throw new Error(json.error);
+    await loadOfferMarketData();
+    renderMarketTable();
+    renderTables(); // обновим колонку EPC рынка в таблице офферов
+    if (btn) { btn.textContent = `✅ Загружено ${json.count || 0} офферов`; setTimeout(() => { btn.textContent = '🔄 Обновить с Leads.su'; btn.disabled = false; }, 2500); }
+  } catch (e) {
+    alert('Ошибка загрузки рыночных данных: ' + e.message);
+    if (btn) { btn.textContent = '🔄 Обновить с Leads.su'; btn.disabled = false; }
+  }
 }
 
 function refreshChart() {
@@ -1241,12 +1437,190 @@ function renderMatrixShareChart(sources,months) {
   });
 }
 
-// ========================== SORTING ==========================
+// ========================== AI INSIGHTS (issue 7) ==========================
+// Простой "rule-based AI": разбираем последний срез данных и выводим
+// текстовые подсказки. Логика построена на бизнес-эвристиках:
+//   • динамика выручки/трафика по неделям → рост/спад,
+//   • EPC просадки относительно среднего по периоду,
+//   • сравнение «ваш EPC» vs рыночный (если есть данные из offers_cache),
+//   • концентрация выручки (если 1-2 площадки дают > 70% — риск),
+//   • Sub1 с большим объёмом, но низким Approve / EPC.
+// Каждая подсказка имеет уровень: success / info / warn / danger.
+function classifyInsight(level) {
+  if (level === 'success') return { color: 'border-emerald-500 bg-emerald-500/10', icon: '✅' };
+  if (level === 'warn')    return { color: 'border-yellow-500 bg-yellow-500/10', icon: '⚠️' };
+  if (level === 'danger')  return { color: 'border-red-500 bg-red-500/10', icon: '🚨' };
+  return { color: 'border-blue-500 bg-blue-500/10', icon: '💡' };
+}
+
+function generateInsights() {
+  const insights = [];
+  if (!globalRawData.length) {
+    insights.push({ level: 'info', text: 'Нет данных для анализа за выбранный период. Загрузите статистику или измените даты.' });
+    return insights;
+  }
+  // --- 1. Общая выручка и динамика по неделям ---
+  const byWeek = {};
+  for (const r of globalRawData) {
+    if (!byWeek[r.week]) byWeek[r.week] = { rev: 0, clicks: 0, conv: 0, app: 0 };
+    byWeek[r.week].rev += r.revenue;
+    byWeek[r.week].clicks += r.clicks;
+    byWeek[r.week].conv += r.conversions;
+    byWeek[r.week].app += r.approved;
+  }
+  const weeks = Object.keys(byWeek).sort();
+  if (weeks.length >= 2) {
+    const last = byWeek[weeks[weeks.length - 1]];
+    const prev = byWeek[weeks[weeks.length - 2]];
+    const revDelta = prev.rev > 0 ? ((last.rev - prev.rev) / prev.rev * 100) : 0;
+    const clkDelta = prev.clicks > 0 ? ((last.clicks - prev.clicks) / prev.clicks * 100) : 0;
+    if (revDelta >= 10) insights.push({ level: 'success', text: `Выручка последней недели выросла на ${revDelta.toFixed(1)}% относительно предыдущей (${Math.round(prev.rev).toLocaleString('ru-RU')} ₽ → ${Math.round(last.rev).toLocaleString('ru-RU')} ₽).` });
+    else if (revDelta <= -10) insights.push({ level: 'danger', text: `Выручка последней недели упала на ${Math.abs(revDelta).toFixed(1)}% (${Math.round(prev.rev).toLocaleString('ru-RU')} ₽ → ${Math.round(last.rev).toLocaleString('ru-RU')} ₽). Проверьте Approve % и просадки EPC по офферам.` });
+    if (clkDelta <= -15 && Math.abs(revDelta) < 5) insights.push({ level: 'warn', text: `Трафик упал на ${Math.abs(clkDelta).toFixed(1)}%, но выручка осталась примерно той же — возможно, выросла конверсия. Проверьте, не пропали ли низкоконверсионные источники.` });
+    if (clkDelta >= 20 && revDelta < 5) insights.push({ level: 'warn', text: `Трафик вырос на ${clkDelta.toFixed(1)}%, но выручка не выросла — возможна просадка EPC или Approve. Изучите вкладку «EPC-анализ».` });
+  }
+  // --- 2. EPC: общий и просадки ---
+  const totClicks = globalRawData.reduce((s, r) => s + r.clicks, 0);
+  const totRev = globalRawData.reduce((s, r) => s + r.revenue, 0);
+  const totAppr = globalRawData.reduce((s, r) => s + r.approved, 0);
+  const totConv = globalRawData.reduce((s, r) => s + r.conversions, 0);
+  const overallEpc = totClicks > 0 ? totRev / totClicks : 0;
+  const overallAr = totConv > 0 ? totAppr / totConv * 100 : 0;
+  insights.push({ level: 'info', text: `Сводка по периоду: ${totClicks.toLocaleString('ru-RU')} кликов → ${totConv.toLocaleString('ru-RU')} лидов → ${totAppr.toLocaleString('ru-RU')} approved. Общий EPC = ${overallEpc.toFixed(2)} ₽, Approve = ${overallAr.toFixed(1)}%, выручка = ${Math.round(totRev).toLocaleString('ru-RU')} ₽.` });
+  // --- 3. Топ-офферы с просадкой EPC относительно среднего по периоду ---
+  const byOffer = {};
+  for (const r of globalRawData) {
+    if (!byOffer[r.offer]) byOffer[r.offer] = { clicks: 0, rev: 0, offer_id: r.offer_id || '' };
+    byOffer[r.offer].clicks += r.clicks;
+    byOffer[r.offer].rev += r.revenue;
+    if (!byOffer[r.offer].offer_id && r.offer_id) byOffer[r.offer].offer_id = r.offer_id;
+  }
+  const offerStats = Object.entries(byOffer)
+    .filter(([, v]) => v.clicks >= 100)
+    .map(([n, v]) => ({ name: n, clicks: v.clicks, rev: v.rev, epc: v.rev / v.clicks, offer_id: v.offer_id }));
+  const losers = offerStats.filter(o => o.epc < overallEpc * 0.6).sort((a, b) => b.clicks - a.clicks).slice(0, 3);
+  losers.forEach(o => {
+    insights.push({ level: 'danger', text: `Оффер «${o.name}» даёт EPC ${o.epc.toFixed(2)} ₽ при ${o.clicks.toLocaleString('ru-RU')} кликах — это в ${(overallEpc / Math.max(o.epc, 0.01)).toFixed(1)} раза ниже среднего по периоду (${overallEpc.toFixed(2)} ₽). Рассмотрите паузу или замену.` });
+  });
+  // --- 4. Сравнение с рынком (issue 8 → AI) ---
+  if (Object.keys(offerMarketMap).length) {
+    const marketLag = offerStats.filter(o => {
+      const m = (o.offer_id && offerMarketMap[o.offer_id]) || offerMarketByName[o.name];
+      return m && m.market_epc > 0 && o.epc > 0 && o.epc < m.market_epc * 0.7;
+    }).slice(0, 3);
+    marketLag.forEach(o => {
+      const m = (o.offer_id && offerMarketMap[o.offer_id]) || offerMarketByName[o.name];
+      insights.push({ level: 'warn', text: `Оффер «${o.name}»: ваш EPC ${o.epc.toFixed(2)} ₽ заметно ниже рыночного ${m.market_epc.toFixed(2)} ₽. Возможные причины: качество трафика, неправильный Sub-таргетинг, технические проблемы с лендингом.` });
+    });
+    const top = offerStats.filter(o => {
+      const m = (o.offer_id && offerMarketMap[o.offer_id]) || offerMarketByName[o.name];
+      return m && m.market_epc > 0 && o.epc > m.market_epc * 1.2;
+    }).slice(0, 3);
+    top.forEach(o => {
+      const m = (o.offer_id && offerMarketMap[o.offer_id]) || offerMarketByName[o.name];
+      insights.push({ level: 'success', text: `Оффер «${o.name}»: ваш EPC ${o.epc.toFixed(2)} ₽ выше рыночного ${m.market_epc.toFixed(2)} ₽ (+${((o.epc - m.market_epc) / m.market_epc * 100).toFixed(0)}%). Имеет смысл наращивать трафик.` });
+    });
+  } else {
+    insights.push({ level: 'info', text: 'Рыночные показатели EPC ещё не загружены. Откройте вкладку «🌐 Рынок офферов» и нажмите «Обновить с Leads.su» — это даст контекст «ваш EPC vs рынок».' });
+  }
+  // --- 5. Концентрация выручки по площадкам ---
+  const bySrc = {};
+  for (const r of globalRawData) bySrc[r.source] = (bySrc[r.source] || 0) + r.revenue;
+  const srcSorted = Object.entries(bySrc).sort((a, b) => b[1] - a[1]);
+  if (srcSorted.length && totRev > 0) {
+    const topShare = srcSorted[0][1] / totRev * 100;
+    if (topShare >= 70 && srcSorted.length > 1) {
+      insights.push({ level: 'warn', text: `Концентрация: площадка «${srcSorted[0][0]}» приносит ${topShare.toFixed(1)}% всей выручки. Высокий риск зависимости — стоит развивать вторую/третью по доходности.` });
+    }
+  }
+  // --- 6. Sub1 аномалии (большой объём, но низкий EPC) ---
+  const bySub = {};
+  for (const r of globalRawData) {
+    if (!r.sub1) continue;
+    if (!bySub[r.sub1]) bySub[r.sub1] = { clicks: 0, rev: 0, conv: 0, app: 0 };
+    bySub[r.sub1].clicks += r.clicks;
+    bySub[r.sub1].rev += r.revenue;
+    bySub[r.sub1].conv += r.conversions;
+    bySub[r.sub1].app += r.approved;
+  }
+  const subList = Object.entries(bySub)
+    .filter(([, v]) => v.clicks >= 200)
+    .map(([n, v]) => ({ name: n, clicks: v.clicks, epc: v.rev / v.clicks, ar: v.conv ? v.app / v.conv * 100 : 0 }));
+  const subBad = subList.filter(s => s.epc < overallEpc * 0.5).sort((a, b) => b.clicks - a.clicks).slice(0, 2);
+  subBad.forEach(s => {
+    insights.push({ level: 'warn', text: `Sub1 «${s.name}»: ${s.clicks.toLocaleString('ru-RU')} кликов, но EPC всего ${s.epc.toFixed(2)} ₽ (среднее ${overallEpc.toFixed(2)} ₽). Возможен фрод или некачественный источник — проверьте.` });
+  });
+  // --- 7. Approve Rate ---
+  if (overallAr > 0 && overallAr < 30) {
+    insights.push({ level: 'danger', text: `Низкий Approve Rate: ${overallAr.toFixed(1)}%. Это ключевой драйвер выручки — поговорите с менеджером оффера о причинах отклонений.` });
+  }
+  return insights;
+}
+
+function renderAIInsights() {
+  const container = document.getElementById('aiInsightsContainer');
+  if (!container) return;
+  const insights = generateInsights();
+  container.innerHTML = insights.map(i => {
+    const c = classifyInsight(i.level);
+    return `<div class="border-l-4 ${c.color} p-3 rounded text-sm"><span class="mr-2">${c.icon}</span>${escapeHtml(i.text)}</div>`;
+  }).join('');
+  // Drops table
+  const dropsTbody = document.querySelector('#aiDropsTable tbody');
+  if (dropsTbody) {
+    const byDate = {};
+    for (const r of globalRawData) {
+      if (!byDate[r.date]) byDate[r.date] = { clicks: 0, rev: 0 };
+      byDate[r.date].clicks += r.clicks;
+      byDate[r.date].rev += r.revenue;
+    }
+    const dates = Object.keys(byDate).sort();
+    const epcs = dates.map(d => ({ date: d, epc: byDate[d].clicks > 0 ? byDate[d].rev / byDate[d].clicks : 0 }));
+    const validEpcs = epcs.filter(e => e.epc > 0);
+    const avg = validEpcs.length ? validEpcs.reduce((s, e) => s + e.epc, 0) / validEpcs.length : 0;
+    const drops = validEpcs.map(e => ({ ...e, dev: avg > 0 ? (e.epc - avg) / avg * 100 : 0 }))
+      .filter(e => e.dev < -20).sort((a, b) => a.dev - b.dev).slice(0, 5);
+    dropsTbody.innerHTML = drops.length
+      ? drops.map(d => `<tr><td>${d.date}</td><td class="text-right text-red-400 font-bold">${d.epc.toFixed(2)} ₽</td><td class="text-right text-red-400">${d.dev.toFixed(1)}%</td></tr>`).join('')
+      : '<tr><td colspan="3" class="text-center text-slate-500 py-2">Просадок не обнаружено</td></tr>';
+  }
+  // Sub1 anomalies table
+  const subTbody = document.querySelector('#aiSub1Table tbody');
+  if (subTbody) {
+    const totClicks = globalRawData.reduce((s, r) => s + r.clicks, 0);
+    const totRev = globalRawData.reduce((s, r) => s + r.revenue, 0);
+    const overallEpc = totClicks > 0 ? totRev / totClicks : 0;
+    const bySub = {};
+    for (const r of globalRawData) {
+      if (!r.sub1) continue;
+      if (!bySub[r.sub1]) bySub[r.sub1] = { clicks: 0, rev: 0 };
+      bySub[r.sub1].clicks += r.clicks;
+      bySub[r.sub1].rev += r.revenue;
+    }
+    const rows = Object.entries(bySub)
+      .filter(([, v]) => v.clicks >= 50)
+      .map(([n, v]) => ({ name: n, clicks: v.clicks, epc: v.clicks > 0 ? v.rev / v.clicks : 0 }))
+      .map(r => {
+        let signal = '<span class="text-slate-400">в норме</span>';
+        if (overallEpc > 0 && r.epc < overallEpc * 0.5) signal = '<span class="text-red-400">слабый источник</span>';
+        else if (overallEpc > 0 && r.epc > overallEpc * 1.5) signal = '<span class="text-emerald-400">топ источник</span>';
+        return { ...r, signal };
+      })
+      .sort((a, b) => b.clicks - a.clicks).slice(0, 10);
+    subTbody.innerHTML = rows.length
+      ? rows.map(r => `<tr><td>${escapeHtml(r.name)}</td><td class="text-right">${r.clicks.toLocaleString('ru-RU')}</td><td class="text-right font-semibold">${r.epc.toFixed(2)} ₽</td><td class="text-right">${r.signal}</td></tr>`).join('')
+      : '<tr><td colspan="4" class="text-center text-slate-500 py-2">Нет данных Sub1</td></tr>';
+  }
+}
+
+
 function sortTable(tableId, field) {
   if (!tableSort[tableId]) tableSort[tableId] = { field, desc: true };
   if (tableSort[tableId].field === field) tableSort[tableId].desc = !tableSort[tableId].desc;
   else { tableSort[tableId].field = field; tableSort[tableId].desc = true; }
   if (tableId === 'epcDropsTable') renderEPCAnalytics();
+  else if (tableId === 'sub1Table') renderSub1Table();
+  else if (tableId === 'marketOffersTable') renderMarketTable();
   else renderTables();
 }
 
