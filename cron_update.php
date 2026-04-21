@@ -51,6 +51,19 @@ if (php_sapi_name() === 'cli') {
     file_put_contents(__DIR__ . '/cron.log', $ymLogMessage, FILE_APPEND);
     echo $ymLogMessage;
 
+    // 3. Обновление кэша офферов с рыночными показателями (раз в час достаточно).
+    $_GET = [];
+    $_GET['action'] = 'fetch_offers_market';
+    $_GET['token'] = $token;
+
+    ob_start();
+    include __DIR__ . '/leads-proxy.php';
+    $offersResponse = ob_get_clean();
+
+    $offersLogMessage = date('Y-m-d H:i:s') . " [CLI] Offers market: {$offersResponse}\n";
+    file_put_contents(__DIR__ . '/cron.log', $offersLogMessage, FILE_APPEND);
+    echo $offersLogMessage;
+
     exit;
 }
 

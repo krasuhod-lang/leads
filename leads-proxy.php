@@ -54,6 +54,7 @@ try {
         date TEXT NOT NULL,
         source_id TEXT,
         source_name TEXT,
+        offer_id TEXT NOT NULL DEFAULT \'\',
         offer_name TEXT NOT NULL DEFAULT \'Unknown\',
         sub1 TEXT NOT NULL DEFAULT \'\',
         clicks INTEGER DEFAULT 0,
@@ -63,17 +64,44 @@ try {
         UNIQUE(date, source_id, offer_name, sub1)
     )');
     
-    // Добавляем колонку offer_name, если её нет (миграция)
+    // Добавляем колонку offer_name, offer_id если их нет (миграция)
     $res = $db->query("PRAGMA table_info(daily_stats)");
     $hasOffer = false;
+    $hasOfferId = false;
     $hasSub1 = false;
     while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
         if ($row['name'] === 'offer_name') $hasOffer = true;
+        if ($row['name'] === 'offer_id') $hasOfferId = true;
         if ($row['name'] === 'sub1') $hasSub1 = true;
     }
     if (!$hasOffer) {
         $db->exec('ALTER TABLE daily_stats ADD COLUMN offer_name TEXT');
     }
+    if (!$hasOfferId) {
+        $db->exec('ALTER TABLE daily_stats ADD COLUMN offer_id TEXT NOT NULL DEFAULT \'\'');
+    }
+    
+    // Кэш офферов (offer_id → имя + рыночные показатели EPC).
+    // Используется для (а) повторного резолва имён в "Unknown"-записях,
+    // (б) хранения общерыночной статистики (detail_stats.system.other_epc и пр.).
+    $db->exec('CREATE TABLE IF NOT EXISTS offers_cache (
+        offer_id TEXT PRIMARY KEY,
+        name TEXT NOT NULL DEFAULT \'\',
+        market_epc REAL DEFAULT 0,
+        market_cr REAL DEFAULT 0,
+        market_ar REAL DEFAULT 0,
+        your_epc REAL DEFAULT 0,
+        your_cr REAL DEFAULT 0,
+        updated_at TEXT
+    )');
+    // Миграция: добавляем колонки рыночной статистики, если их нет
+    $res = $db->query("PRAGMA table_info(offers_cache)");
+    $existing = [];
+    while ($row = $res->fetchArray(SQLITE3_ASSOC)) { $existing[$row['name']] = true; }
+    foreach (['market_epc','market_cr','market_ar','your_epc','your_cr'] as $col) {
+        if (!isset($existing[$col])) $db->exec("ALTER TABLE offers_cache ADD COLUMN {$col} REAL DEFAULT 0");
+    }
+    if (!isset($existing['updated_at'])) $db->exec("ALTER TABLE offers_cache ADD COLUMN updated_at TEXT");
     
     // Миграция: добавляем sub1 и обновляем UNIQUE constraint
     if (!$hasSub1) {
@@ -180,9 +208,10 @@ function cleanSourceName($name) {
 }
 
 /**
- * Загружает список офферов и возвращает массив [offer_id => offer_name]
+ * Загружает список офферов и возвращает массив [offer_id => offer_name].
+ * Также сохраняет имена в offers_cache, чтобы потом резолвить «Unknown»-записи.
  */
-function fetchOffersMap($token) {
+function fetchOffersMap($token, $db = null) {
     $url = "https://api.leads.su/webmaster/offers?token={$token}&limit=1000";
     $result = apiGet($url);
     if (isset($result['error'])) {
@@ -196,14 +225,87 @@ function fetchOffersMap($token) {
         $offers = $result;
     }
     $map = [];
+    $cacheStmt = null;
+    if ($db) {
+        $cacheStmt = $db->prepare('INSERT INTO offers_cache (offer_id, name, updated_at)
+            VALUES (:id, :name, :ts)
+            ON CONFLICT(offer_id) DO UPDATE SET
+                name = CASE WHEN excluded.name != \'\' THEN excluded.name ELSE offers_cache.name END,
+                updated_at = excluded.updated_at');
+    }
+    $now = date('Y-m-d H:i:s');
     foreach ($offers as $offer) {
         if (!is_array($offer)) continue;
         $id = (string)($offer['id'] ?? $offer['offer_id'] ?? $offer['offerId'] ?? '');
         $name = $offer['name'] ?? $offer['title'] ?? '';
         if ($id && $name) $map[$id] = $name;
         elseif ($id) $map[$id] = "Offer #{$id}";
+        if ($cacheStmt && $id) {
+            $cacheStmt->bindValue(':id', $id, SQLITE3_TEXT);
+            $cacheStmt->bindValue(':name', $name ?: '', SQLITE3_TEXT);
+            $cacheStmt->bindValue(':ts', $now, SQLITE3_TEXT);
+            $cacheStmt->execute();
+            $cacheStmt->reset();
+        }
     }
     return $map;
+}
+
+/**
+ * Загружает офферы вместе с расширенными показателями рынка (detail_stats)
+ * и сохраняет в offers_cache. Возвращает массив офферов с полями market_epc/your_epc.
+ */
+function fetchOffersExtended($token, $db) {
+    $url = "https://api.leads.su/webmaster/offers?token={$token}&limit=1000&extendedFields=1";
+    $result = apiGet($url);
+    if (isset($result['error'])) {
+        error_log('fetchOffersExtended error: ' . json_encode($result['error']));
+        return ['error' => $result['error']];
+    }
+    $offers = $result['data'] ?? $result['offers'] ?? $result['items'] ?? [];
+    if (!is_array($offers) && is_array($result)) $offers = $result;
+    $now = date('Y-m-d H:i:s');
+    $stmt = $db->prepare('INSERT INTO offers_cache
+        (offer_id, name, market_epc, market_cr, market_ar, your_epc, your_cr, updated_at)
+        VALUES (:id, :name, :mepc, :mcr, :mar, :yepc, :ycr, :ts)
+        ON CONFLICT(offer_id) DO UPDATE SET
+            name = CASE WHEN excluded.name != \'\' THEN excluded.name ELSE offers_cache.name END,
+            market_epc = excluded.market_epc,
+            market_cr = excluded.market_cr,
+            market_ar = excluded.market_ar,
+            your_epc = excluded.your_epc,
+            your_cr = excluded.your_cr,
+            updated_at = excluded.updated_at');
+    $list = [];
+    foreach ($offers as $o) {
+        if (!is_array($o)) continue;
+        $id = (string)($o['id'] ?? $o['offer_id'] ?? '');
+        if (!$id) continue;
+        $name = $o['name'] ?? $o['title'] ?? '';
+        $sys = $o['detail_stats']['system'] ?? [];
+        $you = $o['detail_stats']['your'] ?? [];
+        $mepc = (float)($sys['other_epc'] ?? 0);
+        $mcr  = (float)($sys['other_cr']  ?? 0);
+        $mar  = (float)($sys['other_ar']  ?? 0);
+        $yepc = (float)($you['other_epc'] ?? 0);
+        $ycr  = (float)($you['other_cr']  ?? 0);
+        $stmt->bindValue(':id', $id, SQLITE3_TEXT);
+        $stmt->bindValue(':name', $name ?: '', SQLITE3_TEXT);
+        $stmt->bindValue(':mepc', $mepc, SQLITE3_FLOAT);
+        $stmt->bindValue(':mcr', $mcr, SQLITE3_FLOAT);
+        $stmt->bindValue(':mar', $mar, SQLITE3_FLOAT);
+        $stmt->bindValue(':yepc', $yepc, SQLITE3_FLOAT);
+        $stmt->bindValue(':ycr', $ycr, SQLITE3_FLOAT);
+        $stmt->bindValue(':ts', $now, SQLITE3_TEXT);
+        $stmt->execute();
+        $stmt->reset();
+        $list[] = [
+            'offer_id' => $id, 'name' => $name,
+            'market_epc' => $mepc, 'market_cr' => $mcr, 'market_ar' => $mar,
+            'your_epc' => $yepc, 'your_cr' => $ycr
+        ];
+    }
+    return ['offers' => $list];
 }
 
 /**
@@ -247,14 +349,15 @@ function ymApiGet($url, $ymToken) {
 }
 
 /**
- * Сохраняет строки отчёта в daily_stats (с учётом offer_name)
+ * Сохраняет строки отчёта в daily_stats (с учётом offer_name и offer_id)
  */
 function saveReportRows($db, $rows, $offerMap) {
     $inserted = 0;
-    $stmt = $db->prepare('INSERT INTO daily_stats (date, source_id, source_name, offer_name, sub1, clicks, conversions, approved, revenue)
-        VALUES (:date, :source_id, :source_name, :offer_name, :sub1, :clicks, :conversions, :approved, :revenue)
+    $stmt = $db->prepare('INSERT INTO daily_stats (date, source_id, source_name, offer_id, offer_name, sub1, clicks, conversions, approved, revenue)
+        VALUES (:date, :source_id, :source_name, :offer_id, :offer_name, :sub1, :clicks, :conversions, :approved, :revenue)
         ON CONFLICT(date, source_id, offer_name, sub1) DO UPDATE SET
             source_name = excluded.source_name,
+            offer_id = CASE WHEN excluded.offer_id != \'\' THEN excluded.offer_id ELSE daily_stats.offer_id END,
             clicks = excluded.clicks,
             conversions = excluded.conversions,
             approved = excluded.approved,
@@ -286,6 +389,7 @@ function saveReportRows($db, $rows, $offerMap) {
         $stmt->bindValue(':date', $date, SQLITE3_TEXT);
         $stmt->bindValue(':source_id', $sourceId, SQLITE3_TEXT);
         $stmt->bindValue(':source_name', $sourceName, SQLITE3_TEXT);
+        $stmt->bindValue(':offer_id', $offerId, SQLITE3_TEXT);
         $stmt->bindValue(':offer_name', $offerName, SQLITE3_TEXT);
         $stmt->bindValue(':sub1', $sub1, SQLITE3_TEXT);
         $stmt->bindValue(':clicks', $clicks, SQLITE3_INTEGER);
@@ -293,20 +397,33 @@ function saveReportRows($db, $rows, $offerMap) {
         $stmt->bindValue(':approved', $approved, SQLITE3_INTEGER);
         $stmt->bindValue(':revenue', $revenue, SQLITE3_FLOAT);
         if ($stmt->execute()) $inserted++;
+        $stmt->reset();
     }
     return $inserted;
 }
 
 // ========== ОБРАБОТЧИКИ ЗАПРОСОВ ==========
 
-// 1. Получение сохранённых данных из БД (для дашборда)
+// 1. Получение сохранённых данных из БД (для дашборда).
+// LEFT JOIN с offers_cache позволяет переопределить «Unknown» / «Offer #X» актуальным именем,
+// если оно есть в кэше (резолвится по offer_id).
 if ($action === 'get_stats') {
     if (!$start_date || !$end_date) {
         echo json_encode(['error' => 'start_date and end_date required']);
         exit;
     }
-    $stmt = $db->prepare('SELECT date, source_id, source_name, offer_name, sub1, clicks, conversions, approved, revenue 
-        FROM daily_stats WHERE date BETWEEN :start AND :end ORDER BY date');
+    $stmt = $db->prepare('SELECT d.date, d.source_id, d.source_name, d.offer_id,
+        CASE
+            WHEN o.name IS NOT NULL AND o.name != \'\'
+                 AND (d.offer_name = \'Unknown\' OR d.offer_name = \'\' OR d.offer_name LIKE \'Offer #%\')
+            THEN o.name
+            ELSE d.offer_name
+        END AS offer_name,
+        d.sub1, d.clicks, d.conversions, d.approved, d.revenue,
+        o.market_epc, o.market_cr, o.market_ar, o.your_epc
+        FROM daily_stats d
+        LEFT JOIN offers_cache o ON o.offer_id = d.offer_id AND d.offer_id != \'\'
+        WHERE d.date BETWEEN :start AND :end ORDER BY d.date');
     $stmt->bindValue(':start', $start_date, SQLITE3_TEXT);
     $stmt->bindValue(':end', $end_date, SQLITE3_TEXT);
     $res = $stmt->execute();
@@ -326,11 +443,21 @@ if ($action === 'save_stats') {
         exit;
     }
     $inserted = 0;
+    $stmt = $db->prepare('INSERT INTO daily_stats (date, source_id, source_name, offer_id, offer_name, sub1, clicks, conversions, approved, revenue)
+        VALUES (:date, :source_id, :source_name, :offer_id, :offer_name, :sub1, :clicks, :conversions, :approved, :revenue)
+        ON CONFLICT(date, source_id, offer_name, sub1) DO UPDATE SET
+            source_name = excluded.source_name,
+            offer_id = CASE WHEN excluded.offer_id != \'\' THEN excluded.offer_id ELSE daily_stats.offer_id END,
+            clicks = excluded.clicks,
+            conversions = excluded.conversions,
+            approved = excluded.approved,
+            revenue = excluded.revenue');
     foreach ($input['data'] as $row) {
         $date = $row['date'] ?? null;
         if (!$date) continue;
         $sourceId = $row['source_id'] ?? 'all';
         $sourceName = cleanSourceName($row['source'] ?? $row['source_name'] ?? 'Unknown');
+        $offerId = (string)($row['offer_id'] ?? '');
         $offerName = $row['offer'] ?? 'Unknown';
         $sub1 = $row['sub1'] ?? '';
         $clicks = (int)($row['clicks'] ?? 0);
@@ -338,17 +465,10 @@ if ($action === 'save_stats') {
         $approved = (int)($row['approved'] ?? 0);
         $revenue = (float)($row['revenue'] ?? 0);
         
-        $stmt = $db->prepare('INSERT INTO daily_stats (date, source_id, source_name, offer_name, sub1, clicks, conversions, approved, revenue)
-            VALUES (:date, :source_id, :source_name, :offer_name, :sub1, :clicks, :conversions, :approved, :revenue)
-            ON CONFLICT(date, source_id, offer_name, sub1) DO UPDATE SET
-                source_name = excluded.source_name,
-                clicks = excluded.clicks,
-                conversions = excluded.conversions,
-                approved = excluded.approved,
-                revenue = excluded.revenue');
         $stmt->bindValue(':date', $date, SQLITE3_TEXT);
         $stmt->bindValue(':source_id', $sourceId, SQLITE3_TEXT);
         $stmt->bindValue(':source_name', $sourceName, SQLITE3_TEXT);
+        $stmt->bindValue(':offer_id', $offerId, SQLITE3_TEXT);
         $stmt->bindValue(':offer_name', $offerName, SQLITE3_TEXT);
         $stmt->bindValue(':sub1', $sub1, SQLITE3_TEXT);
         $stmt->bindValue(':clicks', $clicks, SQLITE3_INTEGER);
@@ -356,6 +476,7 @@ if ($action === 'save_stats') {
         $stmt->bindValue(':approved', $approved, SQLITE3_INTEGER);
         $stmt->bindValue(':revenue', $revenue, SQLITE3_FLOAT);
         if ($stmt->execute()) $inserted++;
+        $stmt->reset();
     }
     echo json_encode(['status' => 'success', 'inserted' => $inserted]);
     exit;
@@ -373,8 +494,8 @@ if ($action === 'update_stats') {
         exit;
     }
     
-    // Получаем офферы один раз
-    $offerMap = fetchOffersMap($token);
+    // Получаем офферы один раз и параллельно сохраняем в offers_cache
+    $offerMap = fetchOffersMap($token, $db);
     
     // Загружаем отчёт с пагинацией (чтобы не зависнуть на больших объёмах)
     $allRows = [];
@@ -631,7 +752,31 @@ if ($action === 'ym_fetch_banner') {
     exit;
 }
 
-// 13. Прокси для остальных запросов (offers, platforms и т.д.)
+// 13. Загрузить расширенную статистику офферов (рыночный EPC и пр.) и положить в кэш.
+if ($action === 'fetch_offers_market') {
+    if (!$token) {
+        echo json_encode(['error' => 'token required']);
+        exit;
+    }
+    $res = fetchOffersExtended($token, $db);
+    if (isset($res['error'])) {
+        echo json_encode(['error' => 'Failed to fetch offers', 'details' => $res['error']]);
+        exit;
+    }
+    echo json_encode(['status' => 'success', 'count' => count($res['offers']), 'offers' => $res['offers']]);
+    exit;
+}
+
+// 14. Получить кэш офферов с рыночными показателями (без обращения к Leads.su).
+if ($action === 'get_offers_market') {
+    $res = $db->query('SELECT offer_id, name, market_epc, market_cr, market_ar, your_epc, your_cr, updated_at FROM offers_cache ORDER BY market_epc DESC');
+    $rows = [];
+    while ($row = $res->fetchArray(SQLITE3_ASSOC)) $rows[] = $row;
+    echo json_encode(['status' => 'success', 'data' => $rows]);
+    exit;
+}
+
+// 15. Прокси для остальных запросов (offers, platforms и т.д.)
 if (!$method) {
     http_response_code(400);
     echo json_encode(['error' => 'method required']);
