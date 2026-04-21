@@ -470,7 +470,7 @@ function aiBuildSystemPrompt($sig) {
    - быть конкретной (что именно сделать на следующей неделе),
    - содержать evidence — цитату/значение из переданных данных (например «EPC оффера X = 1.2₽ при среднем 4.7₽»),
    - иметь expected_impact с примерной оценкой (например «+8-12% к выручке за 14 дней»).
-5. Прогноз стройи на основании weekly_trend / monthly_trend и текущих KPI; consciously учитывай сезонность и снижение/рост последних недель. Если данных мало — confidence=«low».
+5. Прогноз строй на основании weekly_trend / monthly_trend и текущих KPI; осознанно учитывай сезонность и снижение/рост последних недель. Если данных мало — confidence=«low».
 6. Никогда не упоминай свою модель, провайдера или "AI". Пиши как аналитик.
 7. Язык вывода — русский, профессиональный, без воды и без «возможно стоит подумать».
 
@@ -562,7 +562,8 @@ function aiCallProvider($sysPrompt, $userPrompt, $model) {
         CURLOPT_POST => true,
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_TIMEOUT => 120,
-        CURLOPT_SSL_VERIFYPEER => false,
+        CURLOPT_SSL_VERIFYPEER => true,
+        CURLOPT_SSL_VERIFYHOST => 2,
         CURLOPT_HTTPHEADER => [
             'Content-Type: application/json',
             'Accept: application/json',
