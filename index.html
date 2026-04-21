@@ -458,13 +458,61 @@ function escapeHtml(str) {
   return String(str).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#039;');
 }
 
-// Deduplicates data array by composite key (date+source_id+offer_id+offer+sub1).
+// CRC32 совместимый с PHP crc32() — нужен, чтобы FE и сервер
+// генерировали одинаковые синтетические source_id / offer_id для строк,
+// в которых API не вернул реальный platform_id / offer_id. Без совпадения
+// функций в БД появятся "теневые" дубли с разными ключами.
+const CRC32_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+function crc32hex(str) {
+  // UTF-8 байты, как в PHP
+  const bytes = new TextEncoder().encode(String(str));
+  let c = 0xffffffff;
+  for (let i = 0; i < bytes.length; i++) c = (CRC32_TABLE[(c ^ bytes[i]) & 0xff] ^ (c >>> 8)) >>> 0;
+  c = (c ^ 0xffffffff) >>> 0;
+  return ('00000000' + c.toString(16)).slice(-8);
+}
+function syntheticSourceId(name) {
+  const n = String(name || '').trim();
+  if (!n || n.toLowerCase() === 'all' || n.toLowerCase() === 'unknown') return 'all';
+  return 'src:' + crc32hex(n);
+}
+function syntheticOfferId(name) {
+  const n = String(name || '').trim();
+  if (!n) return '';
+  return 'name:' + crc32hex(n);
+}
+
+// Возвращает offer_id для дедупликации/UNIQUE-сравнения. Если поле есть —
+// используем его как есть; иначе синтезируем из имени (см. PHP-аналог).
+function dedupOfferId(r) {
+  if (r.offer_id) return r.offer_id;
+  return syntheticOfferId(r.offer || '');
+}
+function dedupSourceId(r) {
+  if (r.source_id && r.source_id !== '' && r.source_id !== 'all') return r.source_id;
+  // Когда source_id пустой/«all» — пытаемся синтезировать из имени.
+  const synth = syntheticSourceId(r.source || '');
+  return synth || 'all';
+}
+
+// Deduplicates data array by composite key (date+source_id+offer_id+sub1).
 // keepLast=false: first occurrence wins (for fresh API data where dupes are exact copies).
 // keepLast=true: last occurrence wins (for DB merge where DB data should overwrite in-memory).
 function deduplicateData(data, keepLast = false) {
   const dedup = new Map();
   for (const r of data) {
-    const key = `${r.date}|${r.source_id}|${r.offer_id || ''}|${r.offer}|${r.sub1}`;
+    // Ключ намеренно НЕ содержит offer_name — иначе одна и та же запись,
+    // у которой имя в разные моменты приходило как «Offer #123» / «Микрозайм24»,
+    // даёт две строки и удваивает выручку.
+    const key = `${r.date}|${dedupSourceId(r)}|${dedupOfferId(r)}|${r.sub1}`;
     if (keepLast || !dedup.has(key)) {
       dedup.set(key, r);
     }
@@ -546,7 +594,9 @@ function processDataFromDb(rows) {
     source: mergeSourceName(row.source_name),
     source_id: row.source_id || 'all',
     sub1: row.sub1 || '',
-    clicks: row.clicks, conversions: row.conversions, approved: row.approved, revenue: row.revenue
+    clicks: row.clicks,
+    raw_clicks: row.raw_clicks || row.clicks,
+    conversions: row.conversions, approved: row.approved, revenue: row.revenue
   }));
 }
 
@@ -611,6 +661,9 @@ async function loadFromAPI() {
       if (!dateStr) continue;
       const offerId = String(row.offer_id ?? row.offerid ?? '');
       const platformId = String(row.platform_id ?? row.platformid ?? '');
+      // Сырые клики — для честного сравнения с рыночным EPC, который провайдер
+      // считает по обычным clicks, а не unique_clicks.
+      const rawClicks = Number(row.clicks ?? row.uniqueclicks ?? row.unique_clicks ?? 0);
       const clicks = Number(row.unique_clicks ?? row.clicks ?? row.uniqueclicks ?? 0);
       const conversions = Number(row.unique_conversions ?? row.conversions ?? row.uniqueconversions ?? 0);
       const approved = Number(row.conversions_approved ?? row.conversionsapproved ?? 0);
@@ -628,7 +681,8 @@ async function loadFromAPI() {
         date: dateStr, week: getWeekNumber(new Date(dateStr)), month: dateStr.slice(0, 7),
         dayOfWeek: daysOfWeek[new Date(dateStr).getDay()],
         offer: offerName, offer_id: offerId,
-        source: sourceName, source_id: platformId || 'all', sub1, clicks, conversions, approved, revenue
+        source: sourceName, source_id: platformId || 'all', sub1,
+        clicks, raw_clicks: rawClicks, conversions, approved, revenue
       });
     }
     // Deduplicate originalData by composite key (date + source_id + offer_id + offer + sub1)
@@ -639,7 +693,8 @@ async function loadFromAPI() {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ data: originalData.map(r => ({
           date: r.date, source_id: r.source_id || 'all', source_name: r.source,
-          offer: r.offer, offer_id: r.offer_id || '', sub1: r.sub1 || '', clicks: r.clicks,
+          offer: r.offer, offer_id: r.offer_id || '', sub1: r.sub1 || '',
+          clicks: r.clicks, raw_clicks: r.raw_clicks || r.clicks,
           conversions: r.conversions, approved: r.approved, revenue: r.revenue
         })) })
       });
@@ -684,11 +739,16 @@ async function runAutoRefresh(force = false) {
   const last = Number(localStorage.getItem(LAST_REFRESH_KEY) || 0);
   if (!force && last && (now - last) < AUTO_REFRESH_INTERVAL_MS) return;
   console.log('[Auto-refresh] Триггер обновления данных...');
+  // ВАЖНО: API leads.su интерпретирует end_date без времени как ИСКЛЮЧИТЕЛЬНУЮ
+  // границу, и сегодняшний день обрезается. Дописываем явное "00:00:00" /
+  // "23:59:59", чтобы автообновление подтягивало в т.ч. сегодняшние данные.
+  const apiStart = encodeURIComponent(`${dFrom} 00:00:00`);
+  const apiEnd   = encodeURIComponent(`${dTo} 23:59:59`);
   // Trigger server-side Leads.su update (like cron)
   try {
-    await fetch(`${API_BASE}?action=update_stats&token=${HARDCODED_TOKEN}&start_date=${dFrom}&end_date=${dTo}&grouping=day&field=offer_id,source,aff_sub1`);
+    await fetch(`${API_BASE}?action=update_stats&token=${HARDCODED_TOKEN}&start_date=${apiStart}&end_date=${apiEnd}&grouping=day&field=offer_id,source,aff_sub1`);
   } catch(e) { console.warn('[Auto-refresh] Leads.su update error:', e); }
-  // Trigger server-side Yandex Metrika banner update
+  // Yandex Metrika ждёт даты вида YYYY-MM-DD без времени.
   try {
     await fetch(`${API_BASE}?action=ym_fetch_banner&start_date=${dFrom}&end_date=${dTo}`);
   } catch(e) { console.warn('[Auto-refresh] YM update error:', e); }
@@ -696,6 +756,11 @@ async function runAutoRefresh(force = false) {
   try {
     await fetch(`${API_BASE}?action=fetch_offers_market&token=${HARDCODED_TOKEN}`);
   } catch(e) { console.warn('[Auto-refresh] Offers market update error:', e); }
+  // Подтянуть журнал событий и проверить алерты в Telegram (если настроен).
+  try { await fetch(`${API_BASE}?action=fetch_notifications&token=${HARDCODED_TOKEN}`); }
+  catch(e) { console.warn('[Auto-refresh] Notifications error:', e); }
+  try { await fetch(`${API_BASE}?action=tg_check_alerts`); }
+  catch(e) { console.warn('[Auto-refresh] TG alerts error:', e); }
   localStorage.setItem(LAST_REFRESH_KEY, String(Date.now()));
   // Then reload from DB and refresh all dashboards
   await autoLoadSavedStats();
@@ -772,12 +837,12 @@ async function autoLoadSavedStats() {
   if (saved && saved.length) {
     // Build a key→name lookup of in-memory data so we can preserve real offer names
     // when DB returns "Unknown" (issue 1: при смене диапазона имена не должны теряться).
-    // Намеренно НЕ включаем offer name в ключ — мы как раз ищем имя для записи,
-    // у которой имя сейчас "Unknown" / "Offer #X" / пустое; ключ должен совпадать
-    // с lookup-ключом из DB-ряда (date|source_id|offer_id|sub1).
+    // Ключ совпадает с dedup-key — date|source_id|offer_id|sub1 (БЕЗ offer_name).
+    // Когда offer_id пустой, используется syntheticOfferId(name) — чтобы лукап
+    // работал и для строк, у которых сервер не знал реального ID.
     const inMemNames = new Map();
     for (const r of originalData) {
-      const key = `${r.date}|${r.source_id}|${r.offer_id || ''}|${r.sub1}`;
+      const key = `${r.date}|${dedupSourceId(r)}|${dedupOfferId(r)}|${r.sub1}`;
       if (r.offer && r.offer !== 'Unknown' && !/^Offer #/.test(r.offer) && !inMemNames.has(key)) {
         inMemNames.set(key, r.offer);
       }
@@ -785,7 +850,13 @@ async function autoLoadSavedStats() {
     const dbRows = saved.map(row => {
       const d = new Date(row.date);
       let offerName = row.offer_name || 'Unknown';
-      const key = `${row.date}|${row.source_id || 'all'}|${row.offer_id || ''}|${row.sub1 || ''}`;
+      const proxy = {
+        offer_id: row.offer_id || '',
+        offer: offerName,
+        source_id: row.source_id || 'all',
+        source: row.source_name || ''
+      };
+      const key = `${row.date}|${dedupSourceId(proxy)}|${dedupOfferId(proxy)}|${row.sub1 || ''}`;
       // 1) Prefer offers_cache name (already merged server-side via LEFT JOIN), but if we
       //    still have "Unknown" — try the in-memory previous name.
       if ((offerName === 'Unknown' || /^Offer #/.test(offerName) || !offerName) && inMemNames.has(key)) {
@@ -801,7 +872,9 @@ async function autoLoadSavedStats() {
         source: mergeSourceName(row.source_name),
         source_id: row.source_id || 'all',
         sub1: row.sub1 || '',
-        clicks: row.clicks, conversions: row.conversions, approved: row.approved, revenue: row.revenue
+        clicks: row.clicks,
+        raw_clicks: row.raw_clicks || row.clicks,
+        conversions: row.conversions, approved: row.approved, revenue: row.revenue
       };
     });
     // Keep existing data outside the fetched range, use DB data for the fetched range
