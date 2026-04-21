@@ -69,8 +69,11 @@
     <button class="tab-btn" data-tab="epc" onclick="switchTab('epc')">📈 EPC-анализ</button>
     <button class="tab-btn" data-tab="market" onclick="switchTab('market')">🌐 Рынок офферов</button>
     <button class="tab-btn" data-tab="matrix" onclick="switchTab('matrix')">🧩 Матрица</button>
+    <button class="tab-btn" data-tab="ar-matrix" onclick="switchTab('ar-matrix')">🎛️ AR-матрица</button>
+    <button class="tab-btn" data-tab="compare" onclick="switchTab('compare')">🆚 Сравнение</button>
     <button class="tab-btn" data-tab="banner" onclick="switchTab('banner')">🎯 Баннер</button>
     <button class="tab-btn" data-tab="ai" onclick="switchTab('ai')">🤖 AI-аналитика</button>
+    <button class="tab-btn" data-tab="events" onclick="switchTab('events')">📰 События</button>
   </div>
 
   <!-- TAB: DASHBOARD -->
@@ -286,6 +289,51 @@
     </div>
   </div>
 
+  <!-- TAB: AR-MATRIX (offer × source heatmap) -->
+  <div id="tab-ar-matrix" class="tab-content space-y-6">
+    <div class="card">
+      <div class="flex flex-wrap gap-3 justify-between items-center mb-4">
+        <div>
+          <h2 class="text-white font-bold text-lg">🎛️ Approve Rate: оффер × площадка</h2>
+          <p class="text-sm text-slate-400 mt-1">Помогает поймать площадку, на которой конкретный оффер даёт мусорный трафик. Цвет: 🔴 ≤30% · 🟡 30–60% · 🟢 ≥60%. Учитываем только связки с числом лидов ≥ порога.</p>
+        </div>
+        <div class="flex flex-wrap gap-2 items-center">
+          <label class="text-xs text-slate-400">Мин. лидов</label>
+          <input type="number" id="arMatrixMinLeads" value="10" min="0" class="bg-slate-900 border border-slate-700 rounded px-2 py-1 w-20 text-sm" oninput="renderArMatrix()">
+          <label class="text-xs text-slate-400">Топ офферов</label>
+          <input type="number" id="arMatrixTopN" value="20" min="1" class="bg-slate-900 border border-slate-700 rounded px-2 py-1 w-20 text-sm" oninput="renderArMatrix()">
+        </div>
+      </div>
+      <div id="arMatrixWrap" class="overflow-auto" style="max-height:680px"></div>
+    </div>
+  </div>
+
+  <!-- TAB: COMPARE (period vs previous period) -->
+  <div id="tab-compare" class="tab-content space-y-6">
+    <div class="card">
+      <div class="flex flex-wrap gap-3 justify-between items-center mb-2">
+        <h2 class="text-white font-bold text-lg">🆚 Сравнение периодов</h2>
+        <select id="compareMode" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm focus:outline-none" onchange="renderCompareTab()">
+          <option value="prev_period">Текущий vs предыдущий той же длины</option>
+          <option value="prev_week">Эта неделя vs прошлая</option>
+          <option value="prev_month">Этот месяц vs прошлый (то же количество дней)</option>
+        </select>
+      </div>
+      <p class="text-sm text-slate-400 mb-4" id="comparePeriodLabel"></p>
+      <div id="compareKpiGrid" class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-4"></div>
+    </div>
+    <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
+      <div class="card">
+        <h3 class="text-white font-bold mb-3">📈 Топ-офферы по приросту выручки</h3>
+        <div class="overflow-auto" style="max-height:420px"><table class="w-full text-sm" id="compareGainersTable"><thead><tr><th>Оффер</th><th class="text-right">Текущий</th><th class="text-right">Предыдущий</th><th class="text-right">Δ ₽</th><th class="text-right">Δ %</th></tr></thead><tbody></tbody></table></div>
+      </div>
+      <div class="card">
+        <h3 class="text-white font-bold mb-3">📉 Топ-офферы по падению выручки</h3>
+        <div class="overflow-auto" style="max-height:420px"><table class="w-full text-sm" id="compareLosersTable"><thead><tr><th>Оффер</th><th class="text-right">Текущий</th><th class="text-right">Предыдущий</th><th class="text-right">Δ ₽</th><th class="text-right">Δ %</th></tr></thead><tbody></tbody></table></div>
+      </div>
+    </div>
+  </div>
+
   <!-- TAB: BANNER -->
   <div id="tab-banner" class="tab-content space-y-6">
     <div id="bannerKpiCards" class="grid grid-cols-1 md:grid-cols-4 gap-4"></div>
@@ -348,7 +396,7 @@
     <div class="card">
       <div class="flex flex-wrap gap-3 justify-between items-center mb-2">
         <h2 class="text-white font-bold text-lg">🤖 AI-аналитика и подсказки</h2>
-        <button class="btn" onclick="renderAIInsights()">🔄 Пересчитать</button>
+        <button class="btn" onclick="recalcAIInsights(event)">🔄 Пересчитать</button>
       </div>
       <p class="text-sm text-slate-400 mb-4">Автоматический разбор закономерностей: динамика выручки и трафика, аномалии EPC, низкоэффективные офферы и площадки, сравнение с рынком. Подсказки строятся из текущего диапазона дат.</p>
       <div id="aiInsightsContainer" class="space-y-3"></div>
@@ -373,6 +421,47 @@
         <h3 class="text-white font-bold mb-3">⚠️ Sub1 с аномалиями</h3>
         <div class="overflow-auto" style="max-height:320px"><table class="w-full text-sm" id="aiSub1Table"><thead><tr><th>Sub1</th><th class="text-right">Клики</th><th class="text-right">EPC</th><th class="text-right">Сигнал</th></tr></thead><tbody></tbody></table></div>
       </div>
+    </div>
+  </div>
+
+  <!-- TAB: EVENTS (Leads.su notifications + Telegram alerts) -->
+  <div id="tab-events" class="tab-content space-y-6">
+    <div class="card">
+      <div class="flex flex-wrap gap-3 justify-between items-center mb-4">
+        <h2 class="text-white font-bold text-lg">📰 Журнал событий Leads.su</h2>
+        <button class="btn" onclick="refreshEventsLog()">🔄 Подтянуть свежие</button>
+      </div>
+      <p class="text-sm text-slate-400 mb-3">Новые офферы, изменения выплат, остановки и пр. — из <code>/webmaster/notifications</code>. Дубли отсекаются по UNIQUE-ключу.</p>
+      <div class="overflow-auto" style="max-height:520px">
+        <table class="w-full text-sm">
+          <thead><tr><th>Дата</th><th>Тип</th><th>Заголовок</th><th>Текст</th><th>Severity</th></tr></thead>
+          <tbody id="eventsLogBody"><tr><td colspan="5" class="text-center text-slate-500 py-3">Нажмите «🔄 Подтянуть свежие» для загрузки.</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <h2 class="text-white font-bold text-lg mb-3">🔔 Telegram-уведомления</h2>
+      <p class="text-sm text-slate-400 mb-3">Бот будет писать в указанный чат при просадке выручки &gt;20% (день к тому же дню недели), при появлении нового топ-Sub1 и при выполнении плана месяца. Защита от спама — один и тот же алерт максимум раз в сутки.</p>
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">
+        <div>
+          <label for="tgBotToken" class="text-xs text-slate-400 block mb-1">Bot token</label>
+          <input id="tgBotToken" type="password" placeholder="123456:ABC..." class="bg-slate-800 border border-slate-700 rounded px-3 py-2 w-full text-sm focus:outline-none focus:border-blue-500">
+        </div>
+        <div>
+          <label for="tgChatId" class="text-xs text-slate-400 block mb-1">Chat ID (или @username)</label>
+          <input id="tgChatId" type="text" placeholder="-1001234567890" class="bg-slate-800 border border-slate-700 rounded px-3 py-2 w-full text-sm focus:outline-none focus:border-blue-500">
+        </div>
+        <div>
+          <label for="monthlyRevenuePlan" class="text-xs text-slate-400 block mb-1">План выручки на месяц (₽)</label>
+          <input id="monthlyRevenuePlan" type="number" min="0" step="1000" placeholder="0 — отключено" class="bg-slate-800 border border-slate-700 rounded px-3 py-2 w-full text-sm focus:outline-none focus:border-blue-500">
+        </div>
+      </div>
+      <div class="flex gap-2 flex-wrap">
+        <button class="btn" onclick="saveTgSettings()">💾 Сохранить</button>
+        <button class="btn" style="background:#16a34a" onclick="testTgSend()">📨 Отправить тестовое</button>
+        <button class="btn" style="background:#475569" onclick="checkTgAlertsNow()">▶️ Прогнать проверку алертов</button>
+      </div>
+      <div id="tgMessage" class="mt-3 text-sm hidden"></div>
     </div>
   </div>
 </div>
@@ -458,13 +547,61 @@ function escapeHtml(str) {
   return String(str).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#039;');
 }
 
-// Deduplicates data array by composite key (date+source_id+offer_id+offer+sub1).
+// CRC32 совместимый с PHP crc32() — нужен, чтобы FE и сервер
+// генерировали одинаковые синтетические source_id / offer_id для строк,
+// в которых API не вернул реальный platform_id / offer_id. Без совпадения
+// функций в БД появятся "теневые" дубли с разными ключами.
+const CRC32_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+function crc32hex(str) {
+  // UTF-8 байты, как в PHP
+  const bytes = new TextEncoder().encode(String(str));
+  let c = 0xffffffff;
+  for (let i = 0; i < bytes.length; i++) c = (CRC32_TABLE[(c ^ bytes[i]) & 0xff] ^ (c >>> 8)) >>> 0;
+  c = (c ^ 0xffffffff) >>> 0;
+  return ('00000000' + c.toString(16)).slice(-8);
+}
+function syntheticSourceId(name) {
+  const n = String(name || '').trim();
+  if (!n || n.toLowerCase() === 'all' || n.toLowerCase() === 'unknown') return 'all';
+  return 'src:' + crc32hex(n);
+}
+function syntheticOfferId(name) {
+  const n = String(name || '').trim();
+  if (!n) return '';
+  return 'name:' + crc32hex(n);
+}
+
+// Возвращает offer_id для дедупликации/UNIQUE-сравнения. Если поле есть —
+// используем его как есть; иначе синтезируем из имени (см. PHP-аналог).
+function dedupOfferId(r) {
+  if (r.offer_id) return r.offer_id;
+  return syntheticOfferId(r.offer || '');
+}
+function dedupSourceId(r) {
+  if (r.source_id && r.source_id !== '' && r.source_id !== 'all') return r.source_id;
+  // Когда source_id пустой/«all» — пытаемся синтезировать из имени.
+  const synth = syntheticSourceId(r.source || '');
+  return synth || 'all';
+}
+
+// Deduplicates data array by composite key (date+source_id+offer_id+sub1).
 // keepLast=false: first occurrence wins (for fresh API data where dupes are exact copies).
 // keepLast=true: last occurrence wins (for DB merge where DB data should overwrite in-memory).
 function deduplicateData(data, keepLast = false) {
   const dedup = new Map();
   for (const r of data) {
-    const key = `${r.date}|${r.source_id}|${r.offer_id || ''}|${r.offer}|${r.sub1}`;
+    // Ключ намеренно НЕ содержит offer_name — иначе одна и та же запись,
+    // у которой имя в разные моменты приходило как «Offer #123» / «Микрозайм24»,
+    // даёт две строки и удваивает выручку.
+    const key = `${r.date}|${dedupSourceId(r)}|${dedupOfferId(r)}|${r.sub1}`;
     if (keepLast || !dedup.has(key)) {
       dedup.set(key, r);
     }
@@ -546,7 +683,9 @@ function processDataFromDb(rows) {
     source: mergeSourceName(row.source_name),
     source_id: row.source_id || 'all',
     sub1: row.sub1 || '',
-    clicks: row.clicks, conversions: row.conversions, approved: row.approved, revenue: row.revenue
+    clicks: row.clicks,
+    raw_clicks: row.raw_clicks || row.clicks,
+    conversions: row.conversions, approved: row.approved, revenue: row.revenue
   }));
 }
 
@@ -561,11 +700,12 @@ async function loadFromAPI() {
   updateProgress(5, 'Проверка наличия данных...');
   try {
     updateProgress(10, 'Получение структуры API...');
-    // Fetch offers with robust error handling
+    // Fetch offers with robust error handling.
+    // ВАЖНО: max limit на /webmaster/offers по докам = 500. Используем fetchAll,
+    // который сам пагинирует с limit=500.
     let offersData = [];
     try {
-      const offersRes = await fetchJSON(`${API_BASE}?method=offers&token=${token}&limit=1000`);
-      offersData = offersRes.data || offersRes.offers || offersRes.items || (Array.isArray(offersRes) ? offersRes : []);
+      offersData = await fetchAll('offers', { token });
     } catch(e) { console.warn('Failed to fetch offers:', e); }
     const platformsData = await fetchAll('platforms', { token });
     const offerMap = {};
@@ -610,6 +750,9 @@ async function loadFromAPI() {
       if (!dateStr) continue;
       const offerId = String(row.offer_id ?? row.offerid ?? '');
       const platformId = String(row.platform_id ?? row.platformid ?? '');
+      // Сырые клики — для честного сравнения с рыночным EPC, который провайдер
+      // считает по обычным clicks, а не unique_clicks.
+      const rawClicks = Number(row.clicks ?? row.uniqueclicks ?? row.unique_clicks ?? 0);
       const clicks = Number(row.unique_clicks ?? row.clicks ?? row.uniqueclicks ?? 0);
       const conversions = Number(row.unique_conversions ?? row.conversions ?? row.uniqueconversions ?? 0);
       const approved = Number(row.conversions_approved ?? row.conversionsapproved ?? 0);
@@ -627,7 +770,8 @@ async function loadFromAPI() {
         date: dateStr, week: getWeekNumber(new Date(dateStr)), month: dateStr.slice(0, 7),
         dayOfWeek: daysOfWeek[new Date(dateStr).getDay()],
         offer: offerName, offer_id: offerId,
-        source: sourceName, source_id: platformId || 'all', sub1, clicks, conversions, approved, revenue
+        source: sourceName, source_id: platformId || 'all', sub1,
+        clicks, raw_clicks: rawClicks, conversions, approved, revenue
       });
     }
     // Deduplicate originalData by composite key (date + source_id + offer_id + offer + sub1)
@@ -638,7 +782,8 @@ async function loadFromAPI() {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ data: originalData.map(r => ({
           date: r.date, source_id: r.source_id || 'all', source_name: r.source,
-          offer: r.offer, offer_id: r.offer_id || '', sub1: r.sub1 || '', clicks: r.clicks,
+          offer: r.offer, offer_id: r.offer_id || '', sub1: r.sub1 || '',
+          clicks: r.clicks, raw_clicks: r.raw_clicks || r.clicks,
           conversions: r.conversions, approved: r.approved, revenue: r.revenue
         })) })
       });
@@ -683,11 +828,16 @@ async function runAutoRefresh(force = false) {
   const last = Number(localStorage.getItem(LAST_REFRESH_KEY) || 0);
   if (!force && last && (now - last) < AUTO_REFRESH_INTERVAL_MS) return;
   console.log('[Auto-refresh] Триггер обновления данных...');
+  // ВАЖНО: API leads.su интерпретирует end_date без времени как ИСКЛЮЧИТЕЛЬНУЮ
+  // границу, и сегодняшний день обрезается. Дописываем явное "00:00:00" /
+  // "23:59:59", чтобы автообновление подтягивало в т.ч. сегодняшние данные.
+  const apiStart = encodeURIComponent(`${dFrom} 00:00:00`);
+  const apiEnd   = encodeURIComponent(`${dTo} 23:59:59`);
   // Trigger server-side Leads.su update (like cron)
   try {
-    await fetch(`${API_BASE}?action=update_stats&token=${HARDCODED_TOKEN}&start_date=${dFrom}&end_date=${dTo}&grouping=day&field=offer_id,source,aff_sub1`);
+    await fetch(`${API_BASE}?action=update_stats&token=${HARDCODED_TOKEN}&start_date=${apiStart}&end_date=${apiEnd}&grouping=day&field=offer_id,source,aff_sub1`);
   } catch(e) { console.warn('[Auto-refresh] Leads.su update error:', e); }
-  // Trigger server-side Yandex Metrika banner update
+  // Yandex Metrika ждёт даты вида YYYY-MM-DD без времени.
   try {
     await fetch(`${API_BASE}?action=ym_fetch_banner&start_date=${dFrom}&end_date=${dTo}`);
   } catch(e) { console.warn('[Auto-refresh] YM update error:', e); }
@@ -695,6 +845,11 @@ async function runAutoRefresh(force = false) {
   try {
     await fetch(`${API_BASE}?action=fetch_offers_market&token=${HARDCODED_TOKEN}`);
   } catch(e) { console.warn('[Auto-refresh] Offers market update error:', e); }
+  // Подтянуть журнал событий и проверить алерты в Telegram (если настроен).
+  try { await fetch(`${API_BASE}?action=fetch_notifications&token=${HARDCODED_TOKEN}`); }
+  catch(e) { console.warn('[Auto-refresh] Notifications error:', e); }
+  try { await fetch(`${API_BASE}?action=tg_check_alerts`); }
+  catch(e) { console.warn('[Auto-refresh] TG alerts error:', e); }
   localStorage.setItem(LAST_REFRESH_KEY, String(Date.now()));
   // Then reload from DB and refresh all dashboards
   await autoLoadSavedStats();
@@ -771,12 +926,12 @@ async function autoLoadSavedStats() {
   if (saved && saved.length) {
     // Build a key→name lookup of in-memory data so we can preserve real offer names
     // when DB returns "Unknown" (issue 1: при смене диапазона имена не должны теряться).
-    // Намеренно НЕ включаем offer name в ключ — мы как раз ищем имя для записи,
-    // у которой имя сейчас "Unknown" / "Offer #X" / пустое; ключ должен совпадать
-    // с lookup-ключом из DB-ряда (date|source_id|offer_id|sub1).
+    // Ключ совпадает с dedup-key — date|source_id|offer_id|sub1 (БЕЗ offer_name).
+    // Когда offer_id пустой, используется syntheticOfferId(name) — чтобы лукап
+    // работал и для строк, у которых сервер не знал реального ID.
     const inMemNames = new Map();
     for (const r of originalData) {
-      const key = `${r.date}|${r.source_id}|${r.offer_id || ''}|${r.sub1}`;
+      const key = `${r.date}|${dedupSourceId(r)}|${dedupOfferId(r)}|${r.sub1}`;
       if (r.offer && r.offer !== 'Unknown' && !/^Offer #/.test(r.offer) && !inMemNames.has(key)) {
         inMemNames.set(key, r.offer);
       }
@@ -784,7 +939,13 @@ async function autoLoadSavedStats() {
     const dbRows = saved.map(row => {
       const d = new Date(row.date);
       let offerName = row.offer_name || 'Unknown';
-      const key = `${row.date}|${row.source_id || 'all'}|${row.offer_id || ''}|${row.sub1 || ''}`;
+      const proxy = {
+        offer_id: row.offer_id || '',
+        offer: offerName,
+        source_id: row.source_id || 'all',
+        source: row.source_name || ''
+      };
+      const key = `${row.date}|${dedupSourceId(proxy)}|${dedupOfferId(proxy)}|${row.sub1 || ''}`;
       // 1) Prefer offers_cache name (already merged server-side via LEFT JOIN), but if we
       //    still have "Unknown" — try the in-memory previous name.
       if ((offerName === 'Unknown' || /^Offer #/.test(offerName) || !offerName) && inMemNames.has(key)) {
@@ -800,7 +961,9 @@ async function autoLoadSavedStats() {
         source: mergeSourceName(row.source_name),
         source_id: row.source_id || 'all',
         sub1: row.sub1 || '',
-        clicks: row.clicks, conversions: row.conversions, approved: row.approved, revenue: row.revenue
+        clicks: row.clicks,
+        raw_clicks: row.raw_clicks || row.clicks,
+        conversions: row.conversions, approved: row.approved, revenue: row.revenue
       };
     });
     // Keep existing data outside the fetched range, use DB data for the fetched range
@@ -954,6 +1117,8 @@ async function applyGlobalFilters() {
   renderUI(); renderTables(); refreshChart(); drawExtraCharts();
   renderEPCAnalytics(); renderMatrixAnalytics(); renderPlatformCharts();
   renderMarketTable();
+  renderArMatrix();
+  renderCompareTab();
   renderAIInsights();
 }
 
@@ -1692,6 +1857,36 @@ function renderAIInsights() {
   }
 }
 
+// Кнопка «Пересчитать» во вкладке AI: подтягивает свежий снапшот из БД
+// (вместе с рыночным EPC), полностью пересобирает globalRawData и заново
+// рисует все блоки AI-аналитики. До этого исправления кнопка вызывала только
+// renderAIInsights() поверх устаревшего in-memory среза → визуально ничего
+// не менялось.
+async function recalcAIInsights(ev) {
+  const btn = ev && ev.target;
+  const original = btn ? btn.innerHTML : '';
+  if (btn) { btn.disabled = true; btn.innerHTML = '⏳ Пересчитываю...'; }
+  try {
+    // Свежий market EPC из кэша + свежие строки из БД за выбранный период.
+    await loadOfferMarketData();
+    await autoLoadSavedStats();
+    // applyGlobalFilters внутри autoLoadSavedStats уже вызывает renderAIInsights,
+    // но на всякий случай дёрнем ещё раз — чтобы при пустых данных ответ был
+    // мгновенным и видимым (контейнер перерисуется с актуальной "сводкой").
+    renderAIInsights();
+    if (btn) {
+      btn.innerHTML = '✅ Обновлено';
+      setTimeout(() => { btn.innerHTML = original || '🔄 Пересчитать'; btn.disabled = false; }, 1500);
+    }
+  } catch (e) {
+    console.warn('recalcAIInsights failed:', e);
+    if (btn) {
+      btn.innerHTML = '⚠️ Ошибка, попробуйте ещё раз';
+      setTimeout(() => { btn.innerHTML = original || '🔄 Пересчитать'; btn.disabled = false; }, 2500);
+    }
+  }
+}
+
 // ========================== ГЛУБОКИЙ AI-АНАЛИЗ ==========================
 // Собираем компактный numeric-payload (только цифры, без PII), сервер вызывает
 // внешнего AI-провайдера (название провайдера/модели намеренно не светим в UI)
@@ -2168,6 +2363,277 @@ function checkYMOAuthCallback() {
   }
 }
 
+// ========================== AR-МАТРИЦА: оффер × площадка ==========================
+// Цель: быстро ловить площадки, которые гонят мусор именно по этому офферу.
+// Алгоритм:
+//   1) Сворачиваем globalRawData в Map<offer, Map<source, {leads, approved, revenue}>>;
+//   2) Берём топ-N офферов по выручке (по умолчанию 20);
+//   3) Для каждой ячейки считаем AR = approved/leads, цвет по порогам.
+//   4) Прячем ячейки с числом лидов < minLeads — на маленькой выборке AR
+//      статистически бессмыслен и только зашумляет картинку.
+function renderArMatrix() {
+  const wrap = document.getElementById('arMatrixWrap');
+  if (!wrap) return;
+  const minLeads = Math.max(0, parseInt(document.getElementById('arMatrixMinLeads').value || '10', 10));
+  const topN = Math.max(1, parseInt(document.getElementById('arMatrixTopN').value || '20', 10));
+  if (!globalRawData.length) {
+    wrap.innerHTML = '<div class="text-center text-slate-500 py-6">Нет данных за выбранный период.</div>';
+    return;
+  }
+  // Агрегируем
+  const offers = new Map();   // offer → { rev: total, byPlatform: Map<platform,{leads,approved,revenue}>, leadsTotal, approvedTotal }
+  const sources = new Map();  // source → totalLeads (для сортировки колонок)
+  for (const r of globalRawData) {
+    if (!r.conversions) continue;
+    let off = offers.get(r.offer);
+    if (!off) { off = { rev: 0, byPlatform: new Map(), leadsTotal: 0, approvedTotal: 0 }; offers.set(r.offer, off); }
+    off.rev += r.revenue;
+    off.leadsTotal += r.conversions;
+    off.approvedTotal += r.approved;
+    let cell = off.byPlatform.get(r.source);
+    if (!cell) { cell = { leads: 0, approved: 0, revenue: 0 }; off.byPlatform.set(r.source, cell); }
+    cell.leads += r.conversions;
+    cell.approved += r.approved;
+    cell.revenue += r.revenue;
+    sources.set(r.source, (sources.get(r.source) || 0) + r.conversions);
+  }
+  const topOffers = [...offers.entries()].sort((a, b) => b[1].rev - a[1].rev).slice(0, topN);
+  const topSources = [...sources.entries()].sort((a, b) => b[1] - a[1]).map(([s]) => s);
+  if (!topOffers.length || !topSources.length) {
+    wrap.innerHTML = '<div class="text-center text-slate-500 py-6">Нет данных с лидами в выбранном диапазоне.</div>';
+    return;
+  }
+  // HTML-таблица heatmap: первый столбец — оффер + общий AR; далее — по площадкам.
+  const head = '<tr><th>Оффер (общий AR)</th>' + topSources.map(s => `<th class="text-right">${escapeHtml(s)}</th>`).join('') + '</tr>';
+  const rows = topOffers.map(([name, agg]) => {
+    const overallAr = agg.leadsTotal > 0 ? (agg.approvedTotal / agg.leadsTotal * 100) : 0;
+    const cells = topSources.map(s => {
+      const c = agg.byPlatform.get(s);
+      if (!c || c.leads < minLeads) {
+        return `<td class="text-right text-slate-600" title="лидов: ${c ? c.leads : 0} (&lt; порога)">—</td>`;
+      }
+      const ar = c.leads > 0 ? (c.approved / c.leads * 100) : 0;
+      // Палитра HSL: красный 0°, жёлтый 60°, зелёный 120°. Линейно по AR от 0 до 80%.
+      const hue = Math.max(0, Math.min(120, ar * 1.5));
+      const bg = `hsl(${hue}, 55%, 22%)`;
+      const fg = ar < 30 ? '#fca5a5' : ar < 60 ? '#fde68a' : '#86efac';
+      const epc = c.leads > 0 ? (c.revenue / c.leads) : 0;
+      const title = `Лидов: ${c.leads}\nApproved: ${c.approved}\nВыручка: ${Math.round(c.revenue).toLocaleString('ru-RU')} ₽\nEPL: ${epc.toFixed(0)} ₽`;
+      return `<td class="text-right font-semibold" style="background:${bg};color:${fg}" title="${escapeHtml(title)}">${ar.toFixed(0)}% <span class="text-slate-400 text-xs">(${c.leads})</span></td>`;
+    }).join('');
+    const overallColor = overallAr < 30 ? 'text-red-400' : overallAr < 60 ? 'text-yellow-400' : 'text-emerald-400';
+    return `<tr><td class="font-semibold">${escapeHtml(name)} <span class="${overallColor}">(${overallAr.toFixed(0)}%)</span></td>${cells}</tr>`;
+  }).join('');
+  wrap.innerHTML = `<table class="w-full matrix-table text-sm"><thead>${head}</thead><tbody>${rows}</tbody></table>`;
+}
+
+// ========================== СРАВНЕНИЕ ПЕРИОДОВ ==========================
+// Считаем KPI по двум диапазонам: текущий (из originalData в [dateFrom, dateTo])
+// и предыдущий (по выбранному режиму). Берём данные из originalData, но если
+// предыдущий период вне фильтра — догружаем из get_stats напрямую.
+async function renderCompareTab() {
+  const dFrom = document.getElementById('dateFrom').value;
+  const dTo = document.getElementById('dateTo').value;
+  if (!dFrom || !dTo) return;
+  const mode = (document.getElementById('compareMode') || {}).value || 'prev_period';
+  const lenDays = Math.max(1, Math.round((new Date(dTo) - new Date(dFrom)) / 86400000) + 1);
+  let prevFrom, prevTo;
+  if (mode === 'prev_week') {
+    prevFrom = isoShift(dFrom, -7);
+    prevTo = isoShift(dTo, -7);
+  } else if (mode === 'prev_month') {
+    prevFrom = isoShift(dFrom, -30);
+    prevTo = isoShift(dTo, -30);
+  } else {
+    prevTo = isoShift(dFrom, -1);
+    prevFrom = isoShift(prevTo, -(lenDays - 1));
+  }
+  const lbl = document.getElementById('comparePeriodLabel');
+  if (lbl) lbl.textContent = `Текущий: ${dFrom} → ${dTo} · Предыдущий: ${prevFrom} → ${prevTo}`;
+  // Текущий период — из памяти; предыдущий — отдельным запросом в БД
+  // (чтобы не зависеть от фильтра дат на основном дашборде).
+  const cur = originalData.filter(r => r.date >= dFrom && r.date <= dTo);
+  let prev = [];
+  try {
+    const res = await fetch(`${API_BASE}?action=get_stats&start_date=${prevFrom}&end_date=${prevTo}`);
+    const json = await res.json();
+    if (json.status === 'success') {
+      prev = json.data.map(row => ({
+        date: row.date, offer: row.offer_name || 'Unknown', offer_id: row.offer_id || '',
+        clicks: row.clicks, conversions: row.conversions, approved: row.approved, revenue: row.revenue
+      }));
+    }
+  } catch(e) { console.warn('Compare prev fetch error:', e); }
+  
+  const sumKpi = arr => arr.reduce((a, r) => {
+    a.clicks += r.clicks; a.conversions += r.conversions; a.approved += r.approved; a.revenue += r.revenue; return a;
+  }, { clicks: 0, conversions: 0, approved: 0, revenue: 0 });
+  const c = sumKpi(cur), p = sumKpi(prev);
+  const cAr = c.conversions ? (c.approved / c.conversions * 100) : 0;
+  const pAr = p.conversions ? (p.approved / p.conversions * 100) : 0;
+  const cEpc = c.clicks ? (c.revenue / c.clicks) : 0;
+  const pEpc = p.clicks ? (p.revenue / p.clicks) : 0;
+  
+  const card = (title, curVal, prevVal, fmt) => {
+    const cs = fmt(curVal), ps = fmt(prevVal);
+    let dPct = 0;
+    if (prevVal !== 0) dPct = (curVal - prevVal) / Math.abs(prevVal) * 100;
+    const sign = dPct > 0 ? '+' : '';
+    const cls = dPct > 0 ? 'text-emerald-400' : (dPct < 0 ? 'text-red-400' : 'text-slate-400');
+    const arrow = dPct > 0 ? '▲' : (dPct < 0 ? '▼' : '–');
+    return `<div class="card">
+      <div class="text-slate-400 text-xs uppercase">${title}</div>
+      <div class="text-2xl font-black mt-2">${cs}</div>
+      <div class="text-xs text-slate-500 mt-1">было: ${ps}</div>
+      <div class="text-sm font-semibold mt-1 ${cls}">${arrow} ${sign}${dPct.toFixed(1)}%</div>
+    </div>`;
+  };
+  const fmtN = v => Math.round(v).toLocaleString('ru-RU');
+  const fmtR = v => Math.round(v).toLocaleString('ru-RU') + ' ₽';
+  const fmtP = v => v.toFixed(2) + '%';
+  const fmtE = v => v.toFixed(2) + ' ₽';
+  document.getElementById('compareKpiGrid').innerHTML =
+    card('Доход', c.revenue, p.revenue, fmtR) +
+    card('Клики', c.clicks, p.clicks, fmtN) +
+    card('Лиды', c.conversions, p.conversions, fmtN) +
+    card('Approve %', cAr, pAr, fmtP) +
+    card('EPC', cEpc, pEpc, fmtE) +
+    card('Approved лиды', c.approved, p.approved, fmtN);
+  
+  // Топ-офферы по приросту/падению выручки
+  const aggOffer = arr => {
+    const m = new Map();
+    for (const r of arr) m.set(r.offer, (m.get(r.offer) || 0) + r.revenue);
+    return m;
+  };
+  const cm = aggOffer(cur), pm = aggOffer(prev);
+  const allOffers = new Set([...cm.keys(), ...pm.keys()]);
+  const diffs = [];
+  for (const off of allOffers) {
+    const cv = cm.get(off) || 0, pv = pm.get(off) || 0;
+    if (cv === 0 && pv === 0) continue;
+    const delta = cv - pv;
+    const dPct = pv > 0 ? (delta / pv * 100) : (cv > 0 ? Infinity : 0);
+    diffs.push({ offer: off, cur: cv, prev: pv, delta, dPct });
+  }
+  const fmtPctCell = v => isFinite(v) ? `<span class="${v >= 0 ? 'text-emerald-400' : 'text-red-400'}">${v >= 0 ? '+' : ''}${v.toFixed(1)}%</span>` : '<span class="text-emerald-400">new</span>';
+  const fmtDelta = v => `<span class="${v >= 0 ? 'text-emerald-400' : 'text-red-400'}">${v >= 0 ? '+' : ''}${Math.round(v).toLocaleString('ru-RU')} ₽</span>`;
+  const renderRows = arr => arr.slice(0, 15).map(r =>
+    `<tr class="hover:bg-slate-800"><td>${escapeHtml(r.offer)}</td><td class="text-right">${Math.round(r.cur).toLocaleString('ru-RU')} ₽</td><td class="text-right text-slate-500">${Math.round(r.prev).toLocaleString('ru-RU')} ₽</td><td class="text-right">${fmtDelta(r.delta)}</td><td class="text-right">${fmtPctCell(r.dPct)}</td></tr>`
+  ).join('');
+  const gainers = diffs.filter(d => d.delta > 0).sort((a, b) => b.delta - a.delta);
+  const losers = diffs.filter(d => d.delta < 0).sort((a, b) => a.delta - b.delta);
+  document.querySelector('#compareGainersTable tbody').innerHTML = renderRows(gainers) || '<tr><td colspan="5" class="text-center text-slate-500 py-3">Нет приростов.</td></tr>';
+  document.querySelector('#compareLosersTable tbody').innerHTML = renderRows(losers) || '<tr><td colspan="5" class="text-center text-slate-500 py-3">Нет падений.</td></tr>';
+}
+function isoShift(iso, days) {
+  const d = new Date(iso + 'T00:00:00');
+  d.setDate(d.getDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+// ========================== ЖУРНАЛ СОБЫТИЙ ==========================
+async function loadEventsLog() {
+  try {
+    const res = await fetch(`${API_BASE}?action=get_notifications&limit=200`);
+    const json = await res.json();
+    const tb = document.getElementById('eventsLogBody');
+    if (!tb) return;
+    if (!json.data || !json.data.length) {
+      tb.innerHTML = '<tr><td colspan="5" class="text-center text-slate-500 py-3">Журнал пуст. Нажмите «🔄 Подтянуть свежие».</td></tr>';
+      return;
+    }
+    tb.innerHTML = json.data.map(e => {
+      const sev = (e.severity || 'info').toLowerCase();
+      const sevCls = sev === 'critical' || sev === 'error' ? 'text-red-400'
+        : sev === 'warning' ? 'text-yellow-400' : 'text-slate-400';
+      return `<tr class="hover:bg-slate-800"><td class="text-slate-400 text-xs">${escapeHtml(e.event_date || '')}</td><td>${escapeHtml(e.event_type || '')}</td><td>${escapeHtml(e.title || '')}</td><td class="text-slate-400">${escapeHtml((e.body || '').slice(0, 200))}</td><td class="${sevCls}">${escapeHtml(sev)}</td></tr>`;
+    }).join('');
+  } catch(e) { console.warn('Events log load error:', e); }
+}
+async function refreshEventsLog() {
+  try {
+    const res = await fetch(`${API_BASE}?action=fetch_notifications&token=${HARDCODED_TOKEN}`);
+    const json = await res.json();
+    if (json.error) alert('Ошибка: ' + (json.details || json.error));
+  } catch(e) { console.warn(e); }
+  await loadEventsLog();
+}
+
+// ========================== TELEGRAM SETTINGS ==========================
+async function loadTgSettings() {
+  try {
+    const res = await fetch(`${API_BASE}?action=get_settings`);
+    const json = await res.json();
+    if (json.status !== 'success') return;
+    const d = json.data || {};
+    if (d.tg_bot_token === '***SET***') document.getElementById('tgBotToken').placeholder = '••• уже задан, оставьте пустым чтобы не менять';
+    if (d.tg_chat_id) document.getElementById('tgChatId').value = d.tg_chat_id;
+    if (d.monthly_revenue_plan) document.getElementById('monthlyRevenuePlan').value = d.monthly_revenue_plan;
+  } catch(e) { console.warn('TG settings load:', e); }
+}
+async function saveTgSettings() {
+  const token = document.getElementById('tgBotToken').value.trim();
+  const chat = document.getElementById('tgChatId').value.trim();
+  const plan = document.getElementById('monthlyRevenuePlan').value.trim();
+  const payload = {};
+  if (token) payload.tg_bot_token = token;       // не отправляем пустое — иначе сотрём
+  payload.tg_chat_id = chat;
+  payload.monthly_revenue_plan = plan || '0';
+  const msg = document.getElementById('tgMessage');
+  try {
+    const res = await fetch(`${API_BASE}?action=save_settings`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+    });
+    const json = await res.json();
+    if (json.status === 'success') {
+      msg.textContent = '✅ Сохранено';
+      msg.className = 'mt-3 text-sm text-emerald-400';
+      document.getElementById('tgBotToken').value = '';
+      await loadTgSettings();
+    } else {
+      throw new Error(json.error || 'unknown');
+    }
+  } catch(e) {
+    msg.textContent = '❌ Ошибка: ' + e.message;
+    msg.className = 'mt-3 text-sm text-red-400';
+  }
+  msg.classList.remove('hidden');
+  setTimeout(() => msg.classList.add('hidden'), 4000);
+}
+async function testTgSend() {
+  const msg = document.getElementById('tgMessage');
+  msg.textContent = '⏳ Отправка...';
+  msg.className = 'mt-3 text-sm text-blue-400';
+  msg.classList.remove('hidden');
+  try {
+    const res = await fetch(`${API_BASE}?action=tg_test`);
+    const json = await res.json();
+    const ok = json.result && json.result.sent;
+    msg.textContent = ok ? '✅ Сообщение отправлено в Telegram'
+      : '⚠️ Не отправлено: ' + JSON.stringify(json.result || json);
+    msg.className = 'mt-3 text-sm ' + (ok ? 'text-emerald-400' : 'text-yellow-400');
+  } catch(e) {
+    msg.textContent = '❌ Ошибка: ' + e.message;
+    msg.className = 'mt-3 text-sm text-red-400';
+  }
+}
+async function checkTgAlertsNow() {
+  const msg = document.getElementById('tgMessage');
+  msg.textContent = '⏳ Проверка...';
+  msg.className = 'mt-3 text-sm text-blue-400';
+  msg.classList.remove('hidden');
+  try {
+    const res = await fetch(`${API_BASE}?action=tg_check_alerts`);
+    const json = await res.json();
+    msg.textContent = `✅ Проверено: ${json.checked || 0} · отправлено: ${json.sent || 0} · пропущено (антиспам/нет настроек): ${json.skipped || 0}`;
+    msg.className = 'mt-3 text-sm text-emerald-400';
+  } catch(e) {
+    msg.textContent = '❌ Ошибка: ' + e.message;
+    msg.className = 'mt-3 text-sm text-red-400';
+  }
+}
+
 // ========================== ИНИЦИАЛИЗАЦИЯ ==========================
 window.addEventListener('DOMContentLoaded', () => {
   const to = new Date(); const from = new Date(); from.setDate(to.getDate() - 30);
@@ -2186,6 +2652,8 @@ window.addEventListener('DOMContentLoaded', () => {
   })();
   checkYMOAuthCallback();
   checkYMConnection();
+  loadTgSettings();
+  loadEventsLog();
   startAutoRefresh();
   autoLoadSavedStats();
 });

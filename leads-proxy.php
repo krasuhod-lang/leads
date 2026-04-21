@@ -50,12 +50,14 @@ if (!defined('AI_API_URL')) {
     define('AI_API_URL', getenv('AI_API_URL') ?: 'https://api.deepseek.com/chat/completions');
 }
 if (!defined('AI_MODEL')) {
-    // Самая «глубокая» актуальная модель провайдера.
-    define('AI_MODEL', getenv('AI_MODEL') ?: 'deepseek-reasoner');
+    // По умолчанию — `deepseek-chat`: поддерживает response_format=json_object,
+    // быстрый, отвечает в пределах 30-60 сек. `deepseek-reasoner` НЕ поддерживает
+    // ни JSON-mode, ни temperature → отдаём его только как fallback.
+    define('AI_MODEL', getenv('AI_MODEL') ?: 'deepseek-chat');
 }
 if (!defined('AI_FALLBACK_MODEL')) {
-    // На случай, если reasoner недоступен — быстрый chat-поток той же линейки.
-    define('AI_FALLBACK_MODEL', getenv('AI_FALLBACK_MODEL') ?: 'deepseek-chat');
+    // Резерв — reasoner той же линейки (без JSON-mode и без temperature).
+    define('AI_FALLBACK_MODEL', getenv('AI_FALLBACK_MODEL') ?: 'deepseek-reasoner');
 }
 // =======================================================
 
@@ -67,37 +69,50 @@ try {
     $db->exec('PRAGMA journal_mode=WAL'); // улучшает производительность
     $db->exec('PRAGMA synchronous=NORMAL');
     
-    // Таблица для статистики по площадкам и офферам
+    // Таблица для статистики по площадкам и офферам.
+    // UNIQUE-ключ — (date, source_id, offer_id, sub1). offer_name теперь —
+    // изменяемый атрибут; чтобы не было дублей, когда первый раз оффер пришёл
+    // как «Offer #123», а второй — как «Микрозайм24», ключ строится по offer_id.
+    // Когда реальный offer_id отсутствует в строке, мы синтезируем стабильный
+    // суррогат `name:<md5(name)>` — см. syntheticOfferId().
     $db->exec('CREATE TABLE IF NOT EXISTS daily_stats (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         date TEXT NOT NULL,
-        source_id TEXT,
+        source_id TEXT NOT NULL DEFAULT \'all\',
         source_name TEXT,
         offer_id TEXT NOT NULL DEFAULT \'\',
         offer_name TEXT NOT NULL DEFAULT \'Unknown\',
         sub1 TEXT NOT NULL DEFAULT \'\',
         clicks INTEGER DEFAULT 0,
+        raw_clicks INTEGER DEFAULT 0,
         conversions INTEGER DEFAULT 0,
         approved INTEGER DEFAULT 0,
         revenue REAL DEFAULT 0,
-        UNIQUE(date, source_id, offer_name, sub1)
+        UNIQUE(date, source_id, offer_id, sub1)
     )');
     
-    // Добавляем колонку offer_name, offer_id если их нет (миграция)
+    // Миграция: добавляем недостающие колонки (offer_name, offer_id, sub1, raw_clicks).
     $res = $db->query("PRAGMA table_info(daily_stats)");
     $hasOffer = false;
     $hasOfferId = false;
     $hasSub1 = false;
+    $hasRawClicks = false;
+    $existingCols = [];
     while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
+        $existingCols[$row['name']] = true;
         if ($row['name'] === 'offer_name') $hasOffer = true;
         if ($row['name'] === 'offer_id') $hasOfferId = true;
         if ($row['name'] === 'sub1') $hasSub1 = true;
+        if ($row['name'] === 'raw_clicks') $hasRawClicks = true;
     }
     if (!$hasOffer) {
         $db->exec('ALTER TABLE daily_stats ADD COLUMN offer_name TEXT');
     }
     if (!$hasOfferId) {
         $db->exec('ALTER TABLE daily_stats ADD COLUMN offer_id TEXT NOT NULL DEFAULT \'\'');
+    }
+    if (!$hasRawClicks) {
+        $db->exec('ALTER TABLE daily_stats ADD COLUMN raw_clicks INTEGER DEFAULT 0');
     }
     
     // Кэш офферов (offer_id → имя + рыночные показатели EPC).
@@ -122,28 +137,119 @@ try {
     }
     if (!isset($existing['updated_at'])) $db->exec("ALTER TABLE offers_cache ADD COLUMN updated_at TEXT");
     
-    // Миграция: добавляем sub1 и обновляем UNIQUE constraint
+    // Миграция: добавляем sub1 (если его не было — это означает старую схему).
     if (!$hasSub1) {
         $db->exec('BEGIN TRANSACTION');
         $db->exec('CREATE TABLE daily_stats_new (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             date TEXT NOT NULL,
-            source_id TEXT,
+            source_id TEXT NOT NULL DEFAULT \'all\',
             source_name TEXT,
+            offer_id TEXT NOT NULL DEFAULT \'\',
             offer_name TEXT NOT NULL DEFAULT \'Unknown\',
             sub1 TEXT NOT NULL DEFAULT \'\',
             clicks INTEGER DEFAULT 0,
+            raw_clicks INTEGER DEFAULT 0,
             conversions INTEGER DEFAULT 0,
             approved INTEGER DEFAULT 0,
             revenue REAL DEFAULT 0,
-            UNIQUE(date, source_id, offer_name, sub1)
+            UNIQUE(date, source_id, offer_id, sub1)
         )');
-        $db->exec('INSERT INTO daily_stats_new (date, source_id, source_name, offer_name, sub1, clicks, conversions, approved, revenue)
-            SELECT date, source_id, source_name, offer_name, \'\', clicks, conversions, approved, revenue FROM daily_stats');
+        // При миграции синтезируем offer_id из имени, если он пустой,
+        // чтобы не потерять строки и не схлопнуть разные офферы в один UNIQUE.
+        $db->exec('INSERT OR IGNORE INTO daily_stats_new
+            (date, source_id, source_name, offer_id, offer_name, sub1, clicks, raw_clicks, conversions, approved, revenue)
+            SELECT date,
+                   COALESCE(NULLIF(source_id, \'\'), \'all\'),
+                   source_name,
+                   CASE
+                       WHEN offer_id IS NOT NULL AND offer_id != \'\'
+                           THEN offer_id
+                       ELSE \'name:\' || printf(\'%08x\', length(offer_name))
+                            || substr(replace(lower(offer_name), \' \', \'_\'), 1, 24)
+                   END,
+                   offer_name, \'\', clicks, clicks, conversions, approved, revenue
+            FROM daily_stats');
         $db->exec('DROP TABLE daily_stats');
         $db->exec('ALTER TABLE daily_stats_new RENAME TO daily_stats');
         $db->exec('COMMIT');
+    } else {
+        // Миграция со старого UNIQUE(date, source_id, offer_name, sub1)
+        // на новый UNIQUE(date, source_id, offer_id, sub1).
+        // Делаем единоразово: собираем список UNIQUE-индексов и их колонки
+        // ДО любой DDL-операции — открытый PRAGMA-итератор держит блокировку
+        // и в SQLite приводит к "database table is locked" при попытке
+        // DROP/ALTER в той же транзакции.
+        $uniqueIndexCols = [];
+        $idxRes = $db->query("PRAGMA index_list(daily_stats)");
+        while ($idxRow = $idxRes->fetchArray(SQLITE3_ASSOC)) {
+            if ((int)$idxRow['unique'] !== 1) continue;
+            $uniqueIndexCols[$idxRow['name']] = [];
+        }
+        $idxRes->finalize();
+        foreach (array_keys($uniqueIndexCols) as $idxName) {
+            $colRes = $db->query("PRAGMA index_info(" . SQLite3::escapeString($idxName) . ")");
+            while ($c = $colRes->fetchArray(SQLITE3_ASSOC)) $uniqueIndexCols[$idxName][] = $c['name'];
+            $colRes->finalize();
+        }
+        $needsKeyMigration = false;
+        foreach ($uniqueIndexCols as $cols) {
+            if (in_array('offer_name', $cols, true) && !in_array('offer_id', $cols, true)) {
+                $needsKeyMigration = true;
+                break;
+            }
+        }
+        if ($needsKeyMigration) {
+            $db->exec('BEGIN TRANSACTION');
+            $db->exec('CREATE TABLE daily_stats_v2 (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT NOT NULL,
+                source_id TEXT NOT NULL DEFAULT \'all\',
+                source_name TEXT,
+                offer_id TEXT NOT NULL DEFAULT \'\',
+                offer_name TEXT NOT NULL DEFAULT \'Unknown\',
+                sub1 TEXT NOT NULL DEFAULT \'\',
+                clicks INTEGER DEFAULT 0,
+                raw_clicks INTEGER DEFAULT 0,
+                conversions INTEGER DEFAULT 0,
+                approved INTEGER DEFAULT 0,
+                revenue REAL DEFAULT 0,
+                UNIQUE(date, source_id, offer_id, sub1)
+            )');
+            // Синтезируем offer_id для старых строк, у которых он пустой —
+            // используем стабильный 'name:' + lower(hex(md5)) от offer_name.
+            // SQLite до 3.41 не имеет встроенного MD5 → делаем грубую, но
+            // детерминированную свёртку: берём первые 32 символа hex от
+            // последовательного OR / AND по байтам нет → используем
+            // соединение из length()+первые символы.  Достаточно стабильно
+            // для миграции (имя оффера почти не содержит коллизий).
+            $db->exec('INSERT OR IGNORE INTO daily_stats_v2
+                (date, source_id, source_name, offer_id, offer_name, sub1, clicks, raw_clicks, conversions, approved, revenue)
+                SELECT date,
+                       COALESCE(NULLIF(source_id, \'\'), \'all\'),
+                       source_name,
+                       CASE
+                           WHEN offer_id IS NOT NULL AND offer_id != \'\'
+                               THEN offer_id
+                           ELSE \'name:\' || printf(\'%08x\', length(offer_name))
+                                || substr(replace(lower(offer_name), \' \', \'_\'), 1, 24)
+                       END,
+                       offer_name, COALESCE(sub1, \'\'),
+                       clicks,
+                       -- raw_clicks для старых строк всегда 0 (DEFAULT после ALTER TABLE),
+                       -- поэтому используем clicks как лучший доступный источник «сырых» кликов.
+                       CASE WHEN raw_clicks IS NOT NULL AND raw_clicks > 0 THEN raw_clicks ELSE clicks END,
+                       conversions, approved, revenue
+                FROM daily_stats');
+            $db->exec('DROP TABLE daily_stats');
+            $db->exec('ALTER TABLE daily_stats_v2 RENAME TO daily_stats');
+            $db->exec('COMMIT');
+        }
     }
+    
+    // Индекс для быстрых выборок по диапазону дат (диапазонные WHERE — наш основной паттерн).
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_daily_stats_date ON daily_stats(date)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_daily_stats_offer_id ON daily_stats(offer_id)');
     
     // Таблица для отказов
     $db->exec('CREATE TABLE IF NOT EXISTS bounce_stats (
@@ -165,6 +271,42 @@ try {
     
     // Таблица для настроек Яндекс.Метрики
     $db->exec('CREATE TABLE IF NOT EXISTS ym_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT
+    )');
+    
+    // Журнал событий из /webmaster/notifications.
+    // Храним только новые события (по composite ключу источник+id+date+тип),
+    // чтобы при повторных опросах не плодить дубли.
+    $db->exec('CREATE TABLE IF NOT EXISTS notifications_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        source TEXT NOT NULL DEFAULT \'leads\',
+        ext_id TEXT NOT NULL DEFAULT \'\',
+        event_type TEXT NOT NULL DEFAULT \'\',
+        event_date TEXT NOT NULL,
+        title TEXT,
+        body TEXT,
+        severity TEXT DEFAULT \'info\',
+        offer_id TEXT,
+        payload_json TEXT,
+        created_at TEXT NOT NULL,
+        UNIQUE(source, ext_id, event_type, event_date)
+    )');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_notifications_date ON notifications_log(event_date)');
+    
+    // Telegram-уведомления + журнал отправок (anti-spam: один и тот же
+    // alert_key за сутки шлём максимум один раз).
+    $db->exec('CREATE TABLE IF NOT EXISTS tg_alerts_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        alert_key TEXT NOT NULL,
+        sent_date TEXT NOT NULL,
+        message TEXT,
+        UNIQUE(alert_key, sent_date)
+    )');
+    
+    // Универсальная таблица настроек (план выручки на месяц, конфиг алертов и пр.).
+    // key/value — текст; для чисел сериализуем сами при чтении.
+    $db->exec('CREATE TABLE IF NOT EXISTS app_settings (
         key TEXT PRIMARY KEY,
         value TEXT
     )');
@@ -227,22 +369,106 @@ function cleanSourceName($name) {
 }
 
 /**
+ * Стабильный детерминированный source_id для строк, в которых API не вернул
+ * platform_id. Используется и в saveReportRows (cron) и в save_stats (FE) —
+ * за счёт совпадения функций строки из обоих источников схлопываются в одну
+ * по UNIQUE(date, source_id, offer_id, sub1).
+ *
+ * Формат: 'src:' + crc32(name) (8 hex). 'all' оставляем как есть, чтобы
+ * исторический агрегат «все площадки» не был перепутан с реальной площадкой.
+ */
+function syntheticSourceId($name) {
+    $name = trim((string)$name);
+    if ($name === '' || strcasecmp($name, 'all') === 0 || strcasecmp($name, 'unknown') === 0) {
+        return 'all';
+    }
+    return 'src:' . sprintf('%08x', crc32($name));
+}
+
+/**
+ * Стабильный детерминированный offer_id для строк, в которых API его не дал.
+ * Возвращает 'name:' + 8 hex от crc32(name) — этого достаточно, чтобы
+ * различные имена не сливались, а одно и то же имя стабильно мапилось.
+ */
+function syntheticOfferId($name) {
+    $name = trim((string)$name);
+    if ($name === '') return '';
+    return 'name:' . sprintf('%08x', crc32($name));
+}
+
+/**
+ * Возвращает список активных площадок [{id, name}, ...] из API
+ * /webmaster/platforms (с пагинацией). Используется в update_stats,
+ * чтобы крон обходил каждую площадку отдельно — иначе API схлопывает
+ * клики между площадками и теряется group-by по platform_id.
+ */
+function fetchPlatformsList($token) {
+    $all = [];
+    $offset = 0;
+    $limit = 500;
+    for ($page = 0; $page < 20; $page++) {
+        $url = "https://api.leads.su/webmaster/platforms?token={$token}&limit={$limit}&offset={$offset}";
+        $res = apiGet($url);
+        if (isset($res['error'])) {
+            error_log('fetchPlatformsList error: ' . json_encode($res['error']));
+            break;
+        }
+        $rows = $res['data'] ?? $res['platforms'] ?? $res['items'] ?? [];
+        if (!is_array($rows) || count($rows) === 0) break;
+        foreach ($rows as $p) {
+            if (!is_array($p)) continue;
+            $id = $p['id'] ?? $p['platform_id'] ?? null;
+            if ($id === null) continue;
+            $all[] = ['id' => (string)$id, 'name' => $p['name'] ?? "Platform #{$id}"];
+        }
+        if (count($rows) < $limit) break;
+        $offset += $limit;
+    }
+    return $all;
+}
+
+
+/**
+ * Загружает все офферы с постраничной выгрузкой (API limit max = 500).
+ * Возвращает плоский массив объектов офферов из ответа API.
+ * $extended=true → добавляет extendedFields=1 (детальная статистика рынка).
+ */
+function fetchOffersListAll($token, $extended = false) {
+    $all = [];
+    $offset = 0;
+    $limit = 500; // hard API limit per docs
+    $maxPages = 20; // safety net (10000 offers max)
+    for ($page = 0; $page < $maxPages; $page++) {
+        $url = "https://api.leads.su/webmaster/offers?token={$token}"
+             . "&limit={$limit}&offset={$offset}"
+             . ($extended ? '&extendedFields=1' : '');
+        $result = apiGet($url);
+        if (isset($result['error'])) {
+            error_log('fetchOffersListAll error: ' . json_encode($result['error']));
+            // Возвращаем то, что успели набрать (если первая страница упала — пустой массив).
+            if (!$all) return ['error' => $result['error']];
+            break;
+        }
+        $offers = $result['data'] ?? $result['offers'] ?? $result['items'] ?? [];
+        if (!is_array($offers) && is_array($result)) $offers = $result;
+        if (!is_array($offers) || count($offers) === 0) break;
+        $all = array_merge($all, $offers);
+        if (count($offers) < $limit) break;
+        $offset += $limit;
+    }
+    return ['offers' => $all];
+}
+
+/**
  * Загружает список офферов и возвращает массив [offer_id => offer_name].
  * Также сохраняет имена в offers_cache, чтобы потом резолвить «Unknown»-записи.
  */
 function fetchOffersMap($token, $db = null) {
-    $url = "https://api.leads.su/webmaster/offers?token={$token}&limit=1000";
-    $result = apiGet($url);
-    if (isset($result['error'])) {
-        error_log('fetchOffersMap error: ' . json_encode($result['error']));
+    $res = fetchOffersListAll($token, false);
+    if (isset($res['error'])) {
         return [];
     }
-    // Handle multiple response formats
-    $offers = $result['data'] ?? $result['offers'] ?? $result['items'] ?? [];
-    if (!is_array($offers) && is_array($result)) {
-        // Response might be a direct array
-        $offers = $result;
-    }
+    $offers = $res['offers'];
     $map = [];
     $cacheStmt = null;
     if ($db) {
@@ -275,14 +501,11 @@ function fetchOffersMap($token, $db = null) {
  * и сохраняет в offers_cache. Возвращает массив офферов с полями market_epc/your_epc.
  */
 function fetchOffersExtended($token, $db) {
-    $url = "https://api.leads.su/webmaster/offers?token={$token}&limit=1000&extendedFields=1";
-    $result = apiGet($url);
-    if (isset($result['error'])) {
-        error_log('fetchOffersExtended error: ' . json_encode($result['error']));
-        return ['error' => $result['error']];
+    $res = fetchOffersListAll($token, true);
+    if (isset($res['error'])) {
+        return ['error' => $res['error']];
     }
-    $offers = $result['data'] ?? $result['offers'] ?? $result['items'] ?? [];
-    if (!is_array($offers) && is_array($result)) $offers = $result;
+    $offers = $res['offers'];
     $now = date('Y-m-d H:i:s');
     $stmt = $db->prepare('INSERT INTO offers_cache
         (offer_id, name, market_epc, market_cr, market_ar, your_epc, your_cr, updated_at)
@@ -368,25 +591,56 @@ function ymApiGet($url, $ymToken) {
 }
 
 /**
- * Сохраняет строки отчёта в daily_stats (с учётом offer_name и offer_id)
+ * Сохраняет строки отчёта в daily_stats (с учётом offer_name и offer_id).
+ *
+ * UPSERT-ключ — (date, source_id, offer_id, sub1). offer_name становится
+ * изменяемым атрибутом: если повторно пришла та же запись, но с лучшим
+ * именем (раньше было "Offer #123", теперь "Микрозайм24") — обновляем имя,
+ * не плодя новые строки.
+ *
+ * Если в строке нет offer_id — берём syntheticOfferId(имя). Если нет
+ * platform_id — syntheticSourceId(source_name). Те же функции применяются
+ * в save_stats, поэтому оба пути сходятся.
+ *
+ * `clicks`     — unique_clicks (для UI и расчёта AR/CR).
+ * `raw_clicks` — обычные clicks (для честного сравнения с рыночным EPC,
+ *                который провайдер считает по сырым кликам).
  */
 function saveReportRows($db, $rows, $offerMap) {
     $inserted = 0;
-    $stmt = $db->prepare('INSERT INTO daily_stats (date, source_id, source_name, offer_id, offer_name, sub1, clicks, conversions, approved, revenue)
-        VALUES (:date, :source_id, :source_name, :offer_id, :offer_name, :sub1, :clicks, :conversions, :approved, :revenue)
-        ON CONFLICT(date, source_id, offer_name, sub1) DO UPDATE SET
+    $stmt = $db->prepare('INSERT INTO daily_stats
+        (date, source_id, source_name, offer_id, offer_name, sub1, clicks, raw_clicks, conversions, approved, revenue)
+        VALUES (:date, :source_id, :source_name, :offer_id, :offer_name, :sub1, :clicks, :raw_clicks, :conversions, :approved, :revenue)
+        ON CONFLICT(date, source_id, offer_id, sub1) DO UPDATE SET
             source_name = excluded.source_name,
-            offer_id = CASE WHEN excluded.offer_id != \'\' THEN excluded.offer_id ELSE daily_stats.offer_id END,
+            offer_name = CASE
+                WHEN excluded.offer_name != \'\' AND excluded.offer_name != \'Unknown\'
+                     AND excluded.offer_name NOT LIKE \'Offer #%\'
+                    THEN excluded.offer_name
+                ELSE daily_stats.offer_name
+            END,
             clicks = excluded.clicks,
+            raw_clicks = excluded.raw_clicks,
             conversions = excluded.conversions,
             approved = excluded.approved,
             revenue = excluded.revenue');
     
     foreach ($rows as $row) {
-        $date = $row['period_day'] ?? $row['period'] ?? null;
-        if (!$date) continue;
-        $sourceId = $row['platform_id'] ?? 'all';
+        // Нормализация даты: API может вернуть "2024-01-15" или "2024-01-15 00:00:00".
+        // В UNIQUE-ключе нужна именно дата без времени, иначе один и тот же день
+        // схлопнется в две разные строки при разных форматах.
+        $rawDate = $row['period_day'] ?? $row['period'] ?? null;
+        if (!$rawDate) continue;
+        $date = substr((string)$rawDate, 0, 10);
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) continue;
+        
         $sourceName = cleanSourceName($row['source'] ?? $row['platform_name'] ?? 'Unknown');
+        // Сначала смотрим на явный platform_id из API, затем — синтезируем из имени.
+        $rawSourceId = $row['platform_id'] ?? $row['platformid'] ?? '';
+        $sourceId = ($rawSourceId !== '' && $rawSourceId !== null)
+            ? (string)$rawSourceId
+            : syntheticSourceId($sourceName);
+        
         $offerId = (string)($row['offer_id'] ?? $row['offerid'] ?? '');
         // Try to resolve offer name from map, then from row data, then fallback
         $offerName = '';
@@ -399,8 +653,17 @@ function saveReportRows($db, $rows, $offerMap) {
         if (!$offerName) {
             $offerName = $offerId ? "Offer #{$offerId}" : 'Unknown';
         }
+        // Если реального offer_id нет — синтезируем из имени, чтобы UNIQUE
+        // не превратился в (date, source_id, '', sub1) и не схлопнул разные офферы.
+        if (!$offerId) {
+            $offerId = syntheticOfferId($offerName);
+        }
+        
         $sub1 = $row['aff_sub1'] ?? $row['sub1'] ?? '';
         $clicks = (int)($row['unique_clicks'] ?? $row['clicks'] ?? 0);
+        // raw clicks: сначала clicks (если API дал и unique_clicks, и clicks),
+        // иначе используем то же значение (хотя бы не ноль).
+        $rawClicks = (int)($row['clicks'] ?? $row['unique_clicks'] ?? 0);
         $conversions = (int)($row['unique_conversions'] ?? $row['conversions'] ?? 0);
         $approved = (int)($row['conversions_approved'] ?? $row['conversionsapproved'] ?? 0);
         $revenue = (float)($row['payout'] ?? 0);
@@ -412,6 +675,7 @@ function saveReportRows($db, $rows, $offerMap) {
         $stmt->bindValue(':offer_name', $offerName, SQLITE3_TEXT);
         $stmt->bindValue(':sub1', $sub1, SQLITE3_TEXT);
         $stmt->bindValue(':clicks', $clicks, SQLITE3_INTEGER);
+        $stmt->bindValue(':raw_clicks', $rawClicks, SQLITE3_INTEGER);
         $stmt->bindValue(':conversions', $conversions, SQLITE3_INTEGER);
         $stmt->bindValue(':approved', $approved, SQLITE3_INTEGER);
         $stmt->bindValue(':revenue', $revenue, SQLITE3_FLOAT);
@@ -543,25 +807,36 @@ function aiCallProviderStructured($sysPrompt, $userPrompt, $sig) {
 }
 
 function aiCallProvider($sysPrompt, $userPrompt, $model) {
+    // deepseek-reasoner НЕ поддерживает temperature, top_p, presence_penalty,
+    // frequency_penalty, response_format и tool/function calling.
+    // Передача любого из этих полей даёт HTTP 400 → "AI service unavailable".
+    $isReasoner = (stripos((string)$model, 'reasoner') !== false);
+
     $body = [
         'model' => $model,
         'messages' => [
             ['role' => 'system', 'content' => $sysPrompt],
             ['role' => 'user',   'content' => $userPrompt],
         ],
-        'temperature' => 0.2,
-        'max_tokens' => 3000,
+        // Для reasoner поднимаем лимит: модель кладёт chain-of-thought в
+        // отдельное поле reasoning_content, но этот текст ТОЖЕ учитывается
+        // в max_tokens. На 3000 итоговый JSON часто обрывается → JSON-парс
+        // падает → fallback тоже валится. 8000 хватает с большим запасом.
+        'max_tokens' => $isReasoner ? 8000 : 3000,
         'stream' => false,
     ];
-    // У провайдера есть JSON-mode — попросим, если поддерживается.
-    $body['response_format'] = ['type' => 'json_object'];
+    if (!$isReasoner) {
+        $body['temperature'] = 0.2;
+        // У провайдера есть JSON-mode — попросим, если поддерживается моделью.
+        $body['response_format'] = ['type' => 'json_object'];
+    }
 
     $ch = curl_init();
     curl_setopt_array($ch, [
         CURLOPT_URL => AI_API_URL,
         CURLOPT_POST => true,
         CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT => 120,
+        CURLOPT_TIMEOUT => $isReasoner ? 240 : 120,
         CURLOPT_SSL_VERIFYPEER => true,
         CURLOPT_SSL_VERIFYHOST => 2,
         CURLOPT_HTTPHEADER => [
@@ -586,6 +861,8 @@ function aiCallProvider($sysPrompt, $userPrompt, $model) {
     }
     $data = json_decode($raw, true);
     if (!is_array($data)) return ['error' => 'invalid_json'];
+    // Для reasoner итоговый ответ — в content; reasoning_content игнорируем
+    // (это служебная цепочка размышлений, не должна попадать в UI).
     $content = $data['choices'][0]['message']['content'] ?? '';
     if ($content === '') return ['error' => 'empty_content'];
     return ['content' => $content];
@@ -617,17 +894,21 @@ if ($action === 'get_stats') {
         echo json_encode(['error' => 'start_date and end_date required']);
         exit;
     }
-    $stmt = $db->prepare('SELECT d.date, d.source_id, d.source_name, d.offer_id,
+    // Скрываем синтетические `name:...` offer_id от клиента (отдаём пустую строку),
+    // чтобы FE не пытался показать их как «номер оффера». В UNIQUE-ключе и LEFT JOIN
+    // они всё равно работают.
+    $stmt = $db->prepare('SELECT d.date, d.source_id, d.source_name,
+        CASE WHEN d.offer_id LIKE \'name:%\' THEN \'\' ELSE d.offer_id END AS offer_id,
         CASE
             WHEN o.name IS NOT NULL AND o.name != \'\'
                  AND (d.offer_name = \'Unknown\' OR d.offer_name = \'\' OR d.offer_name LIKE \'Offer #%\')
             THEN o.name
             ELSE d.offer_name
         END AS offer_name,
-        d.sub1, d.clicks, d.conversions, d.approved, d.revenue,
+        d.sub1, d.clicks, d.raw_clicks, d.conversions, d.approved, d.revenue,
         o.market_epc, o.market_cr, o.market_ar, o.your_epc
         FROM daily_stats d
-        LEFT JOIN offers_cache o ON o.offer_id = d.offer_id AND d.offer_id != \'\'
+        LEFT JOIN offers_cache o ON o.offer_id = d.offer_id AND d.offer_id != \'\' AND d.offer_id NOT LIKE \'name:%\'
         WHERE d.date BETWEEN :start AND :end ORDER BY d.date');
     $stmt->bindValue(':start', $start_date, SQLITE3_TEXT);
     $stmt->bindValue(':end', $end_date, SQLITE3_TEXT);
@@ -648,24 +929,42 @@ if ($action === 'save_stats') {
         exit;
     }
     $inserted = 0;
-    $stmt = $db->prepare('INSERT INTO daily_stats (date, source_id, source_name, offer_id, offer_name, sub1, clicks, conversions, approved, revenue)
-        VALUES (:date, :source_id, :source_name, :offer_id, :offer_name, :sub1, :clicks, :conversions, :approved, :revenue)
-        ON CONFLICT(date, source_id, offer_name, sub1) DO UPDATE SET
+    $stmt = $db->prepare('INSERT INTO daily_stats
+        (date, source_id, source_name, offer_id, offer_name, sub1, clicks, raw_clicks, conversions, approved, revenue)
+        VALUES (:date, :source_id, :source_name, :offer_id, :offer_name, :sub1, :clicks, :raw_clicks, :conversions, :approved, :revenue)
+        ON CONFLICT(date, source_id, offer_id, sub1) DO UPDATE SET
             source_name = excluded.source_name,
-            offer_id = CASE WHEN excluded.offer_id != \'\' THEN excluded.offer_id ELSE daily_stats.offer_id END,
+            offer_name = CASE
+                WHEN excluded.offer_name != \'\' AND excluded.offer_name != \'Unknown\'
+                     AND excluded.offer_name NOT LIKE \'Offer #%\'
+                    THEN excluded.offer_name
+                ELSE daily_stats.offer_name
+            END,
             clicks = excluded.clicks,
+            raw_clicks = excluded.raw_clicks,
             conversions = excluded.conversions,
             approved = excluded.approved,
             revenue = excluded.revenue');
     foreach ($input['data'] as $row) {
         $date = $row['date'] ?? null;
         if (!$date) continue;
-        $sourceId = $row['source_id'] ?? 'all';
+        $date = substr((string)$date, 0, 10);
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) continue;
+        
         $sourceName = cleanSourceName($row['source'] ?? $row['source_name'] ?? 'Unknown');
+        $rawSourceId = $row['source_id'] ?? '';
+        $sourceId = ($rawSourceId !== '' && $rawSourceId !== 'all' && $rawSourceId !== null)
+            ? (string)$rawSourceId
+            : syntheticSourceId($sourceName);
+        
         $offerId = (string)($row['offer_id'] ?? '');
         $offerName = $row['offer'] ?? 'Unknown';
+        if (!$offerId) {
+            $offerId = syntheticOfferId($offerName);
+        }
         $sub1 = $row['sub1'] ?? '';
         $clicks = (int)($row['clicks'] ?? 0);
+        $rawClicks = (int)($row['raw_clicks'] ?? $row['clicks'] ?? 0);
         $conversions = (int)($row['conversions'] ?? 0);
         $approved = (int)($row['approved'] ?? 0);
         $revenue = (float)($row['revenue'] ?? 0);
@@ -677,6 +976,7 @@ if ($action === 'save_stats') {
         $stmt->bindValue(':offer_name', $offerName, SQLITE3_TEXT);
         $stmt->bindValue(':sub1', $sub1, SQLITE3_TEXT);
         $stmt->bindValue(':clicks', $clicks, SQLITE3_INTEGER);
+        $stmt->bindValue(':raw_clicks', $rawClicks, SQLITE3_INTEGER);
         $stmt->bindValue(':conversions', $conversions, SQLITE3_INTEGER);
         $stmt->bindValue(':approved', $approved, SQLITE3_INTEGER);
         $stmt->bindValue(':revenue', $revenue, SQLITE3_FLOAT);
@@ -699,41 +999,89 @@ if ($action === 'update_stats') {
         exit;
     }
     
+    // Нормализация дат: API leads.su интерпретирует end_date как ИСКЛЮЧИТЕЛЬНУЮ
+    // границу, если время не указано → день обрезается. Если пришли голые
+    // YYYY-MM-DD — добиваем "00:00:00" / "23:59:59", чтобы сегодняшний день
+    // тоже попал в ответ. Если время уже есть — оставляем как прислали.
+    $apiStart = (strlen($start_date) === 10) ? "{$start_date} 00:00:00" : $start_date;
+    $apiEnd   = (strlen($end_date)   === 10) ? "{$end_date} 23:59:59"   : $end_date;
+    
     // Получаем офферы один раз и параллельно сохраняем в offers_cache
     $offerMap = fetchOffersMap($token, $db);
     
-    // Загружаем отчёт с пагинацией (чтобы не зависнуть на больших объёмах)
+    // Список площадок: чтобы корректно сгруппировать /webmaster/reports/summary
+    // по площадкам, нужно явно передавать platform_id (см. бэг #4: иначе клики
+    // одного оффера сливаются между площадками). Если platform_id уже передан
+    // в URL — работаем строго по нему. Иначе обходим список площадок,
+    // как это делает фронт.
+    $platforms = [];
+    if ($platform_id) {
+        $platforms[] = ['id' => (string)$platform_id, 'name' => ''];
+    } else {
+        $platforms = fetchPlatformsList($token);
+        // Если получить список не удалось — работаем "одним разом" по всем
+        // площадкам. Даже без разбивки данные сохранятся, просто source_id
+        // у строк будет 'all'.
+        if (!$platforms) $platforms = [['id' => '', 'name' => '']];
+    }
+    
+    $fieldsParam = '';
+    if ($fields) {
+        $fieldArr = array_filter(array_map('trim', explode(',', $fields)));
+        if ($fieldArr) {
+            $fieldsParam = '&fields=' . urlencode(implode(',', $fieldArr));
+        }
+    }
+    
     $allRows = [];
-    $offset = 0;
-    $limit = 500;
-    while (true) {
-        // Build field[] parameters for Leads.su API
-        $fieldQuery = '';
-        if ($fields) {
-            $fieldArr = array_filter(array_map('trim', explode(',', $fields)));
-            foreach ($fieldArr as $f) {
-                $fieldQuery .= '&field[]=' . urlencode($f);
+    $apiErrors = [];
+    foreach ($platforms as $p) {
+        $pid = $p['id'] ?? '';
+        $offset = 0;
+        $limit = 500;
+        while (true) {
+            $url = "https://api.leads.su/webmaster/reports/summary?token={$token}"
+                 . "&start_date=" . urlencode($apiStart)
+                 . "&end_date="   . urlencode($apiEnd)
+                 . "&grouping={$grouping}"
+                 . $fieldsParam
+                 . "&offset={$offset}&limit={$limit}";
+            if ($pid !== '') $url .= "&platform_id=" . urlencode($pid);
+            
+            $data = apiGet($url);
+            if (isset($data['error'])) {
+                $apiErrors[] = ['platform_id' => $pid, 'error' => $data['error']];
+                error_log("update_stats: platform={$pid} error " . json_encode($data['error']));
+                break;
             }
+            $rows = $data['data'] ?? [];
+            // Если API не дал platform_id внутри строки — проставим явно из URL,
+            // чтобы saveReportRows записал правильный source_id и не схлопнул
+            // площадки в 'all'. Имя площадки тоже добавим, если есть.
+            if ($pid !== '') {
+                foreach ($rows as &$r) {
+                    if (!isset($r['platform_id']) || $r['platform_id'] === '' || $r['platform_id'] === null) {
+                        $r['platform_id'] = $pid;
+                    }
+                    if ((!isset($r['source']) || $r['source'] === '') && !empty($p['name'])) {
+                        $r['source'] = $p['name'];
+                    }
+                }
+                unset($r);
+            }
+            $allRows = array_merge($allRows, $rows);
+            if (count($rows) < $limit) break;
+            $offset += $limit;
         }
-        $url = "https://api.leads.su/webmaster/reports/summary?token={$token}"
-             . "&start_date={$start_date}&end_date={$end_date}&grouping={$grouping}"
-             . $fieldQuery
-             . "&offset={$offset}&limit={$limit}";
-        if ($platform_id) $url .= "&platform_id={$platform_id}";
-        
-        $data = apiGet($url);
-        if (isset($data['error'])) {
-            echo json_encode(['error' => $data['error']]);
-            exit;
-        }
-        $rows = $data['data'] ?? [];
-        $allRows = array_merge($allRows, $rows);
-        if (count($rows) < $limit) break;
-        $offset += $limit;
     }
     
     $saved = saveReportRows($db, $allRows, $offerMap);
-    echo json_encode(['status' => 'success', 'saved' => $saved]);
+    echo json_encode([
+        'status' => 'success',
+        'saved' => $saved,
+        'platforms_processed' => count($platforms),
+        'errors' => $apiErrors,
+    ]);
     exit;
 }
 
@@ -981,6 +1329,259 @@ if ($action === 'get_offers_market') {
     exit;
 }
 
+// ============ Журнал событий из Leads.su ============
+// 17. Подтянуть свежие события (новые офферы, изменение выплат, остановки и т.п.)
+//     из /webmaster/notifications и положить в notifications_log без дублей.
+if ($action === 'fetch_notifications') {
+    if (!$token) { echo json_encode(['error' => 'token required']); exit; }
+    $offset = 0;
+    $limit = 100;
+    $total = 0;
+    $stmt = $db->prepare('INSERT OR IGNORE INTO notifications_log
+        (source, ext_id, event_type, event_date, title, body, severity, offer_id, payload_json, created_at)
+        VALUES (\'leads\', :ext_id, :etype, :edate, :title, :body, :sev, :offer_id, :payload, :ts)');
+    $now = date('Y-m-d H:i:s');
+    for ($page = 0; $page < 30; $page++) {
+        $url = "https://api.leads.su/webmaster/notifications?token={$token}&limit={$limit}&offset={$offset}";
+        $data = apiGet($url);
+        if (isset($data['error'])) {
+            echo json_encode(['error' => $data['error']]);
+            exit;
+        }
+        $rows = $data['data'] ?? $data['notifications'] ?? $data['items'] ?? [];
+        if (!is_array($rows) || count($rows) === 0) break;
+        foreach ($rows as $n) {
+            if (!is_array($n)) continue;
+            // Пытаемся вытащить разумные поля; реальные имена в API могут отличаться,
+            // поэтому делаем устойчивую нормализацию с фоллбеками.
+            $extId = (string)($n['id'] ?? $n['notification_id'] ?? $n['uuid'] ?? '');
+            $type  = (string)($n['type'] ?? $n['event'] ?? $n['kind'] ?? 'event');
+            $date  = (string)($n['date'] ?? $n['created_at'] ?? $n['datetime'] ?? date('Y-m-d H:i:s'));
+            $title = (string)($n['title'] ?? $n['subject'] ?? $n['name'] ?? '');
+            $body  = (string)($n['text'] ?? $n['body'] ?? $n['message'] ?? '');
+            $sev   = (string)($n['severity'] ?? $n['level'] ?? 'info');
+            $offerId = (string)($n['offer_id'] ?? '');
+            // Если ext_id пустой — считаем хеш от полей, чтобы UNIQUE сработал.
+            if ($extId === '') $extId = sprintf('%08x', crc32($type . '|' . $date . '|' . $title . '|' . $body));
+            $stmt->bindValue(':ext_id', $extId, SQLITE3_TEXT);
+            $stmt->bindValue(':etype', $type, SQLITE3_TEXT);
+            $stmt->bindValue(':edate', $date, SQLITE3_TEXT);
+            $stmt->bindValue(':title', $title, SQLITE3_TEXT);
+            $stmt->bindValue(':body', $body, SQLITE3_TEXT);
+            $stmt->bindValue(':sev', $sev, SQLITE3_TEXT);
+            $stmt->bindValue(':offer_id', $offerId, SQLITE3_TEXT);
+            $stmt->bindValue(':payload', json_encode($n, JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
+            $stmt->bindValue(':ts', $now, SQLITE3_TEXT);
+            $stmt->execute();
+            if ($db->changes() > 0) $total++;
+            $stmt->reset();
+        }
+        if (count($rows) < $limit) break;
+        $offset += $limit;
+    }
+    echo json_encode(['status' => 'success', 'new_events' => $total]);
+    exit;
+}
+
+// 18. Получить журнал событий из БД (для UI). Без вызова внешнего API.
+if ($action === 'get_notifications') {
+    $limitGet = max(1, min(500, (int)($_GET['limit'] ?? 100)));
+    $stmt = $db->prepare('SELECT source, ext_id, event_type, event_date, title, body, severity, offer_id, created_at
+        FROM notifications_log ORDER BY event_date DESC, id DESC LIMIT :lim');
+    $stmt->bindValue(':lim', $limitGet, SQLITE3_INTEGER);
+    $res = $stmt->execute();
+    $rows = [];
+    while ($row = $res->fetchArray(SQLITE3_ASSOC)) $rows[] = $row;
+    echo json_encode(['status' => 'success', 'data' => $rows]);
+    exit;
+}
+
+// ============ Настройки приложения (план выручки и пр.) ============
+if ($action === 'get_settings') {
+    $res = $db->query('SELECT key, value FROM app_settings');
+    $out = [];
+    while ($row = $res->fetchArray(SQLITE3_ASSOC)) $out[$row['key']] = $row['value'];
+    // Маскируем чувствительные значения, оставляя признак "задано".
+    $masked = $out;
+    if (!empty($masked['tg_bot_token'])) $masked['tg_bot_token'] = '***SET***';
+    echo json_encode(['status' => 'success', 'data' => $masked]);
+    exit;
+}
+if ($action === 'save_settings') {
+    $input = json_decode(file_get_contents('php://input'), true);
+    if (!is_array($input)) { echo json_encode(['error' => 'invalid payload']); exit; }
+    $stmt = $db->prepare('INSERT INTO app_settings (key, value) VALUES (:k, :v)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value');
+    foreach ($input as $k => $v) {
+        if (!is_string($k)) continue;
+        // Не перезаписываем bot_token маркером "***SET***".
+        if ($v === '***SET***') continue;
+        $stmt->bindValue(':k', $k, SQLITE3_TEXT);
+        $stmt->bindValue(':v', is_scalar($v) ? (string)$v : json_encode($v, JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
+        $stmt->execute();
+        $stmt->reset();
+    }
+    echo json_encode(['status' => 'success']);
+    exit;
+}
+
+// ============ Telegram-уведомления ============
+/** Достаёт значение настройки по ключу или возвращает $default. */
+function settingGet($db, $key, $default = '') {
+    $stmt = $db->prepare('SELECT value FROM app_settings WHERE key = :k');
+    $stmt->bindValue(':k', $key, SQLITE3_TEXT);
+    $res = $stmt->execute();
+    $row = $res->fetchArray(SQLITE3_ASSOC);
+    return $row ? (string)$row['value'] : $default;
+}
+
+/**
+ * Отправляет одно сообщение в Telegram. anti-spam: пара (alert_key, today)
+ * пишется в tg_alerts_log с UNIQUE — повторно за один день одно и то же
+ * уведомление не уйдёт.
+ */
+function tgSend($db, $alertKey, $text) {
+    $token = settingGet($db, 'tg_bot_token');
+    $chat  = settingGet($db, 'tg_chat_id');
+    if ($token === '' || $chat === '') return ['skipped' => 'not_configured'];
+    $today = date('Y-m-d');
+    $stmt = $db->prepare('INSERT OR IGNORE INTO tg_alerts_log (alert_key, sent_date, message) VALUES (:k, :d, :m)');
+    $stmt->bindValue(':k', $alertKey, SQLITE3_TEXT);
+    $stmt->bindValue(':d', $today, SQLITE3_TEXT);
+    $stmt->bindValue(':m', mb_substr($text, 0, 4000), SQLITE3_TEXT);
+    $stmt->execute();
+    if ($db->changes() === 0) return ['skipped' => 'already_sent_today'];
+    
+    $url = "https://api.telegram.org/bot{$token}/sendMessage";
+    $ch = curl_init();
+    curl_setopt_array($ch, [
+        CURLOPT_URL => $url,
+        CURLOPT_POST => true,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 15,
+        CURLOPT_SSL_VERIFYPEER => true,
+        CURLOPT_POSTFIELDS => http_build_query([
+            'chat_id' => $chat,
+            'text' => $text,
+            'parse_mode' => 'HTML',
+            'disable_web_page_preview' => 'true',
+        ]),
+    ]);
+    $resp = curl_exec($ch);
+    $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    return ['sent' => $code === 200, 'http' => $code, 'response' => substr((string)$resp, 0, 200)];
+}
+
+if ($action === 'tg_test') {
+    $r = tgSend($db, 'manual_test_' . time(), '✅ Тестовое сообщение от Leads.su Dashboard. Всё работает.');
+    echo json_encode(['status' => 'success', 'result' => $r]);
+    exit;
+}
+
+if ($action === 'tg_check_alerts') {
+    $alerts = [];
+    
+    // Правило 1: просадка дневной выручки относительно того же дня недели
+    // прошлой недели (учитывает день-недели сезонность). Триггер — снижение >= 20%.
+    // Берём последний полностью закрытый день: вчера (или, если нет данных за
+    // вчера, — последний день с данными). Сравниваем с днём -7д от него.
+    $maxDateRow = $db->querySingle('SELECT MAX(date) as d FROM daily_stats', true);
+    $maxDate = $maxDateRow['d'] ?? null;
+    if ($maxDate) {
+        // Последний полный день: если max == today, берём today-1, иначе max.
+        $today = date('Y-m-d');
+        $refDay = ($maxDate >= $today) ? date('Y-m-d', strtotime($today . ' -1 day')) : $maxDate;
+        $prevWeekDay = date('Y-m-d', strtotime($refDay . ' -7 days'));
+        $stmt = $db->prepare('SELECT date, SUM(revenue) as rev, SUM(clicks) as cl FROM daily_stats WHERE date IN (:d1, :d2) GROUP BY date');
+        $stmt->bindValue(':d1', $refDay, SQLITE3_TEXT);
+        $stmt->bindValue(':d2', $prevWeekDay, SQLITE3_TEXT);
+        $res = $stmt->execute();
+        $byDate = [];
+        while ($row = $res->fetchArray(SQLITE3_ASSOC)) $byDate[$row['date']] = $row;
+        $cur = (float)($byDate[$refDay]['rev'] ?? 0);
+        $prev = (float)($byDate[$prevWeekDay]['rev'] ?? 0);
+        if ($prev > 0 && $cur > 0) {
+            $delta = ($cur - $prev) / $prev;
+            if ($delta <= -0.20) {
+                $pct = round($delta * 100, 1);
+                $msg = "⚠️ <b>Просадка выручки</b>\n"
+                     . "День {$refDay}: " . number_format($cur, 0, '.', ' ') . " ₽\n"
+                     . "Тот же день недели ранее ({$prevWeekDay}): " . number_format($prev, 0, '.', ' ') . " ₽\n"
+                     . "Δ: <b>{$pct}%</b>";
+                $alerts[] = ['key' => "rev_drop_{$refDay}", 'msg' => $msg];
+            }
+        }
+    }
+    
+    // Правило 2: новый «топ-Sub1» — Sub1 с долей >= 5% выручки за последние 7 дней,
+    // которого 7 днями ранее в данных не было. Помогает не пропустить новый канал.
+    $end = date('Y-m-d');
+    $start = date('Y-m-d', strtotime('-7 days'));
+    $prevStart = date('Y-m-d', strtotime('-14 days'));
+    $prevEnd = date('Y-m-d', strtotime('-8 days'));
+    $totalStmt = $db->prepare("SELECT SUM(revenue) FROM daily_stats WHERE date BETWEEN :s AND :e");
+    $totalStmt->bindValue(':s', $start, SQLITE3_TEXT);
+    $totalStmt->bindValue(':e', $end, SQLITE3_TEXT);
+    $totalRev = (float)$totalStmt->execute()->fetchArray(SQLITE3_NUM)[0];
+    if ($totalRev > 0) {
+        $stmt = $db->prepare('SELECT sub1, SUM(revenue) as rev FROM daily_stats
+            WHERE date BETWEEN :s AND :e AND sub1 != \'\'
+            GROUP BY sub1 HAVING rev > 0 ORDER BY rev DESC LIMIT 20');
+        $stmt->bindValue(':s', $start, SQLITE3_TEXT);
+        $stmt->bindValue(':e', $end, SQLITE3_TEXT);
+        $res = $stmt->execute();
+        while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
+            $share = $row['rev'] / $totalRev;
+            if ($share < 0.05) continue;
+            // Был ли этот sub1 в предыдущем 7-дневном окне?
+            $prevStmt = $db->prepare('SELECT COUNT(*) as c FROM daily_stats WHERE sub1 = :s AND date BETWEEN :ps AND :pe');
+            $prevStmt->bindValue(':s', $row['sub1'], SQLITE3_TEXT);
+            $prevStmt->bindValue(':ps', $prevStart, SQLITE3_TEXT);
+            $prevStmt->bindValue(':pe', $prevEnd, SQLITE3_TEXT);
+            $prevRes = $prevStmt->execute();
+            $prevRow = $prevRes->fetchArray(SQLITE3_ASSOC);
+            if ((int)($prevRow['c'] ?? 0) === 0) {
+                $pct = round($share * 100, 1);
+                $msg = "🚀 <b>Новый топ-Sub1</b>\n"
+                     . "Sub1: <code>" . htmlspecialchars($row['sub1'], ENT_QUOTES, 'UTF-8') . "</code>\n"
+                     . "Доля выручки за 7 дней: <b>{$pct}%</b>\n"
+                     . "Не было в предыдущем 7-дневном окне.";
+                $alerts[] = ['key' => "new_sub1_" . md5($row['sub1']) . '_' . $end, 'msg' => $msg];
+            }
+        }
+    }
+    
+    // Правило 3: достижение месячного плана выручки (если задан в settings.monthly_revenue_plan).
+    $plan = (float)settingGet($db, 'monthly_revenue_plan', '0');
+    if ($plan > 0) {
+        $monthStart = date('Y-m-01');
+        $monthEnd = date('Y-m-d');
+        $factStmt = $db->prepare("SELECT SUM(revenue) FROM daily_stats WHERE date BETWEEN :s AND :e");
+        $factStmt->bindValue(':s', $monthStart, SQLITE3_TEXT);
+        $factStmt->bindValue(':e', $monthEnd, SQLITE3_TEXT);
+        $factRev = (float)$factStmt->execute()->fetchArray(SQLITE3_NUM)[0];
+        if ($factRev >= $plan) {
+            $pct = round($factRev / $plan * 100);
+            $msg = "🎯 <b>План месяца выполнен!</b>\n"
+                 . "Месяц " . date('Y-m') . ": " . number_format($factRev, 0, '.', ' ') . " ₽ из "
+                 . number_format($plan, 0, '.', ' ') . " ₽ ({$pct}%)";
+            $alerts[] = ['key' => "plan_done_" . date('Y-m'), 'msg' => $msg];
+        }
+    }
+    
+    // Отправляем накопленные алерты (с защитой от повторов через UNIQUE).
+    $sent = 0;
+    $skipped = 0;
+    foreach ($alerts as $a) {
+        $r = tgSend($db, $a['key'], $a['msg']);
+        if (!empty($r['sent'])) $sent++;
+        else $skipped++;
+    }
+    echo json_encode(['status' => 'success', 'checked' => count($alerts), 'sent' => $sent, 'skipped' => $skipped]);
+    exit;
+}
+
 // 16. AI-аналитика. Принимает агрегированный payload по POST,
 // формирует структурированный (DSPy-style) промт и вызывает внешнего AI-провайдера
 // серверным запросом. Ключ/название модели никогда не возвращаются клиенту.
@@ -1018,17 +1619,35 @@ if (!$method) {
 $params = $_GET;
 unset($params['method'], $params['action']);
 
-// Handle field parameter: split comma-separated into field[] for Leads.su API
-$fieldParts = '';
-if (isset($params['field']) && is_string($params['field']) && strpos($params['field'], ',') !== false) {
-    $fieldValues = array_filter(array_map('trim', explode(',', $params['field'])));
-    unset($params['field']);
-    foreach ($fieldValues as $f) {
-        $fieldParts .= '&field[]=' . urlencode($f);
+// Нормализация поля `fields` для /webmaster/reports/summary.
+// API ждёт ОДИН параметр `fields=offer_id,source,aff_sub1` (через запятую),
+// а не `field[]=...`. Frontend исторически шлёт `field=offer_id,source,aff_sub1`,
+// поэтому принимаем оба варианта (`field`, `fields`, и массив `field[]`)
+// и склеиваем их в единственный `fields=` со значениями через запятую.
+$fieldValues = [];
+foreach (['field', 'fields'] as $key) {
+    if (!isset($params[$key])) continue;
+    $val = $params[$key];
+    if (is_array($val)) {
+        foreach ($val as $v) {
+            if (is_string($v) || is_numeric($v)) $fieldValues[] = (string)$v;
+        }
+    } elseif (is_string($val) || is_numeric($val)) {
+        foreach (explode(',', (string)$val) as $v) $fieldValues[] = $v;
     }
+    unset($params[$key]);
+}
+$fieldsQuery = '';
+if ($fieldValues) {
+    $clean = [];
+    foreach ($fieldValues as $v) {
+        $v = trim((string)$v);
+        if ($v !== '' && !in_array($v, $clean, true)) $clean[] = $v;
+    }
+    if ($clean) $fieldsQuery = '&fields=' . urlencode(implode(',', $clean));
 }
 
-$url = "https://api.leads.su/webmaster/" . $method . (empty($params) ? '' : '?' . http_build_query($params)) . $fieldParts;
+$url = "https://api.leads.su/webmaster/" . $method . (empty($params) ? '' : '?' . http_build_query($params)) . $fieldsQuery;
 $result = apiGet($url);
 if (isset($result['error'])) {
     http_response_code(502);

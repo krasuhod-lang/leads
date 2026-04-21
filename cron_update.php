@@ -15,9 +15,14 @@ $proxyUrl = (php_sapi_name() === 'cli')
 
 // При CLI-запуске вызываем leads-proxy.php напрямую через include
 if (php_sapi_name() === 'cli') {
-    // Обновляем за последние 3 дня (на случай задержки данных в API)
-    $endDate = date('Y-m-d');
-    $startDate = date('Y-m-d', strtotime('-3 days'));
+    // Окно: "вчера 00:00" → "сейчас 23:59:59" — последние 4 дня плюс текущий.
+    // ВАЖНО: end_date в API leads.su эксклюзивен по умолчанию. Если передать
+    // голый Y-m-d, текущий день обрезается. Поэтому формируем явное время:
+    // start = "Y-m-d 00:00:00", end = "Y-m-d 23:59:59".
+    $endDay = date('Y-m-d');
+    $startDay = date('Y-m-d', strtotime('-3 days'));
+    $startDate = "{$startDay} 00:00:00";
+    $endDate   = "{$endDay} 23:59:59";
 
     // 1. Обновление статистики Leads.su
     $_GET['action'] = 'update_stats';
@@ -37,17 +42,19 @@ if (php_sapi_name() === 'cli') {
     file_put_contents(__DIR__ . '/cron.log', $logMessage, FILE_APPEND);
     echo $logMessage;
 
-    // 2. Обновление данных Яндекс.Метрики (баннерная статистика)
+    // 2. Обновление данных Яндекс.Метрики (баннерная статистика).
+    // YM ждёт даты вида YYYY-MM-DD без времени и обе границы инклюзивны,
+    // поэтому передаём только даты.
     $_GET['action'] = 'ym_fetch_banner';
-    $_GET['start_date'] = $startDate;
-    $_GET['end_date'] = $endDate;
+    $_GET['start_date'] = $startDay;
+    $_GET['end_date'] = $endDay;
     unset($_GET['token'], $_GET['method'], $_GET['grouping'], $_GET['field']);
 
     ob_start();
     include __DIR__ . '/leads-proxy.php';
     $ymResponse = ob_get_clean();
 
-    $ymLogMessage = date('Y-m-d H:i:s') . " [CLI] YM Banner {$startDate} → {$endDate}: {$ymResponse}\n";
+    $ymLogMessage = date('Y-m-d H:i:s') . " [CLI] YM Banner {$startDay} → {$endDay}: {$ymResponse}\n";
     file_put_contents(__DIR__ . '/cron.log', $ymLogMessage, FILE_APPEND);
     echo $ymLogMessage;
 
@@ -64,12 +71,39 @@ if (php_sapi_name() === 'cli') {
     file_put_contents(__DIR__ . '/cron.log', $offersLogMessage, FILE_APPEND);
     echo $offersLogMessage;
 
+    // 4. Подтянуть журнал событий (новые офферы, остановки, изменение выплат).
+    $_GET = [];
+    $_GET['action'] = 'fetch_notifications';
+    $_GET['token'] = $token;
+
+    ob_start();
+    include __DIR__ . '/leads-proxy.php';
+    $notifResponse = ob_get_clean();
+
+    file_put_contents(__DIR__ . '/cron.log',
+        date('Y-m-d H:i:s') . " [CLI] Notifications: {$notifResponse}\n", FILE_APPEND);
+    echo "Notifications: {$notifResponse}\n";
+
+    // 5. Проверить пороги для Telegram-уведомлений.
+    $_GET = [];
+    $_GET['action'] = 'tg_check_alerts';
+
+    ob_start();
+    include __DIR__ . '/leads-proxy.php';
+    $alertsResponse = ob_get_clean();
+
+    file_put_contents(__DIR__ . '/cron.log',
+        date('Y-m-d H:i:s') . " [CLI] TG alerts: {$alertsResponse}\n", FILE_APPEND);
+    echo "TG alerts: {$alertsResponse}\n";
+
     exit;
 }
 
 // При HTTP-запуске используем cURL к самому серверу
-$endDate = date('Y-m-d');
-$startDate = date('Y-m-d', strtotime('-3 days'));
+$endDay = date('Y-m-d');
+$startDay = date('Y-m-d', strtotime('-3 days'));
+$startDate = urlencode("{$startDay} 00:00:00");
+$endDate   = urlencode("{$endDay} 23:59:59");
 
 $selfBase = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https' : 'http')
     . '://' . ($_SERVER['HTTP_HOST'] ?? 'localhost')
