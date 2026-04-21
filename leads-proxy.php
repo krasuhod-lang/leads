@@ -38,6 +38,25 @@ $YM_CLIENT_SECRET = '5311f2a8dd9543138ea4730bf25e7a06';
 $YM_COUNTER_ID = '19405381';
 $YM_IMPRESSION_GOAL_ID = 468033799; // Показы
 $YM_CLICK_GOAL_ID     = 468033800; // Клики
+
+// ---- AI-аналитика (внутренняя конфигурация). ----
+// Ключ и название провайдера никогда не отдаются клиенту и не пишутся в UI.
+// Можно переопределить переменными окружения AI_API_KEY / AI_API_URL / AI_MODEL,
+// если потребуется ротация без правки кода.
+if (!defined('AI_API_KEY')) {
+    define('AI_API_KEY', getenv('AI_API_KEY') ?: 'sk-e3d9e424edf649858d901c2c97b91958');
+}
+if (!defined('AI_API_URL')) {
+    define('AI_API_URL', getenv('AI_API_URL') ?: 'https://api.deepseek.com/chat/completions');
+}
+if (!defined('AI_MODEL')) {
+    // Самая «глубокая» актуальная модель провайдера.
+    define('AI_MODEL', getenv('AI_MODEL') ?: 'deepseek-reasoner');
+}
+if (!defined('AI_FALLBACK_MODEL')) {
+    // На случай, если reasoner недоступен — быстрый chat-поток той же линейки.
+    define('AI_FALLBACK_MODEL', getenv('AI_FALLBACK_MODEL') ?: 'deepseek-chat');
+}
 // =======================================================
 
 // ---- Подключение к SQLite (один файл stats.db) ----
@@ -400,6 +419,191 @@ function saveReportRows($db, $rows, $offerMap) {
         $stmt->reset();
     }
     return $inserted;
+}
+
+// ========== AI-АНАЛИТИКА (DSPy-style) ==========
+// Идея, заимствованная из DSPy: вместо "сырого" prompt-а описываем «сигнатуру»
+// (типизированные input/output поля + назначения), формируем по ней system-prompt
+// с JSON-схемой, просим модель сначала кратко рассуждать (chain-of-thought),
+// затем отдать строго JSON. Полученный JSON валидируем; при несоответствии —
+// один retry с явным указанием на проблему (Refine).
+
+function aiBuildSignature() {
+    return [
+        // Описание модуля и его контракт.
+        'task' => 'Глубокий бизнес-анализ статистики аффилиатной CPA-площадки с целью увеличения выручки.',
+        'goals' => [
+            'Дать конкретные, исполнимые рекомендации (а не общие фразы).',
+            'Опираться строго на полученные цифры, явно ссылаться на них в выводах.',
+            'Сделать прогноз ключевых показателей (выручка, EPC, клики, approve %, конверсия) на следующие 7 и 30 дней.',
+            'Анализировать в разрезе площадок, дающих суммарно ~99% выручки (top-площадки, мелкие игнорировать).',
+            'Помочь принять ключевые решения, влияющие на рост выручки.',
+        ],
+        // Схема выходного JSON. Используем её одновременно как часть промта и для валидации.
+        'output_schema' => [
+            'reasoning' => 'string — краткое рассуждение по данным (3-6 предложений). НЕ копировать в ответ ничего, кроме фактов.',
+            'summary' => 'string — деловое резюме периода (2-4 предложения), без воды.',
+            'recommendations' => 'array<{title:string, action:string, expected_impact:string, priority:"high"|"medium"|"low", evidence:string}> — 3-7 конкретных рекомендаций, каждая с действием и ожидаемым эффектом, привязкой к цифрам в evidence',
+            'forecast' => '{period_7d:{revenue:number, clicks:number, epc:number, approve_rate:number, confidence:"low"|"medium"|"high", basis:string}, period_30d:{revenue:number, clicks:number, epc:number, approve_rate:number, confidence:"low"|"medium"|"high", basis:string}}',
+            'platforms_breakdown' => 'array<{name:string, revenue_share_pct:number, status:"grow"|"stable"|"watch"|"risk", insight:string, action:string}> — разбор только по площадкам из top_platforms (до 10), с долей в выручке',
+            'key_decisions' => 'array<{decision:string, rationale:string, kpi_impact:string}> — 2-5 ключевых управленческих решений, направленных на рост выручки',
+            'risks' => 'array<string> — риски и аномалии, требующие внимания (фрод, концентрация, просадки)',
+        ],
+    ];
+}
+
+function aiBuildSystemPrompt($sig) {
+    $schemaJson = json_encode($sig['output_schema'], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
+    $goals = "- " . implode("\n- ", $sig['goals']);
+    return <<<PROMPT
+Ты — старший бизнес-аналитик и консультант по росту выручки в performance-маркетинге (CPA, affiliate).
+Задача: {$sig['task']}
+
+Цели вывода:
+{$goals}
+
+Жёсткие правила:
+1. Отвечай ТОЛЬКО валидным JSON в одной строке/блоке (без markdown, без ```), который точно соответствует схеме ниже.
+2. Все числовые значения в forecast — числа (не строки), валюта = ₽, проценты — числа в виде N (например 27.4 для 27.4%).
+3. В platforms_breakdown анализируй ТОЛЬКО площадки из массива top_platforms (это уже отфильтрованные ~99% выручки). Мелкие игнорируй.
+4. Каждая recommendation должна:
+   - быть конкретной (что именно сделать на следующей неделе),
+   - содержать evidence — цитату/значение из переданных данных (например «EPC оффера X = 1.2₽ при среднем 4.7₽»),
+   - иметь expected_impact с примерной оценкой (например «+8-12% к выручке за 14 дней»).
+5. Прогноз стройи на основании weekly_trend / monthly_trend и текущих KPI; consciously учитывай сезонность и снижение/рост последних недель. Если данных мало — confidence=«low».
+6. Никогда не упоминай свою модель, провайдера или "AI". Пиши как аналитик.
+7. Язык вывода — русский, профессиональный, без воды и без «возможно стоит подумать».
+
+Схема выходного JSON (ключи и типы строго такие):
+{$schemaJson}
+PROMPT;
+}
+
+function aiBuildUserPrompt($payload, $sig) {
+    $data = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
+    return "Входные данные за выбранный период (агрегированные):\n```json\n{$data}\n```\n\nВерни ответ строго по схеме. Никакого текста вне JSON.";
+}
+
+function aiTrimPayload($p) {
+    // Защита от слишком больших prompt-ов: ограничиваем массивы.
+    $caps = [
+        'top_platforms' => 12,        // ~99% выручки, кап 10-12
+        'offers_top' => 25,
+        'offers_underperforming' => 15,
+        'market_compare' => 25,
+        'sub1_anomalies' => 15,
+        'weekly_trend' => 26,         // полгода по неделям
+        'monthly_trend' => 18,        // полтора года по месяцам
+        'daily_recent' => 30,
+    ];
+    foreach ($caps as $k => $n) {
+        if (isset($p[$k]) && is_array($p[$k]) && count($p[$k]) > $n) {
+            $p[$k] = array_slice($p[$k], 0, $n);
+        }
+    }
+    return $p;
+}
+
+function aiValidateOutput($obj, $sig) {
+    if (!is_array($obj)) return 'Output is not a JSON object';
+    foreach (['summary', 'recommendations', 'forecast', 'platforms_breakdown', 'key_decisions'] as $req) {
+        if (!array_key_exists($req, $obj)) return "Missing required field: {$req}";
+    }
+    if (!is_array($obj['recommendations']) || !count($obj['recommendations'])) return 'recommendations must be non-empty array';
+    if (!is_array($obj['forecast']) || !isset($obj['forecast']['period_7d'], $obj['forecast']['period_30d'])) return 'forecast.period_7d/period_30d required';
+    if (!is_array($obj['platforms_breakdown'])) return 'platforms_breakdown must be array';
+    if (!is_array($obj['key_decisions'])) return 'key_decisions must be array';
+    return null;
+}
+
+function aiCallProviderStructured($sysPrompt, $userPrompt, $sig) {
+    // Шаг 1 — основной запрос.
+    $resp = aiCallProvider($sysPrompt, $userPrompt, AI_MODEL);
+    if (isset($resp['error'])) {
+        // Один fallback на более лёгкую модель той же линейки.
+        $resp = aiCallProvider($sysPrompt, $userPrompt, AI_FALLBACK_MODEL);
+        if (isset($resp['error'])) return $resp;
+    }
+    $obj = aiExtractJson($resp['content'] ?? '');
+    $err = aiValidateOutput($obj, $sig);
+    if ($err === null) return $obj;
+
+    // Шаг 2 (Refine) — один retry с явной коррекцией.
+    $refineUser = $userPrompt . "\n\nПредыдущий ответ был невалиден: {$err}. Верни ИСПРАВЛЕННЫЙ JSON строго по схеме, без markdown.";
+    $resp2 = aiCallProvider($sysPrompt, $refineUser, AI_MODEL);
+    if (isset($resp2['error'])) {
+        $resp2 = aiCallProvider($sysPrompt, $refineUser, AI_FALLBACK_MODEL);
+        if (isset($resp2['error'])) return $resp2;
+    }
+    $obj2 = aiExtractJson($resp2['content'] ?? '');
+    $err2 = aiValidateOutput($obj2, $sig);
+    if ($err2 === null) return $obj2;
+
+    return ['error' => 'Validation failed: ' . $err2];
+}
+
+function aiCallProvider($sysPrompt, $userPrompt, $model) {
+    $body = [
+        'model' => $model,
+        'messages' => [
+            ['role' => 'system', 'content' => $sysPrompt],
+            ['role' => 'user',   'content' => $userPrompt],
+        ],
+        'temperature' => 0.2,
+        'max_tokens' => 3000,
+        'stream' => false,
+    ];
+    // У провайдера есть JSON-mode — попросим, если поддерживается.
+    $body['response_format'] = ['type' => 'json_object'];
+
+    $ch = curl_init();
+    curl_setopt_array($ch, [
+        CURLOPT_URL => AI_API_URL,
+        CURLOPT_POST => true,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 120,
+        CURLOPT_SSL_VERIFYPEER => false,
+        CURLOPT_HTTPHEADER => [
+            'Content-Type: application/json',
+            'Accept: application/json',
+            'Authorization: Bearer ' . AI_API_KEY,
+        ],
+        CURLOPT_POSTFIELDS => json_encode($body, JSON_UNESCAPED_UNICODE),
+    ]);
+    $raw = curl_exec($ch);
+    $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $cerr = curl_error($ch);
+    curl_close($ch);
+
+    if ($cerr) {
+        error_log('AI provider CURL error: ' . $cerr);
+        return ['error' => 'transport'];
+    }
+    if ($code < 200 || $code >= 300) {
+        error_log("AI provider HTTP {$code}: " . substr((string)$raw, 0, 500));
+        return ['error' => "http_{$code}"];
+    }
+    $data = json_decode($raw, true);
+    if (!is_array($data)) return ['error' => 'invalid_json'];
+    $content = $data['choices'][0]['message']['content'] ?? '';
+    if ($content === '') return ['error' => 'empty_content'];
+    return ['content' => $content];
+}
+
+function aiExtractJson($text) {
+    $t = trim((string)$text);
+    if ($t === '') return null;
+    // Срежем возможные markdown-обёртки.
+    $t = preg_replace('/^```(?:json)?\s*/i', '', $t);
+    $t = preg_replace('/\s*```$/', '', $t);
+    $obj = json_decode($t, true);
+    if (is_array($obj)) return $obj;
+    // Попробуем выцепить первый {...} блок.
+    if (preg_match('/\{[\s\S]*\}/', $t, $m)) {
+        $obj = json_decode($m[0], true);
+        if (is_array($obj)) return $obj;
+    }
+    return null;
 }
 
 // ========== ОБРАБОТЧИКИ ЗАПРОСОВ ==========
@@ -773,6 +977,33 @@ if ($action === 'get_offers_market') {
     $rows = [];
     while ($row = $res->fetchArray(SQLITE3_ASSOC)) $rows[] = $row;
     echo json_encode(['status' => 'success', 'data' => $rows]);
+    exit;
+}
+
+// 16. AI-аналитика. Принимает агрегированный payload по POST,
+// формирует структурированный (DSPy-style) промт и вызывает внешнего AI-провайдера
+// серверным запросом. Ключ/название модели никогда не возвращаются клиенту.
+if ($action === 'ai_analyze') {
+    $raw = file_get_contents('php://input');
+    $payload = json_decode($raw, true);
+    if (!is_array($payload)) {
+        echo json_encode(['status' => 'error', 'error' => 'Invalid payload']);
+        exit;
+    }
+    // Жёстко ограничиваем размер payload, чтобы не раздувать prompt и стоимость.
+    $payload = aiTrimPayload($payload);
+
+    $signature = aiBuildSignature();
+    $sysPrompt = aiBuildSystemPrompt($signature);
+    $userPrompt = aiBuildUserPrompt($payload, $signature);
+
+    $result = aiCallProviderStructured($sysPrompt, $userPrompt, $signature);
+    if (isset($result['error'])) {
+        // Никогда не возвращаем сырое имя провайдера/модели в текстах ошибок.
+        echo json_encode(['status' => 'error', 'error' => 'AI service is temporarily unavailable. Try again later.']);
+        exit;
+    }
+    echo json_encode(['status' => 'success', 'data' => $result]);
     exit;
 }
 
