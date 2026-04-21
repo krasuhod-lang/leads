@@ -50,12 +50,14 @@ if (!defined('AI_API_URL')) {
     define('AI_API_URL', getenv('AI_API_URL') ?: 'https://api.deepseek.com/chat/completions');
 }
 if (!defined('AI_MODEL')) {
-    // Самая «глубокая» актуальная модель провайдера.
-    define('AI_MODEL', getenv('AI_MODEL') ?: 'deepseek-reasoner');
+    // По умолчанию — `deepseek-chat`: поддерживает response_format=json_object,
+    // быстрый, отвечает в пределах 30-60 сек. `deepseek-reasoner` НЕ поддерживает
+    // ни JSON-mode, ни temperature → отдаём его только как fallback.
+    define('AI_MODEL', getenv('AI_MODEL') ?: 'deepseek-chat');
 }
 if (!defined('AI_FALLBACK_MODEL')) {
-    // На случай, если reasoner недоступен — быстрый chat-поток той же линейки.
-    define('AI_FALLBACK_MODEL', getenv('AI_FALLBACK_MODEL') ?: 'deepseek-chat');
+    // Резерв — reasoner той же линейки (без JSON-mode и без temperature).
+    define('AI_FALLBACK_MODEL', getenv('AI_FALLBACK_MODEL') ?: 'deepseek-reasoner');
 }
 // =======================================================
 
@@ -227,22 +229,46 @@ function cleanSourceName($name) {
 }
 
 /**
+ * Загружает все офферы с постраничной выгрузкой (API limit max = 500).
+ * Возвращает плоский массив объектов офферов из ответа API.
+ * $extended=true → добавляет extendedFields=1 (детальная статистика рынка).
+ */
+function fetchOffersListAll($token, $extended = false) {
+    $all = [];
+    $offset = 0;
+    $limit = 500; // hard API limit per docs
+    $maxPages = 20; // safety net (10000 offers max)
+    for ($page = 0; $page < $maxPages; $page++) {
+        $url = "https://api.leads.su/webmaster/offers?token={$token}"
+             . "&limit={$limit}&offset={$offset}"
+             . ($extended ? '&extendedFields=1' : '');
+        $result = apiGet($url);
+        if (isset($result['error'])) {
+            error_log('fetchOffersListAll error: ' . json_encode($result['error']));
+            // Возвращаем то, что успели набрать (если первая страница упала — пустой массив).
+            if (!$all) return ['error' => $result['error']];
+            break;
+        }
+        $offers = $result['data'] ?? $result['offers'] ?? $result['items'] ?? [];
+        if (!is_array($offers) && is_array($result)) $offers = $result;
+        if (!is_array($offers) || count($offers) === 0) break;
+        $all = array_merge($all, $offers);
+        if (count($offers) < $limit) break;
+        $offset += $limit;
+    }
+    return ['offers' => $all];
+}
+
+/**
  * Загружает список офферов и возвращает массив [offer_id => offer_name].
  * Также сохраняет имена в offers_cache, чтобы потом резолвить «Unknown»-записи.
  */
 function fetchOffersMap($token, $db = null) {
-    $url = "https://api.leads.su/webmaster/offers?token={$token}&limit=1000";
-    $result = apiGet($url);
-    if (isset($result['error'])) {
-        error_log('fetchOffersMap error: ' . json_encode($result['error']));
+    $res = fetchOffersListAll($token, false);
+    if (isset($res['error'])) {
         return [];
     }
-    // Handle multiple response formats
-    $offers = $result['data'] ?? $result['offers'] ?? $result['items'] ?? [];
-    if (!is_array($offers) && is_array($result)) {
-        // Response might be a direct array
-        $offers = $result;
-    }
+    $offers = $res['offers'];
     $map = [];
     $cacheStmt = null;
     if ($db) {
@@ -275,14 +301,11 @@ function fetchOffersMap($token, $db = null) {
  * и сохраняет в offers_cache. Возвращает массив офферов с полями market_epc/your_epc.
  */
 function fetchOffersExtended($token, $db) {
-    $url = "https://api.leads.su/webmaster/offers?token={$token}&limit=1000&extendedFields=1";
-    $result = apiGet($url);
-    if (isset($result['error'])) {
-        error_log('fetchOffersExtended error: ' . json_encode($result['error']));
-        return ['error' => $result['error']];
+    $res = fetchOffersListAll($token, true);
+    if (isset($res['error'])) {
+        return ['error' => $res['error']];
     }
-    $offers = $result['data'] ?? $result['offers'] ?? $result['items'] ?? [];
-    if (!is_array($offers) && is_array($result)) $offers = $result;
+    $offers = $res['offers'];
     $now = date('Y-m-d H:i:s');
     $stmt = $db->prepare('INSERT INTO offers_cache
         (offer_id, name, market_epc, market_cr, market_ar, your_epc, your_cr, updated_at)
@@ -543,18 +566,25 @@ function aiCallProviderStructured($sysPrompt, $userPrompt, $sig) {
 }
 
 function aiCallProvider($sysPrompt, $userPrompt, $model) {
+    // deepseek-reasoner НЕ поддерживает temperature, top_p, presence_penalty,
+    // frequency_penalty, response_format и tool/function calling.
+    // Передача любого из этих полей даёт HTTP 400 → "AI service unavailable".
+    $isReasoner = (stripos((string)$model, 'reasoner') !== false);
+
     $body = [
         'model' => $model,
         'messages' => [
             ['role' => 'system', 'content' => $sysPrompt],
             ['role' => 'user',   'content' => $userPrompt],
         ],
-        'temperature' => 0.2,
         'max_tokens' => 3000,
         'stream' => false,
     ];
-    // У провайдера есть JSON-mode — попросим, если поддерживается.
-    $body['response_format'] = ['type' => 'json_object'];
+    if (!$isReasoner) {
+        $body['temperature'] = 0.2;
+        // У провайдера есть JSON-mode — попросим, если поддерживается моделью.
+        $body['response_format'] = ['type' => 'json_object'];
+    }
 
     $ch = curl_init();
     curl_setopt_array($ch, [
@@ -707,17 +737,20 @@ if ($action === 'update_stats') {
     $offset = 0;
     $limit = 500;
     while (true) {
-        // Build field[] parameters for Leads.su API
-        $fieldQuery = '';
+        // По документации Leads.su /webmaster/reports/summary принимает параметр
+        // `fields` (одной строкой, через запятую), а не `field[]`. Если прислать
+        // `field[]`, API игнорирует группировку → все строки схлопываются
+        // в один агрегат без offer_id и aff_sub1.
+        $fieldsParam = '';
         if ($fields) {
             $fieldArr = array_filter(array_map('trim', explode(',', $fields)));
-            foreach ($fieldArr as $f) {
-                $fieldQuery .= '&field[]=' . urlencode($f);
+            if ($fieldArr) {
+                $fieldsParam = '&fields=' . urlencode(implode(',', $fieldArr));
             }
         }
         $url = "https://api.leads.su/webmaster/reports/summary?token={$token}"
              . "&start_date={$start_date}&end_date={$end_date}&grouping={$grouping}"
-             . $fieldQuery
+             . $fieldsParam
              . "&offset={$offset}&limit={$limit}";
         if ($platform_id) $url .= "&platform_id={$platform_id}";
         
@@ -1018,17 +1051,35 @@ if (!$method) {
 $params = $_GET;
 unset($params['method'], $params['action']);
 
-// Handle field parameter: split comma-separated into field[] for Leads.su API
-$fieldParts = '';
-if (isset($params['field']) && is_string($params['field']) && strpos($params['field'], ',') !== false) {
-    $fieldValues = array_filter(array_map('trim', explode(',', $params['field'])));
-    unset($params['field']);
-    foreach ($fieldValues as $f) {
-        $fieldParts .= '&field[]=' . urlencode($f);
+// Нормализация поля `fields` для /webmaster/reports/summary.
+// API ждёт ОДИН параметр `fields=offer_id,source,aff_sub1` (через запятую),
+// а не `field[]=...`. Frontend исторически шлёт `field=offer_id,source,aff_sub1`,
+// поэтому принимаем оба варианта (`field`, `fields`, и массив `field[]`)
+// и склеиваем их в единственный `fields=` со значениями через запятую.
+$fieldValues = [];
+foreach (['field', 'fields'] as $key) {
+    if (!isset($params[$key])) continue;
+    $val = $params[$key];
+    if (is_array($val)) {
+        foreach ($val as $v) {
+            if (is_string($v) || is_numeric($v)) $fieldValues[] = (string)$v;
+        }
+    } elseif (is_string($val) || is_numeric($val)) {
+        foreach (explode(',', (string)$val) as $v) $fieldValues[] = $v;
     }
+    unset($params[$key]);
+}
+$fieldsQuery = '';
+if ($fieldValues) {
+    $clean = [];
+    foreach ($fieldValues as $v) {
+        $v = trim((string)$v);
+        if ($v !== '' && !in_array($v, $clean, true)) $clean[] = $v;
+    }
+    if ($clean) $fieldsQuery = '&fields=' . urlencode(implode(',', $clean));
 }
 
-$url = "https://api.leads.su/webmaster/" . $method . (empty($params) ? '' : '?' . http_build_query($params)) . $fieldParts;
+$url = "https://api.leads.su/webmaster/" . $method . (empty($params) ? '' : '?' . http_build_query($params)) . $fieldsQuery;
 $result = apiGet($url);
 if (isset($result['error'])) {
     http_response_code(502);
