@@ -1,0 +1,7 @@
+stats.db
+stats.db-journal
+stats.db-wal
+stats.db-shm
+php_errors.log
+cron.log
+.DS_Store

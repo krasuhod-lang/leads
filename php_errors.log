@@ -1,4 +1,0 @@
-[21-Apr-2026 05:50:31 UTC] PHP Warning:  Undefined array key "REQUEST_METHOD" in /home/runner/work/leads/leads/leads-proxy.php on line 18
-[21-Apr-2026 05:50:31 UTC] PHP Stack trace:
-[21-Apr-2026 05:50:31 UTC] PHP   1. {main}() Command line code:0
-[21-Apr-2026 05:50:31 UTC] PHP   2. {main}() Command line code:0

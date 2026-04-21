@@ -301,6 +301,13 @@ try {
         UNIQUE(alert_key, sent_date)
     )');
     
+    // Универсальная таблица настроек (план выручки на месяц, конфиг алертов и пр.).
+    // key/value — текст; для чисел сериализуем сами при чтении.
+    $db->exec('CREATE TABLE IF NOT EXISTS app_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT
+    )');
+    
 } catch (Exception $e) {
     http_response_code(500);
     echo json_encode(['error' => 'Database init failed', 'message' => $e->getMessage()]);
@@ -1316,6 +1323,259 @@ if ($action === 'get_offers_market') {
     $rows = [];
     while ($row = $res->fetchArray(SQLITE3_ASSOC)) $rows[] = $row;
     echo json_encode(['status' => 'success', 'data' => $rows]);
+    exit;
+}
+
+// ============ Журнал событий из Leads.su ============
+// 17. Подтянуть свежие события (новые офферы, изменение выплат, остановки и т.п.)
+//     из /webmaster/notifications и положить в notifications_log без дублей.
+if ($action === 'fetch_notifications') {
+    if (!$token) { echo json_encode(['error' => 'token required']); exit; }
+    $offset = 0;
+    $limit = 100;
+    $total = 0;
+    $stmt = $db->prepare('INSERT OR IGNORE INTO notifications_log
+        (source, ext_id, event_type, event_date, title, body, severity, offer_id, payload_json, created_at)
+        VALUES (\'leads\', :ext_id, :etype, :edate, :title, :body, :sev, :offer_id, :payload, :ts)');
+    $now = date('Y-m-d H:i:s');
+    for ($page = 0; $page < 30; $page++) {
+        $url = "https://api.leads.su/webmaster/notifications?token={$token}&limit={$limit}&offset={$offset}";
+        $data = apiGet($url);
+        if (isset($data['error'])) {
+            echo json_encode(['error' => $data['error']]);
+            exit;
+        }
+        $rows = $data['data'] ?? $data['notifications'] ?? $data['items'] ?? [];
+        if (!is_array($rows) || count($rows) === 0) break;
+        foreach ($rows as $n) {
+            if (!is_array($n)) continue;
+            // Пытаемся вытащить разумные поля; реальные имена в API могут отличаться,
+            // поэтому делаем устойчивую нормализацию с фоллбеками.
+            $extId = (string)($n['id'] ?? $n['notification_id'] ?? $n['uuid'] ?? '');
+            $type  = (string)($n['type'] ?? $n['event'] ?? $n['kind'] ?? 'event');
+            $date  = (string)($n['date'] ?? $n['created_at'] ?? $n['datetime'] ?? date('Y-m-d H:i:s'));
+            $title = (string)($n['title'] ?? $n['subject'] ?? $n['name'] ?? '');
+            $body  = (string)($n['text'] ?? $n['body'] ?? $n['message'] ?? '');
+            $sev   = (string)($n['severity'] ?? $n['level'] ?? 'info');
+            $offerId = (string)($n['offer_id'] ?? '');
+            // Если ext_id пустой — считаем хеш от полей, чтобы UNIQUE сработал.
+            if ($extId === '') $extId = sprintf('%08x', crc32($type . '|' . $date . '|' . $title . '|' . $body));
+            $stmt->bindValue(':ext_id', $extId, SQLITE3_TEXT);
+            $stmt->bindValue(':etype', $type, SQLITE3_TEXT);
+            $stmt->bindValue(':edate', $date, SQLITE3_TEXT);
+            $stmt->bindValue(':title', $title, SQLITE3_TEXT);
+            $stmt->bindValue(':body', $body, SQLITE3_TEXT);
+            $stmt->bindValue(':sev', $sev, SQLITE3_TEXT);
+            $stmt->bindValue(':offer_id', $offerId, SQLITE3_TEXT);
+            $stmt->bindValue(':payload', json_encode($n, JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
+            $stmt->bindValue(':ts', $now, SQLITE3_TEXT);
+            $stmt->execute();
+            if ($db->changes() > 0) $total++;
+            $stmt->reset();
+        }
+        if (count($rows) < $limit) break;
+        $offset += $limit;
+    }
+    echo json_encode(['status' => 'success', 'new_events' => $total]);
+    exit;
+}
+
+// 18. Получить журнал событий из БД (для UI). Без вызова внешнего API.
+if ($action === 'get_notifications') {
+    $limitGet = max(1, min(500, (int)($_GET['limit'] ?? 100)));
+    $stmt = $db->prepare('SELECT source, ext_id, event_type, event_date, title, body, severity, offer_id, created_at
+        FROM notifications_log ORDER BY event_date DESC, id DESC LIMIT :lim');
+    $stmt->bindValue(':lim', $limitGet, SQLITE3_INTEGER);
+    $res = $stmt->execute();
+    $rows = [];
+    while ($row = $res->fetchArray(SQLITE3_ASSOC)) $rows[] = $row;
+    echo json_encode(['status' => 'success', 'data' => $rows]);
+    exit;
+}
+
+// ============ Настройки приложения (план выручки и пр.) ============
+if ($action === 'get_settings') {
+    $res = $db->query('SELECT key, value FROM app_settings');
+    $out = [];
+    while ($row = $res->fetchArray(SQLITE3_ASSOC)) $out[$row['key']] = $row['value'];
+    // Маскируем чувствительные значения, оставляя признак "задано".
+    $masked = $out;
+    if (!empty($masked['tg_bot_token'])) $masked['tg_bot_token'] = '***SET***';
+    echo json_encode(['status' => 'success', 'data' => $masked]);
+    exit;
+}
+if ($action === 'save_settings') {
+    $input = json_decode(file_get_contents('php://input'), true);
+    if (!is_array($input)) { echo json_encode(['error' => 'invalid payload']); exit; }
+    $stmt = $db->prepare('INSERT INTO app_settings (key, value) VALUES (:k, :v)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value');
+    foreach ($input as $k => $v) {
+        if (!is_string($k)) continue;
+        // Не перезаписываем bot_token маркером "***SET***".
+        if ($v === '***SET***') continue;
+        $stmt->bindValue(':k', $k, SQLITE3_TEXT);
+        $stmt->bindValue(':v', is_scalar($v) ? (string)$v : json_encode($v, JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
+        $stmt->execute();
+        $stmt->reset();
+    }
+    echo json_encode(['status' => 'success']);
+    exit;
+}
+
+// ============ Telegram-уведомления ============
+/** Достаёт значение настройки по ключу или возвращает $default. */
+function settingGet($db, $key, $default = '') {
+    $stmt = $db->prepare('SELECT value FROM app_settings WHERE key = :k');
+    $stmt->bindValue(':k', $key, SQLITE3_TEXT);
+    $res = $stmt->execute();
+    $row = $res->fetchArray(SQLITE3_ASSOC);
+    return $row ? (string)$row['value'] : $default;
+}
+
+/**
+ * Отправляет одно сообщение в Telegram. anti-spam: пара (alert_key, today)
+ * пишется в tg_alerts_log с UNIQUE — повторно за один день одно и то же
+ * уведомление не уйдёт.
+ */
+function tgSend($db, $alertKey, $text) {
+    $token = settingGet($db, 'tg_bot_token');
+    $chat  = settingGet($db, 'tg_chat_id');
+    if ($token === '' || $chat === '') return ['skipped' => 'not_configured'];
+    $today = date('Y-m-d');
+    $stmt = $db->prepare('INSERT OR IGNORE INTO tg_alerts_log (alert_key, sent_date, message) VALUES (:k, :d, :m)');
+    $stmt->bindValue(':k', $alertKey, SQLITE3_TEXT);
+    $stmt->bindValue(':d', $today, SQLITE3_TEXT);
+    $stmt->bindValue(':m', mb_substr($text, 0, 4000), SQLITE3_TEXT);
+    $stmt->execute();
+    if ($db->changes() === 0) return ['skipped' => 'already_sent_today'];
+    
+    $url = "https://api.telegram.org/bot{$token}/sendMessage";
+    $ch = curl_init();
+    curl_setopt_array($ch, [
+        CURLOPT_URL => $url,
+        CURLOPT_POST => true,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 15,
+        CURLOPT_SSL_VERIFYPEER => true,
+        CURLOPT_POSTFIELDS => http_build_query([
+            'chat_id' => $chat,
+            'text' => $text,
+            'parse_mode' => 'HTML',
+            'disable_web_page_preview' => 'true',
+        ]),
+    ]);
+    $resp = curl_exec($ch);
+    $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    return ['sent' => $code === 200, 'http' => $code, 'response' => substr((string)$resp, 0, 200)];
+}
+
+if ($action === 'tg_test') {
+    $r = tgSend($db, 'manual_test_' . time(), '✅ Тестовое сообщение от Leads.su Dashboard. Всё работает.');
+    echo json_encode(['status' => 'success', 'result' => $r]);
+    exit;
+}
+
+if ($action === 'tg_check_alerts') {
+    $alerts = [];
+    
+    // Правило 1: просадка дневной выручки относительно того же дня недели
+    // прошлой недели (учитывает день-недели сезонность). Триггер — снижение >= 20%.
+    // Берём последний полностью закрытый день: вчера (или, если нет данных за
+    // вчера, — последний день с данными). Сравниваем с днём -7д от него.
+    $maxDateRow = $db->querySingle('SELECT MAX(date) as d FROM daily_stats', true);
+    $maxDate = $maxDateRow['d'] ?? null;
+    if ($maxDate) {
+        // Последний полный день: если max == today, берём today-1, иначе max.
+        $today = date('Y-m-d');
+        $refDay = ($maxDate >= $today) ? date('Y-m-d', strtotime($today . ' -1 day')) : $maxDate;
+        $prevWeekDay = date('Y-m-d', strtotime($refDay . ' -7 days'));
+        $stmt = $db->prepare('SELECT date, SUM(revenue) as rev, SUM(clicks) as cl FROM daily_stats WHERE date IN (:d1, :d2) GROUP BY date');
+        $stmt->bindValue(':d1', $refDay, SQLITE3_TEXT);
+        $stmt->bindValue(':d2', $prevWeekDay, SQLITE3_TEXT);
+        $res = $stmt->execute();
+        $byDate = [];
+        while ($row = $res->fetchArray(SQLITE3_ASSOC)) $byDate[$row['date']] = $row;
+        $cur = (float)($byDate[$refDay]['rev'] ?? 0);
+        $prev = (float)($byDate[$prevWeekDay]['rev'] ?? 0);
+        if ($prev > 0 && $cur > 0) {
+            $delta = ($cur - $prev) / $prev;
+            if ($delta <= -0.20) {
+                $pct = round($delta * 100, 1);
+                $msg = "⚠️ <b>Просадка выручки</b>\n"
+                     . "День {$refDay}: " . number_format($cur, 0, '.', ' ') . " ₽\n"
+                     . "Тот же день недели ранее ({$prevWeekDay}): " . number_format($prev, 0, '.', ' ') . " ₽\n"
+                     . "Δ: <b>{$pct}%</b>";
+                $alerts[] = ['key' => "rev_drop_{$refDay}", 'msg' => $msg];
+            }
+        }
+    }
+    
+    // Правило 2: новый «топ-Sub1» — Sub1 с долей >= 5% выручки за последние 7 дней,
+    // которого 7 днями ранее в данных не было. Помогает не пропустить новый канал.
+    $end = date('Y-m-d');
+    $start = date('Y-m-d', strtotime('-7 days'));
+    $prevStart = date('Y-m-d', strtotime('-14 days'));
+    $prevEnd = date('Y-m-d', strtotime('-8 days'));
+    $totalStmt = $db->prepare("SELECT SUM(revenue) FROM daily_stats WHERE date BETWEEN :s AND :e");
+    $totalStmt->bindValue(':s', $start, SQLITE3_TEXT);
+    $totalStmt->bindValue(':e', $end, SQLITE3_TEXT);
+    $totalRev = (float)$totalStmt->execute()->fetchArray(SQLITE3_NUM)[0];
+    if ($totalRev > 0) {
+        $stmt = $db->prepare('SELECT sub1, SUM(revenue) as rev FROM daily_stats
+            WHERE date BETWEEN :s AND :e AND sub1 != \'\'
+            GROUP BY sub1 HAVING rev > 0 ORDER BY rev DESC LIMIT 20');
+        $stmt->bindValue(':s', $start, SQLITE3_TEXT);
+        $stmt->bindValue(':e', $end, SQLITE3_TEXT);
+        $res = $stmt->execute();
+        while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
+            $share = $row['rev'] / $totalRev;
+            if ($share < 0.05) continue;
+            // Был ли этот sub1 в предыдущем 7-дневном окне?
+            $prevStmt = $db->prepare('SELECT COUNT(*) as c FROM daily_stats WHERE sub1 = :s AND date BETWEEN :ps AND :pe');
+            $prevStmt->bindValue(':s', $row['sub1'], SQLITE3_TEXT);
+            $prevStmt->bindValue(':ps', $prevStart, SQLITE3_TEXT);
+            $prevStmt->bindValue(':pe', $prevEnd, SQLITE3_TEXT);
+            $prevRes = $prevStmt->execute();
+            $prevRow = $prevRes->fetchArray(SQLITE3_ASSOC);
+            if ((int)($prevRow['c'] ?? 0) === 0) {
+                $pct = round($share * 100, 1);
+                $msg = "🚀 <b>Новый топ-Sub1</b>\n"
+                     . "Sub1: <code>" . htmlspecialchars($row['sub1'], ENT_QUOTES, 'UTF-8') . "</code>\n"
+                     . "Доля выручки за 7 дней: <b>{$pct}%</b>\n"
+                     . "Не было в предыдущем 7-дневном окне.";
+                $alerts[] = ['key' => "new_sub1_" . md5($row['sub1']) . '_' . $end, 'msg' => $msg];
+            }
+        }
+    }
+    
+    // Правило 3: достижение месячного плана выручки (если задан в settings.monthly_revenue_plan).
+    $plan = (float)settingGet($db, 'monthly_revenue_plan', '0');
+    if ($plan > 0) {
+        $monthStart = date('Y-m-01');
+        $monthEnd = date('Y-m-d');
+        $factStmt = $db->prepare("SELECT SUM(revenue) FROM daily_stats WHERE date BETWEEN :s AND :e");
+        $factStmt->bindValue(':s', $monthStart, SQLITE3_TEXT);
+        $factStmt->bindValue(':e', $monthEnd, SQLITE3_TEXT);
+        $factRev = (float)$factStmt->execute()->fetchArray(SQLITE3_NUM)[0];
+        if ($factRev >= $plan) {
+            $pct = round($factRev / $plan * 100);
+            $msg = "🎯 <b>План месяца выполнен!</b>\n"
+                 . "Месяц " . date('Y-m') . ": " . number_format($factRev, 0, '.', ' ') . " ₽ из "
+                 . number_format($plan, 0, '.', ' ') . " ₽ ({$pct}%)";
+            $alerts[] = ['key' => "plan_done_" . date('Y-m'), 'msg' => $msg];
+        }
+    }
+    
+    // Отправляем накопленные алерты (с защитой от повторов через UNIQUE).
+    $sent = 0;
+    $skipped = 0;
+    foreach ($alerts as $a) {
+        $r = tgSend($db, $a['key'], $a['msg']);
+        if (!empty($r['sent'])) $sent++;
+        else $skipped++;
+    }
+    echo json_encode(['status' => 'success', 'checked' => count($alerts), 'sent' => $sent, 'skipped' => $skipped]);
     exit;
 }
 
