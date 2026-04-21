@@ -159,7 +159,16 @@
     </div>
     <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
       <div class="card"><h2 class="text-white font-bold mb-4">📅 EPC по месяцам</h2><div class="chart-wrap" style="height:320px"><canvas id="epcMonthChart"></canvas></div></div>
-      <div class="card"><h2 class="text-white font-bold mb-4">🔥 Тепловая карта EPC (день недели × месяц)</h2><div id="epcHeatmapContainer" class="overflow-auto"></div></div>
+      <div class="card">
+        <div class="flex flex-wrap gap-3 justify-between items-center mb-4">
+          <h2 class="text-white font-bold">🔥 Тепловая карта EPC (день недели × период)</h2>
+          <select id="epcHeatmapAxis" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm focus:outline-none" onchange="renderEPCAnalytics()">
+            <option value="month">По месяцам</option>
+            <option value="week">По неделям</option>
+          </select>
+        </div>
+        <div id="epcHeatmapContainer" class="overflow-auto"></div>
+      </div>
     </div>
     <div class="card">
       <h2 class="text-white font-bold mb-4">📉 Анализ просадок EPC</h2>
@@ -221,13 +230,20 @@
     <div class="card">
       <div class="flex flex-wrap gap-3 justify-between items-center mb-4">
         <h2 class="text-white font-bold">📈 Динамика баннера</h2>
-        <select id="bannerChartMetric" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm focus:outline-none" onchange="renderBannerChart()">
-          <option value="all">Показы + Клики + Конверсия</option>
-          <option value="impressions">Показы</option>
-          <option value="clicks">Клики</option>
-          <option value="conversion">Конверсия (%)</option>
-          <option value="imp_clicks">Показы + Клики</option>
-        </select>
+        <div class="flex gap-2">
+          <select id="bannerChartGrouping" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm focus:outline-none" onchange="renderBannerChart()">
+            <option value="day">По дням</option>
+            <option value="week">По неделям</option>
+            <option value="month">По месяцам</option>
+          </select>
+          <select id="bannerChartMetric" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm focus:outline-none" onchange="renderBannerChart()">
+            <option value="all">Показы + Клики + Конверсия</option>
+            <option value="impressions">Показы</option>
+            <option value="clicks">Клики</option>
+            <option value="conversion">Конверсия (%)</option>
+            <option value="imp_clicks">Показы + Клики</option>
+          </select>
+        </div>
       </div>
       <div class="chart-wrap"><canvas id="bannerConvChart"></canvas></div>
     </div>
@@ -271,11 +287,14 @@
 const API_BASE = './leads-proxy.php';
 const HARDCODED_TOKEN = '2104ce6ccd2ce95458a53926597416eb';
 const AUTO_REFRESH_INTERVAL_MS = 60 * 60 * 1000; // 1 час
+const LAST_REFRESH_KEY = 'leadsLastAutoRefresh';
 
 let originalData = [];
 let globalRawData = [];
 let bouncesData = [];
 let bannerData = [];
+let offerMarketMap = {}; // offer_id → { name, market_epc, market_cr, market_ar, your_epc, your_cr }
+let offerMarketByName = {}; // offer_name → market data (для рядов без offer_id из старой БД)
 
 let epcLineChart = null;
 let epcWeekdayChart = null;
@@ -342,13 +361,13 @@ function escapeHtml(str) {
   return String(str).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#039;');
 }
 
-// Deduplicates data array by composite key (date+source_id+offer+sub1).
+// Deduplicates data array by composite key (date+source_id+offer_id+offer+sub1).
 // keepLast=false: first occurrence wins (for fresh API data where dupes are exact copies).
 // keepLast=true: last occurrence wins (for DB merge where DB data should overwrite in-memory).
 function deduplicateData(data, keepLast = false) {
   const dedup = new Map();
   for (const r of data) {
-    const key = `${r.date}|${r.source_id}|${r.offer}|${r.sub1}`;
+    const key = `${r.date}|${r.source_id}|${r.offer_id || ''}|${r.offer}|${r.sub1}`;
     if (keepLast || !dedup.has(key)) {
       dedup.set(key, r);
     }
@@ -426,6 +445,7 @@ function processDataFromDb(rows) {
     month: row.date.slice(0, 7),
     dayOfWeek: daysOfWeek[new Date(row.date).getDay()],
     offer: row.offer_name || 'Unknown',
+    offer_id: row.offer_id || '',
     source: mergeSourceName(row.source_name),
     source_id: row.source_id || 'all',
     sub1: row.sub1 || '',
@@ -509,11 +529,11 @@ async function loadFromAPI() {
       originalData.push({
         date: dateStr, week: getWeekNumber(new Date(dateStr)), month: dateStr.slice(0, 7),
         dayOfWeek: daysOfWeek[new Date(dateStr).getDay()],
-        offer: offerName,
+        offer: offerName, offer_id: offerId,
         source: sourceName, source_id: platformId || 'all', sub1, clicks, conversions, approved, revenue
       });
     }
-    // Deduplicate originalData by composite key (date + source_id + offer + sub1)
+    // Deduplicate originalData by composite key (date + source_id + offer_id + offer + sub1)
     originalData = deduplicateData(originalData, false);
     // Save data to DB via server-side update (more reliable with source_id handling)
     try {
@@ -521,11 +541,15 @@ async function loadFromAPI() {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ data: originalData.map(r => ({
           date: r.date, source_id: r.source_id || 'all', source_name: r.source,
-          offer: r.offer, sub1: r.sub1 || '', clicks: r.clicks,
+          offer: r.offer, offer_id: r.offer_id || '', sub1: r.sub1 || '', clicks: r.clicks,
           conversions: r.conversions, approved: r.approved, revenue: r.revenue
         })) })
       });
     } catch(e) { console.warn('Ошибка сохранения:', e); }
+    // Заодно подтягиваем рыночные показатели офферов в кэш на сервере
+    try { await fetch(`${API_BASE}?action=fetch_offers_market&token=${token}`); }
+    catch(e) { console.warn('Ошибка загрузки рыночных EPC:', e); }
+    await loadOfferMarketData();
     // Refresh dashboard with loaded data
     await applyGlobalFilters();
     updateProgress(100, 'Готово!');
@@ -548,65 +572,131 @@ function updateProgress(percent, text) {
 }
 
 // ========================== АВТООБНОВЛЕНИЕ КАЖДЫЙ ЧАС ==========================
+// Хранит время последнего запуска в localStorage, чтобы:
+//   а) при перезагрузке страницы / возврате во вкладку запускать обновление,
+//      если с прошлого раза прошло >= 1 ч (issue 2);
+//   б) корректно работало даже если setInterval throttling браузера задушил таймер.
 let visibilityListenerAdded = false;
+
+async function runAutoRefresh(force = false) {
+  const dFrom = document.getElementById('dateFrom').value;
+  const dTo = document.getElementById('dateTo').value;
+  if (!dFrom || !dTo) return;
+  const now = Date.now();
+  const last = Number(localStorage.getItem(LAST_REFRESH_KEY) || 0);
+  if (!force && last && (now - last) < AUTO_REFRESH_INTERVAL_MS) return;
+  console.log('[Auto-refresh] Триггер обновления данных...');
+  // Trigger server-side Leads.su update (like cron)
+  try {
+    await fetch(`${API_BASE}?action=update_stats&token=${HARDCODED_TOKEN}&start_date=${dFrom}&end_date=${dTo}&grouping=day&field=offer_id,source,aff_sub1`);
+  } catch(e) { console.warn('[Auto-refresh] Leads.su update error:', e); }
+  // Trigger server-side Yandex Metrika banner update
+  try {
+    await fetch(`${API_BASE}?action=ym_fetch_banner&start_date=${dFrom}&end_date=${dTo}`);
+  } catch(e) { console.warn('[Auto-refresh] YM update error:', e); }
+  // Refresh market EPC cache
+  try {
+    await fetch(`${API_BASE}?action=fetch_offers_market&token=${HARDCODED_TOKEN}`);
+  } catch(e) { console.warn('[Auto-refresh] Offers market update error:', e); }
+  localStorage.setItem(LAST_REFRESH_KEY, String(Date.now()));
+  // Then reload from DB and refresh all dashboards
+  await autoLoadSavedStats();
+  updateNextRefreshTime();
+}
 
 function startAutoRefresh() {
   if (autoRefreshTimer) clearInterval(autoRefreshTimer);
   updateNextRefreshTime();
-  autoRefreshTimer = setInterval(async () => {
-    console.log('[Auto-refresh] Обновление данных...');
-    const dFrom = document.getElementById('dateFrom').value;
-    const dTo = document.getElementById('dateTo').value;
-    if (!dFrom || !dTo) return;
-    // Trigger server-side Leads.su update (like cron)
-    try {
-      await fetch(`${API_BASE}?action=update_stats&token=${HARDCODED_TOKEN}&start_date=${dFrom}&end_date=${dTo}&grouping=day&field=offer_id,source,aff_sub1`);
-    } catch(e) { console.warn('[Auto-refresh] Leads.su update error:', e); }
-    // Trigger server-side Yandex Metrika banner update
-    try {
-      await fetch(`${API_BASE}?action=ym_fetch_banner&start_date=${dFrom}&end_date=${dTo}`);
-    } catch(e) { console.warn('[Auto-refresh] YM update error:', e); }
-    // Then reload from DB and refresh all dashboards
-    await autoLoadSavedStats();
-    updateNextRefreshTime();
-  }, AUTO_REFRESH_INTERVAL_MS);
+  // Немедленно запускаем, если пора (например, страница долго не открывалась)
+  runAutoRefresh(false);
+  autoRefreshTimer = setInterval(() => runAutoRefresh(false), AUTO_REFRESH_INTERVAL_MS);
 
   // Handle visibility change - refresh when tab becomes visible (register once)
   if (!visibilityListenerAdded) {
     visibilityListenerAdded = true;
     document.addEventListener('visibilitychange', () => {
-      if (!document.hidden && originalData.length) {
-        console.log('[Visibility] Tab visible, reloading data...');
+      if (!document.hidden) {
+        // При возврате во вкладку: всегда подтягиваем свежий снапшот из БД,
+        // и при необходимости (>= 1 ч) — запускаем полный refresh с API.
         autoLoadSavedStats();
+        runAutoRefresh(false);
       }
     });
   }
 }
 
 function updateNextRefreshTime() {
-  const next = new Date(Date.now() + AUTO_REFRESH_INTERVAL_MS);
+  const last = Number(localStorage.getItem(LAST_REFRESH_KEY) || Date.now());
+  const next = new Date(last + AUTO_REFRESH_INTERVAL_MS);
   const hh = String(next.getHours()).padStart(2, '0');
   const mm = String(next.getMinutes()).padStart(2, '0');
   const el = document.getElementById('nextRefreshTime');
   if (el) el.textContent = `${hh}:${mm}`;
 }
 
+async function loadOfferMarketData() {
+  try {
+    const res = await fetch(`${API_BASE}?action=get_offers_market`);
+    const json = await res.json();
+    if (json.status === 'success' && Array.isArray(json.data)) {
+      offerMarketMap = {};
+      offerMarketByName = {};
+      for (const o of json.data) {
+        const rec = {
+          name: o.name || '',
+          market_epc: Number(o.market_epc) || 0,
+          market_cr: Number(o.market_cr) || 0,
+          market_ar: Number(o.market_ar) || 0,
+          your_epc: Number(o.your_epc) || 0,
+          your_cr: Number(o.your_cr) || 0,
+          updated_at: o.updated_at || null
+        };
+        if (o.offer_id) offerMarketMap[String(o.offer_id)] = rec;
+        if (o.name) offerMarketByName[o.name] = rec;
+      }
+    }
+  } catch(e) { console.warn('loadOfferMarketData failed:', e); }
+}
+
+function getOfferMarket(row) {
+  if (row.offer_id && offerMarketMap[row.offer_id]) return offerMarketMap[row.offer_id];
+  if (row.offer && offerMarketByName[row.offer]) return offerMarketByName[row.offer];
+  return null;
+}
+
 async function autoLoadSavedStats() {
   const dFrom = document.getElementById('dateFrom').value;
   const dTo = document.getElementById('dateTo').value;
   if (!dFrom || !dTo) return;
+  // Подтягиваем рыночные EPC офферов из кэша
+  await loadOfferMarketData();
   const saved = await fetchSavedStats(dFrom, dTo);
   if (saved && saved.length) {
-    // Merge DB data with existing in-memory data:
-    // DB data takes priority for its date range, keep any in-memory data outside the fetched range
+    // Build a key→name lookup of in-memory data so we can preserve real offer names
+    // when DB returns "Unknown" (issue 1: при смене диапазона имена не должны теряться).
+    const inMemNames = new Map();
+    for (const r of originalData) {
+      const key = `${r.date}|${r.source_id}|${r.offer_id || ''}|${r.sub1}`;
+      if (r.offer && r.offer !== 'Unknown' && !/^Offer #/.test(r.offer) && !inMemNames.has(key)) {
+        inMemNames.set(key, r.offer);
+      }
+    }
     const dbRows = saved.map(row => {
       const d = new Date(row.date);
+      let offerName = row.offer_name || 'Unknown';
+      const key = `${row.date}|${row.source_id || 'all'}|${row.offer_id || ''}|${row.sub1 || ''}`;
+      // 1) Prefer offers_cache name (already merged server-side via LEFT JOIN), but if we
+      //    still have "Unknown" — try the in-memory previous name.
+      if ((offerName === 'Unknown' || /^Offer #/.test(offerName) || !offerName) && inMemNames.has(key)) {
+        offerName = inMemNames.get(key);
+      }
       return {
         date: row.date,
         week: getWeekNumber(d),
         month: row.date.slice(0, 7),
         dayOfWeek: daysOfWeek[d.getDay()],
-        offer: row.offer_name || 'Unknown',
+        offer: offerName,
+        offer_id: row.offer_id || '',
         source: mergeSourceName(row.source_name),
         source_id: row.source_id || 'all',
         sub1: row.sub1 || '',
@@ -643,44 +733,69 @@ function renderBannerKPI() {
     <div class="card"><div class="text-slate-400 text-xs uppercase">Средняя конверсия</div><div class="text-3xl font-black mt-2">${avgConv.toFixed(2)}%</div></div>`;
 }
 
+function aggregateBannerByPeriod(grouping) {
+  // Сводим dailyImpressions/clicks по дням/неделям/месяцам.
+  // Конверсия пересчитывается из суммарных показов и кликов периода.
+  const map = {};
+  for (const d of bannerData) {
+    if (!d.date) continue;
+    let key;
+    if (grouping === 'week') key = getWeekNumber(new Date(d.date));
+    else if (grouping === 'month') key = d.date.slice(0, 7);
+    else key = d.date;
+    if (!map[key]) map[key] = { impressions: 0, clicks: 0 };
+    map[key].impressions += Number(d.impressions) || 0;
+    map[key].clicks += Number(d.clicks) || 0;
+  }
+  const labels = Object.keys(map).sort();
+  return labels.map(l => ({
+    label: l,
+    impressions: map[l].impressions,
+    clicks: map[l].clicks,
+    conversion_rate: map[l].impressions > 0 ? (map[l].clicks / map[l].impressions * 100) : 0
+  }));
+}
+
 function renderBannerChart() {
   if (!bannerData.length) return;
   const ctx = document.getElementById('bannerConvChart').getContext('2d');
   if (bannerConvChart) bannerConvChart.destroy();
   const metric = (document.getElementById('bannerChartMetric') || {}).value || 'all';
-  const labels = bannerData.map(d => d.date.slice(5));
+  const grouping = (document.getElementById('bannerChartGrouping') || {}).value || 'day';
+  const series = aggregateBannerByPeriod(grouping);
+  const labels = series.map(s => grouping === 'day' ? s.label.slice(5) : s.label);
   let datasets = [];
   let scalesConfig = {};
   if (metric === 'impressions') {
     datasets = [{
-      label: 'Показы', data: bannerData.map(d => d.impressions),
+      label: 'Показы', data: series.map(s => s.impressions),
       borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,0.1)', fill: true, tension: 0.3, pointRadius: 3
     }];
     scalesConfig = { y: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } } };
   } else if (metric === 'clicks') {
     datasets = [{
-      label: 'Клики', data: bannerData.map(d => d.clicks),
+      label: 'Клики', data: series.map(s => s.clicks),
       borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,0.1)', fill: true, tension: 0.3, pointRadius: 3
     }];
     scalesConfig = { y: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } } };
   } else if (metric === 'conversion') {
     datasets = [{
-      label: 'Конверсия (%)', data: bannerData.map(d => d.conversion_rate),
+      label: 'Конверсия (%)', data: series.map(s => s.conversion_rate),
       borderColor: '#f97316', backgroundColor: 'rgba(249,115,22,0.1)', fill: true, tension: 0.3, pointRadius: 3
     }];
     scalesConfig = { y: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } } };
   } else if (metric === 'imp_clicks') {
     datasets = [
-      { label: 'Показы', data: bannerData.map(d => d.impressions), borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,0.1)', fill: true, tension: 0.3, pointRadius: 3, yAxisID: 'y' },
-      { label: 'Клики', data: bannerData.map(d => d.clicks), borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,0.1)', fill: true, tension: 0.3, pointRadius: 3, yAxisID: 'y' }
+      { label: 'Показы', data: series.map(s => s.impressions), borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,0.1)', fill: true, tension: 0.3, pointRadius: 3, yAxisID: 'y' },
+      { label: 'Клики', data: series.map(s => s.clicks), borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,0.1)', fill: true, tension: 0.3, pointRadius: 3, yAxisID: 'y' }
     ];
     scalesConfig = { y: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } } };
   } else {
     // "all" — show impressions + clicks on left axis, conversion on right axis
     datasets = [
-      { label: 'Показы', data: bannerData.map(d => d.impressions), borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,0.08)', fill: true, tension: 0.3, pointRadius: 3, yAxisID: 'y' },
-      { label: 'Клики', data: bannerData.map(d => d.clicks), borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,0.08)', fill: true, tension: 0.3, pointRadius: 3, yAxisID: 'y' },
-      { label: 'Конверсия (%)', data: bannerData.map(d => d.conversion_rate), borderColor: '#f97316', borderDash: [5, 5], tension: 0.3, pointRadius: 3, yAxisID: 'y1' }
+      { label: 'Показы', data: series.map(s => s.impressions), borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,0.08)', fill: true, tension: 0.3, pointRadius: 3, yAxisID: 'y' },
+      { label: 'Клики', data: series.map(s => s.clicks), borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,0.08)', fill: true, tension: 0.3, pointRadius: 3, yAxisID: 'y' },
+      { label: 'Конверсия (%)', data: series.map(s => s.conversion_rate), borderColor: '#f97316', borderDash: [5, 5], tension: 0.3, pointRadius: 3, yAxisID: 'y1' }
     ];
     scalesConfig = {
       y: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } },
@@ -865,7 +980,10 @@ function drawExtraCharts() {
     options:{responsive:true,maintainAspectRatio:false,plugins:{
       legend:{position:'right',labels:{color:'#ffffff',font:{size:13},padding:20,generateLabels:function(chart){
         const data=chart.data;if(!data.labels.length||!data.datasets.length)return[];
-        return data.labels.map((label,i)=>{const v=data.datasets[0].data[i];const p=totalRev>0?((v/totalRev)*100).toFixed(1):0;return{text:`${label} (${p}%)`,fillStyle:data.datasets[0].backgroundColor[i],index:i};});
+        // ВАЖНО (issue 3): когда мы возвращаем кастомные элементы из generateLabels,
+        // Chart.js может не унаследовать labels.color — поэтому явно проставляем
+        // fontColor (legacy) и подкрашиваем текст белым на тёмном фоне.
+        return data.labels.map((label,i)=>{const v=data.datasets[0].data[i];const p=totalRev>0?((v/totalRev)*100).toFixed(1):0;return{text:`${label} (${p}%)`,fillStyle:data.datasets[0].backgroundColor[i],strokeStyle:data.datasets[0].backgroundColor[i],fontColor:'#ffffff',index:i};});
       }}},tooltip:{...sharedTooltipConfig,titleColor:'#ffffff',bodyColor:'#ffffff',callbacks:{label:function(context){const v=context.raw;const p=totalRev>0?((v/totalRev)*100).toFixed(1):0;return ` ${Math.round(v).toLocaleString('ru-RU')} ₽ (${p}%)`;}}}}
     }
   });
@@ -959,25 +1077,43 @@ function renderEPCAnalytics() {
       scales:{y:{ticks:{color:'#94a3b8'},grid:{color:'#1e293b'}},x:{ticks:{color:'#94a3b8'},grid:{display:false}}}}
   });
 
-  // Heatmap
-  const heatData={};
-  for(const row of data){const m=row.month;const wd=new Date(row.date).getDay();const key=`${m}_${wd}`;if(!heatData[key])heatData[key]={clicks:0,revenue:0};heatData[key].clicks+=row.clicks;heatData[key].revenue+=row.revenue;}
-  let hHtml='<table class="w-full text-xs matrix-table"><thead><tr><th>Месяц</th>';
-  wdNames.forEach(d=>hHtml+=`<th class="text-center">${d}</th>`);
-  hHtml+='</tr></thead><tbody>';
-  for(const m of mLabels){
-    hHtml+=`<tr><td class="font-bold">${m}</td>`;
-    for(let wd=0;wd<7;wd++){
-      const key=`${m}_${wd}`;
-      const epc=heatData[key]&&heatData[key].clicks>0?heatData[key].revenue/heatData[key].clicks:0;
-      let bg='rgba(100,116,139,0.2)';
-      if(epc>0){const ratio=avgEpc>0?epc/avgEpc:1;if(ratio<0.7)bg='rgba(239,68,68,0.4)';else if(ratio<0.9)bg='rgba(245,158,11,0.3)';else if(ratio<1.1)bg='rgba(59,130,246,0.3)';else bg='rgba(16,185,129,0.4)';}
-      hHtml+=`<td class="text-center" style="background:${bg}" title="EPC: ${epc.toFixed(2)} ₽">${epc>0?epc.toFixed(1):'—'}</td>`;
-    }
-    hHtml+='</tr>';
+  // Heatmap: ось Y — месяц или неделя (issue 5).
+  const heatAxis = (document.getElementById('epcHeatmapAxis') || {}).value || 'month';
+  const heatData = {};
+  for (const row of data) {
+    const yKey = heatAxis === 'week' ? row.week : row.month;
+    const wd = new Date(row.date).getDay();
+    const key = `${yKey}_${wd}`;
+    if (!heatData[key]) heatData[key] = { clicks: 0, revenue: 0 };
+    heatData[key].clicks += row.clicks;
+    heatData[key].revenue += row.revenue;
   }
-  hHtml+='</tbody></table>';
-  document.getElementById('epcHeatmapContainer').innerHTML=hHtml;
+  const yLabels = heatAxis === 'week'
+    ? [...new Set(data.map(r => r.week))].sort()
+    : mLabels;
+  const yHeader = heatAxis === 'week' ? 'Неделя' : 'Месяц';
+  let hHtml = `<table class="w-full text-xs matrix-table"><thead><tr><th>${yHeader}</th>`;
+  wdNames.forEach(d => hHtml += `<th class="text-center">${d}</th>`);
+  hHtml += '</tr></thead><tbody>';
+  for (const yKey of yLabels) {
+    hHtml += `<tr><td class="font-bold">${escapeHtml(yKey)}</td>`;
+    for (let wd = 0; wd < 7; wd++) {
+      const key = `${yKey}_${wd}`;
+      const epc = heatData[key] && heatData[key].clicks > 0 ? heatData[key].revenue / heatData[key].clicks : 0;
+      let bg = 'rgba(100,116,139,0.2)';
+      if (epc > 0) {
+        const ratio = avgEpc > 0 ? epc / avgEpc : 1;
+        if (ratio < 0.7) bg = 'rgba(239,68,68,0.4)';
+        else if (ratio < 0.9) bg = 'rgba(245,158,11,0.3)';
+        else if (ratio < 1.1) bg = 'rgba(59,130,246,0.3)';
+        else bg = 'rgba(16,185,129,0.4)';
+      }
+      hHtml += `<td class="text-center" style="background:${bg}" title="EPC: ${epc.toFixed(2)} ₽">${epc > 0 ? epc.toFixed(1) : '—'}</td>`;
+    }
+    hHtml += '</tr>';
+  }
+  hHtml += '</tbody></table>';
+  document.getElementById('epcHeatmapContainer').innerHTML = hHtml;
 
   // Drops table
   const threshold=avgEpc*0.7;
