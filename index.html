@@ -745,6 +745,9 @@ async function autoLoadSavedStats() {
   if (saved && saved.length) {
     // Build a key→name lookup of in-memory data so we can preserve real offer names
     // when DB returns "Unknown" (issue 1: при смене диапазона имена не должны теряться).
+    // Намеренно НЕ включаем offer name в ключ — мы как раз ищем имя для записи,
+    // у которой имя сейчас "Unknown" / "Offer #X" / пустое; ключ должен совпадать
+    // с lookup-ключом из DB-ряда (date|source_id|offer_id|sub1).
     const inMemNames = new Map();
     for (const r of originalData) {
       const key = `${r.date}|${r.source_id}|${r.offer_id || ''}|${r.sub1}`;
@@ -1178,8 +1181,8 @@ function drawExtraCharts() {
         const data=chart.data;if(!data.labels.length||!data.datasets.length)return[];
         // ВАЖНО (issue 3): когда мы возвращаем кастомные элементы из generateLabels,
         // Chart.js может не унаследовать labels.color — поэтому явно проставляем
-        // fontColor (legacy) и подкрашиваем текст белым на тёмном фоне.
-        return data.labels.map((label,i)=>{const v=data.datasets[0].data[i];const p=totalRev>0?((v/totalRev)*100).toFixed(1):0;return{text:`${label} (${p}%)`,fillStyle:data.datasets[0].backgroundColor[i],strokeStyle:data.datasets[0].backgroundColor[i],fontColor:'#ffffff',index:i};});
+        // и `fontColor` (legacy для v2), и `color` (актуальный API v3+).
+        return data.labels.map((label,i)=>{const v=data.datasets[0].data[i];const p=totalRev>0?((v/totalRev)*100).toFixed(1):0;return{text:`${label} (${p}%)`,fillStyle:data.datasets[0].backgroundColor[i],strokeStyle:data.datasets[0].backgroundColor[i],fontColor:'#ffffff',color:'#ffffff',index:i};});
       }}},tooltip:{...sharedTooltipConfig,titleColor:'#ffffff',bodyColor:'#ffffff',callbacks:{label:function(context){const v=context.raw;const p=totalRev>0?((v/totalRev)*100).toFixed(1):0;return ` ${Math.round(v).toLocaleString('ru-RU')} ₽ (${p}%)`;}}}}
     }
   });
@@ -1500,7 +1503,13 @@ function generateInsights() {
     .map(([n, v]) => ({ name: n, clicks: v.clicks, rev: v.rev, epc: v.rev / v.clicks, offer_id: v.offer_id }));
   const losers = offerStats.filter(o => o.epc < overallEpc * 0.6).sort((a, b) => b.clicks - a.clicks).slice(0, 3);
   losers.forEach(o => {
-    insights.push({ level: 'danger', text: `Оффер «${o.name}» даёт EPC ${o.epc.toFixed(2)} ₽ при ${o.clicks.toLocaleString('ru-RU')} кликах — это в ${(overallEpc / Math.max(o.epc, 0.01)).toFixed(1)} раза ниже среднего по периоду (${overallEpc.toFixed(2)} ₽). Рассмотрите паузу или замену.` });
+    // Защита от деления на околонулевой EPC: если оффер фактически "мёртв"
+    // (EPC < 0.5 ₽), формулируем сообщение без числового множителя.
+    if (o.epc < 0.5) {
+      insights.push({ level: 'danger', text: `Оффер «${o.name}» практически не приносит дохода (EPC ${o.epc.toFixed(2)} ₽ при ${o.clicks.toLocaleString('ru-RU')} кликах). Среднее по периоду — ${overallEpc.toFixed(2)} ₽. Рассмотрите паузу или замену.` });
+    } else {
+      insights.push({ level: 'danger', text: `Оффер «${o.name}» даёт EPC ${o.epc.toFixed(2)} ₽ при ${o.clicks.toLocaleString('ru-RU')} кликах — это в ${(overallEpc / o.epc).toFixed(1)} раза ниже среднего по периоду (${overallEpc.toFixed(2)} ₽). Рассмотрите паузу или замену.` });
+    }
   });
   // --- 4. Сравнение с рынком (issue 8 → AI) ---
   if (Object.keys(offerMarketMap).length) {
