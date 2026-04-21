@@ -38,6 +38,25 @@ $YM_CLIENT_SECRET = '5311f2a8dd9543138ea4730bf25e7a06';
 $YM_COUNTER_ID = '19405381';
 $YM_IMPRESSION_GOAL_ID = 468033799; // Показы
 $YM_CLICK_GOAL_ID     = 468033800; // Клики
+
+// ---- AI-аналитика (внутренняя конфигурация). ----
+// Ключ и название провайдера никогда не отдаются клиенту и не пишутся в UI.
+// Можно переопределить переменными окружения AI_API_KEY / AI_API_URL / AI_MODEL,
+// если потребуется ротация без правки кода.
+if (!defined('AI_API_KEY')) {
+    define('AI_API_KEY', getenv('AI_API_KEY') ?: 'sk-e3d9e424edf649858d901c2c97b91958');
+}
+if (!defined('AI_API_URL')) {
+    define('AI_API_URL', getenv('AI_API_URL') ?: 'https://api.deepseek.com/chat/completions');
+}
+if (!defined('AI_MODEL')) {
+    // Самая «глубокая» актуальная модель провайдера.
+    define('AI_MODEL', getenv('AI_MODEL') ?: 'deepseek-reasoner');
+}
+if (!defined('AI_FALLBACK_MODEL')) {
+    // На случай, если reasoner недоступен — быстрый chat-поток той же линейки.
+    define('AI_FALLBACK_MODEL', getenv('AI_FALLBACK_MODEL') ?: 'deepseek-chat');
+}
 // =======================================================
 
 // ---- Подключение к SQLite (один файл stats.db) ----
@@ -54,6 +73,7 @@ try {
         date TEXT NOT NULL,
         source_id TEXT,
         source_name TEXT,
+        offer_id TEXT NOT NULL DEFAULT \'\',
         offer_name TEXT NOT NULL DEFAULT \'Unknown\',
         sub1 TEXT NOT NULL DEFAULT \'\',
         clicks INTEGER DEFAULT 0,
@@ -63,17 +83,44 @@ try {
         UNIQUE(date, source_id, offer_name, sub1)
     )');
     
-    // Добавляем колонку offer_name, если её нет (миграция)
+    // Добавляем колонку offer_name, offer_id если их нет (миграция)
     $res = $db->query("PRAGMA table_info(daily_stats)");
     $hasOffer = false;
+    $hasOfferId = false;
     $hasSub1 = false;
     while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
         if ($row['name'] === 'offer_name') $hasOffer = true;
+        if ($row['name'] === 'offer_id') $hasOfferId = true;
         if ($row['name'] === 'sub1') $hasSub1 = true;
     }
     if (!$hasOffer) {
         $db->exec('ALTER TABLE daily_stats ADD COLUMN offer_name TEXT');
     }
+    if (!$hasOfferId) {
+        $db->exec('ALTER TABLE daily_stats ADD COLUMN offer_id TEXT NOT NULL DEFAULT \'\'');
+    }
+    
+    // Кэш офферов (offer_id → имя + рыночные показатели EPC).
+    // Используется для (а) повторного резолва имён в "Unknown"-записях,
+    // (б) хранения общерыночной статистики (detail_stats.system.other_epc и пр.).
+    $db->exec('CREATE TABLE IF NOT EXISTS offers_cache (
+        offer_id TEXT PRIMARY KEY,
+        name TEXT NOT NULL DEFAULT \'\',
+        market_epc REAL DEFAULT 0,
+        market_cr REAL DEFAULT 0,
+        market_ar REAL DEFAULT 0,
+        your_epc REAL DEFAULT 0,
+        your_cr REAL DEFAULT 0,
+        updated_at TEXT
+    )');
+    // Миграция: добавляем колонки рыночной статистики, если их нет
+    $res = $db->query("PRAGMA table_info(offers_cache)");
+    $existing = [];
+    while ($row = $res->fetchArray(SQLITE3_ASSOC)) { $existing[$row['name']] = true; }
+    foreach (['market_epc','market_cr','market_ar','your_epc','your_cr'] as $col) {
+        if (!isset($existing[$col])) $db->exec("ALTER TABLE offers_cache ADD COLUMN {$col} REAL DEFAULT 0");
+    }
+    if (!isset($existing['updated_at'])) $db->exec("ALTER TABLE offers_cache ADD COLUMN updated_at TEXT");
     
     // Миграция: добавляем sub1 и обновляем UNIQUE constraint
     if (!$hasSub1) {
@@ -180,9 +227,10 @@ function cleanSourceName($name) {
 }
 
 /**
- * Загружает список офферов и возвращает массив [offer_id => offer_name]
+ * Загружает список офферов и возвращает массив [offer_id => offer_name].
+ * Также сохраняет имена в offers_cache, чтобы потом резолвить «Unknown»-записи.
  */
-function fetchOffersMap($token) {
+function fetchOffersMap($token, $db = null) {
     $url = "https://api.leads.su/webmaster/offers?token={$token}&limit=1000";
     $result = apiGet($url);
     if (isset($result['error'])) {
@@ -196,14 +244,87 @@ function fetchOffersMap($token) {
         $offers = $result;
     }
     $map = [];
+    $cacheStmt = null;
+    if ($db) {
+        $cacheStmt = $db->prepare('INSERT INTO offers_cache (offer_id, name, updated_at)
+            VALUES (:id, :name, :ts)
+            ON CONFLICT(offer_id) DO UPDATE SET
+                name = CASE WHEN excluded.name != \'\' THEN excluded.name ELSE offers_cache.name END,
+                updated_at = excluded.updated_at');
+    }
+    $now = date('Y-m-d H:i:s');
     foreach ($offers as $offer) {
         if (!is_array($offer)) continue;
         $id = (string)($offer['id'] ?? $offer['offer_id'] ?? $offer['offerId'] ?? '');
         $name = $offer['name'] ?? $offer['title'] ?? '';
         if ($id && $name) $map[$id] = $name;
         elseif ($id) $map[$id] = "Offer #{$id}";
+        if ($cacheStmt && $id) {
+            $cacheStmt->bindValue(':id', $id, SQLITE3_TEXT);
+            $cacheStmt->bindValue(':name', $name ?: '', SQLITE3_TEXT);
+            $cacheStmt->bindValue(':ts', $now, SQLITE3_TEXT);
+            $cacheStmt->execute();
+            $cacheStmt->reset();
+        }
     }
     return $map;
+}
+
+/**
+ * Загружает офферы вместе с расширенными показателями рынка (detail_stats)
+ * и сохраняет в offers_cache. Возвращает массив офферов с полями market_epc/your_epc.
+ */
+function fetchOffersExtended($token, $db) {
+    $url = "https://api.leads.su/webmaster/offers?token={$token}&limit=1000&extendedFields=1";
+    $result = apiGet($url);
+    if (isset($result['error'])) {
+        error_log('fetchOffersExtended error: ' . json_encode($result['error']));
+        return ['error' => $result['error']];
+    }
+    $offers = $result['data'] ?? $result['offers'] ?? $result['items'] ?? [];
+    if (!is_array($offers) && is_array($result)) $offers = $result;
+    $now = date('Y-m-d H:i:s');
+    $stmt = $db->prepare('INSERT INTO offers_cache
+        (offer_id, name, market_epc, market_cr, market_ar, your_epc, your_cr, updated_at)
+        VALUES (:id, :name, :mepc, :mcr, :mar, :yepc, :ycr, :ts)
+        ON CONFLICT(offer_id) DO UPDATE SET
+            name = CASE WHEN excluded.name != \'\' THEN excluded.name ELSE offers_cache.name END,
+            market_epc = excluded.market_epc,
+            market_cr = excluded.market_cr,
+            market_ar = excluded.market_ar,
+            your_epc = excluded.your_epc,
+            your_cr = excluded.your_cr,
+            updated_at = excluded.updated_at');
+    $list = [];
+    foreach ($offers as $o) {
+        if (!is_array($o)) continue;
+        $id = (string)($o['id'] ?? $o['offer_id'] ?? '');
+        if (!$id) continue;
+        $name = $o['name'] ?? $o['title'] ?? '';
+        $sys = $o['detail_stats']['system'] ?? [];
+        $you = $o['detail_stats']['your'] ?? [];
+        $mepc = (float)($sys['other_epc'] ?? 0);
+        $mcr  = (float)($sys['other_cr']  ?? 0);
+        $mar  = (float)($sys['other_ar']  ?? 0);
+        $yepc = (float)($you['other_epc'] ?? 0);
+        $ycr  = (float)($you['other_cr']  ?? 0);
+        $stmt->bindValue(':id', $id, SQLITE3_TEXT);
+        $stmt->bindValue(':name', $name ?: '', SQLITE3_TEXT);
+        $stmt->bindValue(':mepc', $mepc, SQLITE3_FLOAT);
+        $stmt->bindValue(':mcr', $mcr, SQLITE3_FLOAT);
+        $stmt->bindValue(':mar', $mar, SQLITE3_FLOAT);
+        $stmt->bindValue(':yepc', $yepc, SQLITE3_FLOAT);
+        $stmt->bindValue(':ycr', $ycr, SQLITE3_FLOAT);
+        $stmt->bindValue(':ts', $now, SQLITE3_TEXT);
+        $stmt->execute();
+        $stmt->reset();
+        $list[] = [
+            'offer_id' => $id, 'name' => $name,
+            'market_epc' => $mepc, 'market_cr' => $mcr, 'market_ar' => $mar,
+            'your_epc' => $yepc, 'your_cr' => $ycr
+        ];
+    }
+    return ['offers' => $list];
 }
 
 /**
@@ -247,14 +368,15 @@ function ymApiGet($url, $ymToken) {
 }
 
 /**
- * Сохраняет строки отчёта в daily_stats (с учётом offer_name)
+ * Сохраняет строки отчёта в daily_stats (с учётом offer_name и offer_id)
  */
 function saveReportRows($db, $rows, $offerMap) {
     $inserted = 0;
-    $stmt = $db->prepare('INSERT INTO daily_stats (date, source_id, source_name, offer_name, sub1, clicks, conversions, approved, revenue)
-        VALUES (:date, :source_id, :source_name, :offer_name, :sub1, :clicks, :conversions, :approved, :revenue)
+    $stmt = $db->prepare('INSERT INTO daily_stats (date, source_id, source_name, offer_id, offer_name, sub1, clicks, conversions, approved, revenue)
+        VALUES (:date, :source_id, :source_name, :offer_id, :offer_name, :sub1, :clicks, :conversions, :approved, :revenue)
         ON CONFLICT(date, source_id, offer_name, sub1) DO UPDATE SET
             source_name = excluded.source_name,
+            offer_id = CASE WHEN excluded.offer_id != \'\' THEN excluded.offer_id ELSE daily_stats.offer_id END,
             clicks = excluded.clicks,
             conversions = excluded.conversions,
             approved = excluded.approved,
@@ -286,6 +408,7 @@ function saveReportRows($db, $rows, $offerMap) {
         $stmt->bindValue(':date', $date, SQLITE3_TEXT);
         $stmt->bindValue(':source_id', $sourceId, SQLITE3_TEXT);
         $stmt->bindValue(':source_name', $sourceName, SQLITE3_TEXT);
+        $stmt->bindValue(':offer_id', $offerId, SQLITE3_TEXT);
         $stmt->bindValue(':offer_name', $offerName, SQLITE3_TEXT);
         $stmt->bindValue(':sub1', $sub1, SQLITE3_TEXT);
         $stmt->bindValue(':clicks', $clicks, SQLITE3_INTEGER);
@@ -293,20 +416,219 @@ function saveReportRows($db, $rows, $offerMap) {
         $stmt->bindValue(':approved', $approved, SQLITE3_INTEGER);
         $stmt->bindValue(':revenue', $revenue, SQLITE3_FLOAT);
         if ($stmt->execute()) $inserted++;
+        $stmt->reset();
     }
     return $inserted;
 }
 
+// ========== AI-АНАЛИТИКА (DSPy-style) ==========
+// Идея, заимствованная из DSPy: вместо "сырого" prompt-а описываем «сигнатуру»
+// (типизированные input/output поля + назначения), формируем по ней system-prompt
+// с JSON-схемой, просим модель сначала кратко рассуждать (chain-of-thought),
+// затем отдать строго JSON. Полученный JSON валидируем; при несоответствии —
+// один retry с явным указанием на проблему (Refine).
+
+function aiBuildSignature() {
+    return [
+        // Описание модуля и его контракт.
+        'task' => 'Глубокий бизнес-анализ статистики аффилиатной CPA-площадки с целью увеличения выручки.',
+        'goals' => [
+            'Дать конкретные, исполнимые рекомендации (а не общие фразы).',
+            'Опираться строго на полученные цифры, явно ссылаться на них в выводах.',
+            'Сделать прогноз ключевых показателей (выручка, EPC, клики, approve %, конверсия) на следующие 7 и 30 дней.',
+            'Анализировать в разрезе площадок, дающих суммарно ~99% выручки (top-площадки, мелкие игнорировать).',
+            'Помочь принять ключевые решения, влияющие на рост выручки.',
+        ],
+        // Схема выходного JSON. Используем её одновременно как часть промта и для валидации.
+        'output_schema' => [
+            'reasoning' => 'string — краткое рассуждение по данным (3-6 предложений). НЕ копировать в ответ ничего, кроме фактов.',
+            'summary' => 'string — деловое резюме периода (2-4 предложения), без воды.',
+            'recommendations' => 'array<{title:string, action:string, expected_impact:string, priority:"high"|"medium"|"low", evidence:string}> — 3-7 конкретных рекомендаций, каждая с действием и ожидаемым эффектом, привязкой к цифрам в evidence',
+            'forecast' => '{period_7d:{revenue:number, clicks:number, epc:number, approve_rate:number, confidence:"low"|"medium"|"high", basis:string}, period_30d:{revenue:number, clicks:number, epc:number, approve_rate:number, confidence:"low"|"medium"|"high", basis:string}}',
+            'platforms_breakdown' => 'array<{name:string, revenue_share_pct:number, status:"grow"|"stable"|"watch"|"risk", insight:string, action:string}> — разбор только по площадкам из top_platforms (до 10), с долей в выручке',
+            'key_decisions' => 'array<{decision:string, rationale:string, kpi_impact:string}> — 2-5 ключевых управленческих решений, направленных на рост выручки',
+            'risks' => 'array<string> — риски и аномалии, требующие внимания (фрод, концентрация, просадки)',
+        ],
+    ];
+}
+
+function aiBuildSystemPrompt($sig) {
+    $schemaJson = json_encode($sig['output_schema'], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
+    $goals = "- " . implode("\n- ", $sig['goals']);
+    return <<<PROMPT
+Ты — старший бизнес-аналитик и консультант по росту выручки в performance-маркетинге (CPA, affiliate).
+Задача: {$sig['task']}
+
+Цели вывода:
+{$goals}
+
+Жёсткие правила:
+1. Отвечай ТОЛЬКО валидным JSON в одной строке/блоке (без markdown, без ```), который точно соответствует схеме ниже.
+2. Все числовые значения в forecast — числа (не строки), валюта = ₽, проценты — числа в виде N (например 27.4 для 27.4%).
+3. В platforms_breakdown анализируй ТОЛЬКО площадки из массива top_platforms (это уже отфильтрованные ~99% выручки). Мелкие игнорируй.
+4. Каждая recommendation должна:
+   - быть конкретной (что именно сделать на следующей неделе),
+   - содержать evidence — цитату/значение из переданных данных (например «EPC оффера X = 1.2₽ при среднем 4.7₽»),
+   - иметь expected_impact с примерной оценкой (например «+8-12% к выручке за 14 дней»).
+5. Прогноз строй на основании weekly_trend / monthly_trend и текущих KPI; осознанно учитывай сезонность и снижение/рост последних недель. Если данных мало — confidence=«low».
+6. Никогда не упоминай свою модель, провайдера или "AI". Пиши как аналитик.
+7. Язык вывода — русский, профессиональный, без воды и без «возможно стоит подумать».
+
+Схема выходного JSON (ключи и типы строго такие):
+{$schemaJson}
+PROMPT;
+}
+
+function aiBuildUserPrompt($payload, $sig) {
+    $data = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
+    return "Входные данные за выбранный период (агрегированные):\n```json\n{$data}\n```\n\nВерни ответ строго по схеме. Никакого текста вне JSON.";
+}
+
+function aiTrimPayload($p) {
+    // Защита от слишком больших prompt-ов: ограничиваем массивы.
+    $caps = [
+        'top_platforms' => 12,        // ~99% выручки, кап 10-12
+        'offers_top' => 25,
+        'offers_underperforming' => 15,
+        'market_compare' => 25,
+        'sub1_anomalies' => 15,
+        'weekly_trend' => 26,         // полгода по неделям
+        'monthly_trend' => 18,        // полтора года по месяцам
+        'daily_recent' => 30,
+    ];
+    foreach ($caps as $k => $n) {
+        if (isset($p[$k]) && is_array($p[$k]) && count($p[$k]) > $n) {
+            $p[$k] = array_slice($p[$k], 0, $n);
+        }
+    }
+    return $p;
+}
+
+function aiValidateOutput($obj, $sig) {
+    if (!is_array($obj)) return 'Output is not a JSON object';
+    foreach (['summary', 'recommendations', 'forecast', 'platforms_breakdown', 'key_decisions'] as $req) {
+        if (!array_key_exists($req, $obj)) return "Missing required field: {$req}";
+    }
+    if (!is_array($obj['recommendations']) || !count($obj['recommendations'])) return 'recommendations must be non-empty array';
+    if (!is_array($obj['forecast']) || !isset($obj['forecast']['period_7d'], $obj['forecast']['period_30d'])) return 'forecast.period_7d/period_30d required';
+    if (!is_array($obj['platforms_breakdown'])) return 'platforms_breakdown must be array';
+    if (!is_array($obj['key_decisions'])) return 'key_decisions must be array';
+    return null;
+}
+
+function aiCallProviderStructured($sysPrompt, $userPrompt, $sig) {
+    // Шаг 1 — основной запрос.
+    $resp = aiCallProvider($sysPrompt, $userPrompt, AI_MODEL);
+    if (isset($resp['error'])) {
+        // Один fallback на более лёгкую модель той же линейки.
+        $resp = aiCallProvider($sysPrompt, $userPrompt, AI_FALLBACK_MODEL);
+        if (isset($resp['error'])) return $resp;
+    }
+    $obj = aiExtractJson($resp['content'] ?? '');
+    $err = aiValidateOutput($obj, $sig);
+    if ($err === null) return $obj;
+
+    // Шаг 2 (Refine) — один retry с явной коррекцией.
+    $refineUser = $userPrompt . "\n\nПредыдущий ответ был невалиден: {$err}. Верни ИСПРАВЛЕННЫЙ JSON строго по схеме, без markdown.";
+    $resp2 = aiCallProvider($sysPrompt, $refineUser, AI_MODEL);
+    if (isset($resp2['error'])) {
+        $resp2 = aiCallProvider($sysPrompt, $refineUser, AI_FALLBACK_MODEL);
+        if (isset($resp2['error'])) return $resp2;
+    }
+    $obj2 = aiExtractJson($resp2['content'] ?? '');
+    $err2 = aiValidateOutput($obj2, $sig);
+    if ($err2 === null) return $obj2;
+
+    return ['error' => 'Validation failed: ' . $err2];
+}
+
+function aiCallProvider($sysPrompt, $userPrompt, $model) {
+    $body = [
+        'model' => $model,
+        'messages' => [
+            ['role' => 'system', 'content' => $sysPrompt],
+            ['role' => 'user',   'content' => $userPrompt],
+        ],
+        'temperature' => 0.2,
+        'max_tokens' => 3000,
+        'stream' => false,
+    ];
+    // У провайдера есть JSON-mode — попросим, если поддерживается.
+    $body['response_format'] = ['type' => 'json_object'];
+
+    $ch = curl_init();
+    curl_setopt_array($ch, [
+        CURLOPT_URL => AI_API_URL,
+        CURLOPT_POST => true,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 120,
+        CURLOPT_SSL_VERIFYPEER => true,
+        CURLOPT_SSL_VERIFYHOST => 2,
+        CURLOPT_HTTPHEADER => [
+            'Content-Type: application/json',
+            'Accept: application/json',
+            'Authorization: Bearer ' . AI_API_KEY,
+        ],
+        CURLOPT_POSTFIELDS => json_encode($body, JSON_UNESCAPED_UNICODE),
+    ]);
+    $raw = curl_exec($ch);
+    $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $cerr = curl_error($ch);
+    curl_close($ch);
+
+    if ($cerr) {
+        error_log('AI provider CURL error: ' . $cerr);
+        return ['error' => 'transport'];
+    }
+    if ($code < 200 || $code >= 300) {
+        error_log("AI provider HTTP {$code}: " . substr((string)$raw, 0, 500));
+        return ['error' => "http_{$code}"];
+    }
+    $data = json_decode($raw, true);
+    if (!is_array($data)) return ['error' => 'invalid_json'];
+    $content = $data['choices'][0]['message']['content'] ?? '';
+    if ($content === '') return ['error' => 'empty_content'];
+    return ['content' => $content];
+}
+
+function aiExtractJson($text) {
+    $t = trim((string)$text);
+    if ($t === '') return null;
+    // Срежем возможные markdown-обёртки.
+    $t = preg_replace('/^```(?:json)?\s*/i', '', $t);
+    $t = preg_replace('/\s*```$/', '', $t);
+    $obj = json_decode($t, true);
+    if (is_array($obj)) return $obj;
+    // Попробуем выцепить первый {...} блок.
+    if (preg_match('/\{[\s\S]*\}/', $t, $m)) {
+        $obj = json_decode($m[0], true);
+        if (is_array($obj)) return $obj;
+    }
+    return null;
+}
+
 // ========== ОБРАБОТЧИКИ ЗАПРОСОВ ==========
 
-// 1. Получение сохранённых данных из БД (для дашборда)
+// 1. Получение сохранённых данных из БД (для дашборда).
+// LEFT JOIN с offers_cache позволяет переопределить «Unknown» / «Offer #X» актуальным именем,
+// если оно есть в кэше (резолвится по offer_id).
 if ($action === 'get_stats') {
     if (!$start_date || !$end_date) {
         echo json_encode(['error' => 'start_date and end_date required']);
         exit;
     }
-    $stmt = $db->prepare('SELECT date, source_id, source_name, offer_name, sub1, clicks, conversions, approved, revenue 
-        FROM daily_stats WHERE date BETWEEN :start AND :end ORDER BY date');
+    $stmt = $db->prepare('SELECT d.date, d.source_id, d.source_name, d.offer_id,
+        CASE
+            WHEN o.name IS NOT NULL AND o.name != \'\'
+                 AND (d.offer_name = \'Unknown\' OR d.offer_name = \'\' OR d.offer_name LIKE \'Offer #%\')
+            THEN o.name
+            ELSE d.offer_name
+        END AS offer_name,
+        d.sub1, d.clicks, d.conversions, d.approved, d.revenue,
+        o.market_epc, o.market_cr, o.market_ar, o.your_epc
+        FROM daily_stats d
+        LEFT JOIN offers_cache o ON o.offer_id = d.offer_id AND d.offer_id != \'\'
+        WHERE d.date BETWEEN :start AND :end ORDER BY d.date');
     $stmt->bindValue(':start', $start_date, SQLITE3_TEXT);
     $stmt->bindValue(':end', $end_date, SQLITE3_TEXT);
     $res = $stmt->execute();
@@ -326,11 +648,21 @@ if ($action === 'save_stats') {
         exit;
     }
     $inserted = 0;
+    $stmt = $db->prepare('INSERT INTO daily_stats (date, source_id, source_name, offer_id, offer_name, sub1, clicks, conversions, approved, revenue)
+        VALUES (:date, :source_id, :source_name, :offer_id, :offer_name, :sub1, :clicks, :conversions, :approved, :revenue)
+        ON CONFLICT(date, source_id, offer_name, sub1) DO UPDATE SET
+            source_name = excluded.source_name,
+            offer_id = CASE WHEN excluded.offer_id != \'\' THEN excluded.offer_id ELSE daily_stats.offer_id END,
+            clicks = excluded.clicks,
+            conversions = excluded.conversions,
+            approved = excluded.approved,
+            revenue = excluded.revenue');
     foreach ($input['data'] as $row) {
         $date = $row['date'] ?? null;
         if (!$date) continue;
         $sourceId = $row['source_id'] ?? 'all';
         $sourceName = cleanSourceName($row['source'] ?? $row['source_name'] ?? 'Unknown');
+        $offerId = (string)($row['offer_id'] ?? '');
         $offerName = $row['offer'] ?? 'Unknown';
         $sub1 = $row['sub1'] ?? '';
         $clicks = (int)($row['clicks'] ?? 0);
@@ -338,17 +670,10 @@ if ($action === 'save_stats') {
         $approved = (int)($row['approved'] ?? 0);
         $revenue = (float)($row['revenue'] ?? 0);
         
-        $stmt = $db->prepare('INSERT INTO daily_stats (date, source_id, source_name, offer_name, sub1, clicks, conversions, approved, revenue)
-            VALUES (:date, :source_id, :source_name, :offer_name, :sub1, :clicks, :conversions, :approved, :revenue)
-            ON CONFLICT(date, source_id, offer_name, sub1) DO UPDATE SET
-                source_name = excluded.source_name,
-                clicks = excluded.clicks,
-                conversions = excluded.conversions,
-                approved = excluded.approved,
-                revenue = excluded.revenue');
         $stmt->bindValue(':date', $date, SQLITE3_TEXT);
         $stmt->bindValue(':source_id', $sourceId, SQLITE3_TEXT);
         $stmt->bindValue(':source_name', $sourceName, SQLITE3_TEXT);
+        $stmt->bindValue(':offer_id', $offerId, SQLITE3_TEXT);
         $stmt->bindValue(':offer_name', $offerName, SQLITE3_TEXT);
         $stmt->bindValue(':sub1', $sub1, SQLITE3_TEXT);
         $stmt->bindValue(':clicks', $clicks, SQLITE3_INTEGER);
@@ -356,6 +681,7 @@ if ($action === 'save_stats') {
         $stmt->bindValue(':approved', $approved, SQLITE3_INTEGER);
         $stmt->bindValue(':revenue', $revenue, SQLITE3_FLOAT);
         if ($stmt->execute()) $inserted++;
+        $stmt->reset();
     }
     echo json_encode(['status' => 'success', 'inserted' => $inserted]);
     exit;
@@ -373,8 +699,8 @@ if ($action === 'update_stats') {
         exit;
     }
     
-    // Получаем офферы один раз
-    $offerMap = fetchOffersMap($token);
+    // Получаем офферы один раз и параллельно сохраняем в offers_cache
+    $offerMap = fetchOffersMap($token, $db);
     
     // Загружаем отчёт с пагинацией (чтобы не зависнуть на больших объёмах)
     $allRows = [];
@@ -631,7 +957,58 @@ if ($action === 'ym_fetch_banner') {
     exit;
 }
 
-// 13. Прокси для остальных запросов (offers, platforms и т.д.)
+// 13. Загрузить расширенную статистику офферов (рыночный EPC и пр.) и положить в кэш.
+if ($action === 'fetch_offers_market') {
+    if (!$token) {
+        echo json_encode(['error' => 'token required']);
+        exit;
+    }
+    $res = fetchOffersExtended($token, $db);
+    if (isset($res['error'])) {
+        echo json_encode(['error' => 'Failed to fetch offers', 'details' => $res['error']]);
+        exit;
+    }
+    echo json_encode(['status' => 'success', 'count' => count($res['offers']), 'offers' => $res['offers']]);
+    exit;
+}
+
+// 14. Получить кэш офферов с рыночными показателями (без обращения к Leads.su).
+if ($action === 'get_offers_market') {
+    $res = $db->query('SELECT offer_id, name, market_epc, market_cr, market_ar, your_epc, your_cr, updated_at FROM offers_cache ORDER BY market_epc DESC');
+    $rows = [];
+    while ($row = $res->fetchArray(SQLITE3_ASSOC)) $rows[] = $row;
+    echo json_encode(['status' => 'success', 'data' => $rows]);
+    exit;
+}
+
+// 16. AI-аналитика. Принимает агрегированный payload по POST,
+// формирует структурированный (DSPy-style) промт и вызывает внешнего AI-провайдера
+// серверным запросом. Ключ/название модели никогда не возвращаются клиенту.
+if ($action === 'ai_analyze') {
+    $raw = file_get_contents('php://input');
+    $payload = json_decode($raw, true);
+    if (!is_array($payload)) {
+        echo json_encode(['status' => 'error', 'error' => 'Invalid payload']);
+        exit;
+    }
+    // Жёстко ограничиваем размер payload, чтобы не раздувать prompt и стоимость.
+    $payload = aiTrimPayload($payload);
+
+    $signature = aiBuildSignature();
+    $sysPrompt = aiBuildSystemPrompt($signature);
+    $userPrompt = aiBuildUserPrompt($payload, $signature);
+
+    $result = aiCallProviderStructured($sysPrompt, $userPrompt, $signature);
+    if (isset($result['error'])) {
+        // Никогда не возвращаем сырое имя провайдера/модели в текстах ошибок.
+        echo json_encode(['status' => 'error', 'error' => 'AI service is temporarily unavailable. Try again later.']);
+        exit;
+    }
+    echo json_encode(['status' => 'success', 'data' => $result]);
+    exit;
+}
+
+// 15. Прокси для остальных запросов (offers, platforms и т.д.)
 if (!$method) {
     http_response_code(400);
     echo json_encode(['error' => 'method required']);

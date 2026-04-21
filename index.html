@@ -67,8 +67,10 @@
   <div class="flex gap-1 border-b border-slate-700">
     <button class="tab-btn active" data-tab="dashboard" onclick="switchTab('dashboard')">📊 Дашборд</button>
     <button class="tab-btn" data-tab="epc" onclick="switchTab('epc')">📈 EPC-анализ</button>
+    <button class="tab-btn" data-tab="market" onclick="switchTab('market')">🌐 Рынок офферов</button>
     <button class="tab-btn" data-tab="matrix" onclick="switchTab('matrix')">🧩 Матрица</button>
     <button class="tab-btn" data-tab="banner" onclick="switchTab('banner')">🎯 Баннер</button>
+    <button class="tab-btn" data-tab="ai" onclick="switchTab('ai')">🤖 AI-аналитика</button>
   </div>
 
   <!-- TAB: DASHBOARD -->
@@ -133,8 +135,29 @@
             <th class="sort-th text-right" onclick="sortTable('offerTable','approveRate')">Approve % ↕</th>
             <th class="sort-th text-right" onclick="sortTable('offerTable','revenue')">Доход ↕</th>
             <th class="sort-th text-right" onclick="sortTable('offerTable','epc')">EPC ↕</th>
+            <th class="sort-th text-right" onclick="sortTable('offerTable','marketEpc')" title="Рыночный EPC (общий по бирже)">EPC рынка ↕</th>
+            <th class="sort-th text-right" onclick="sortTable('offerTable','epcDelta')" title="Отклонение вашего EPC от рыночного">Δ ↕</th>
           </tr></thead><tbody></tbody></table>
         </div>
+      </div>
+    </div>
+    <!-- Sub1 breakdown (issue 4) -->
+    <div class="card">
+      <div class="flex flex-wrap gap-3 justify-between items-center mb-4">
+        <h2 class="text-white font-bold">🏷️ Статистика по Sub1</h2>
+        <select id="sub1SourceFilter" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm max-w-[200px] focus:outline-none" onchange="renderSub1Table()">
+          <option value="all">Все площадки</option>
+        </select>
+      </div>
+      <div class="overflow-auto" style="max-height:500px">
+        <table class="w-full text-sm" id="sub1Table"><thead><tr>
+          <th class="sort-th" onclick="sortTable('sub1Table','name')">Sub1 ↕</th>
+          <th class="sort-th text-right" onclick="sortTable('sub1Table','clicks')">Клики ↕</th>
+          <th class="sort-th text-right" onclick="sortTable('sub1Table','conversions')">Лиды ↕</th>
+          <th class="sort-th text-right" onclick="sortTable('sub1Table','approveRate')">Approve % ↕</th>
+          <th class="sort-th text-right" onclick="sortTable('sub1Table','revenue')">Доход ↕</th>
+          <th class="sort-th text-right" onclick="sortTable('sub1Table','epc')">EPC ↕</th>
+        </tr></thead><tbody></tbody></table>
       </div>
     </div>
   </div>
@@ -159,7 +182,16 @@
     </div>
     <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
       <div class="card"><h2 class="text-white font-bold mb-4">📅 EPC по месяцам</h2><div class="chart-wrap" style="height:320px"><canvas id="epcMonthChart"></canvas></div></div>
-      <div class="card"><h2 class="text-white font-bold mb-4">🔥 Тепловая карта EPC (день недели × месяц)</h2><div id="epcHeatmapContainer" class="overflow-auto"></div></div>
+      <div class="card">
+        <div class="flex flex-wrap gap-3 justify-between items-center mb-4">
+          <h2 class="text-white font-bold">🔥 Тепловая карта EPC (день недели × период)</h2>
+          <select id="epcHeatmapAxis" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm focus:outline-none" onchange="renderEPCAnalytics()">
+            <option value="month">По месяцам</option>
+            <option value="week">По неделям</option>
+          </select>
+        </div>
+        <div id="epcHeatmapContainer" class="overflow-auto"></div>
+      </div>
     </div>
     <div class="card">
       <h2 class="text-white font-bold mb-4">📉 Анализ просадок EPC</h2>
@@ -171,6 +203,45 @@
           <th class="sort-th text-right" onclick="sortTable('epcDropsTable','clicks')">Клики ↕</th>
           <th class="sort-th text-right" onclick="sortTable('epcDropsTable','revenue')">Доход ↕</th>
           <th class="text-right">Отклонение от среднего</th>
+        </tr></thead><tbody></tbody></table>
+      </div>
+    </div>
+  </div>
+
+  <!-- TAB: MARKET (issue 8) -->
+  <div id="tab-market" class="tab-content space-y-6">
+    <div class="card">
+      <div class="flex flex-wrap gap-3 justify-between items-center mb-4">
+        <h2 class="text-white font-bold text-lg">🌐 Рыночные показатели офферов</h2>
+        <div class="flex gap-2 items-center flex-wrap">
+          <label class="text-xs text-slate-400">Сортировка:</label>
+          <select id="marketSortPreset" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm focus:outline-none" onchange="applyMarketSortPreset(this.value)">
+            <option value="market_epc_desc">📊 По рыночному EPC (макс → мин)</option>
+            <option value="epcDeltaPct_desc">🚀 Сильнее рынка (Δ% макс)</option>
+            <option value="epcDeltaPct_asc">⚠️ Слабее рынка (точки роста)</option>
+            <option value="potential_desc">💰 Максимальный потенциал выручки</option>
+            <option value="your_epc_desc">💵 По вашему EPC</option>
+            <option value="market_cr_desc">🎯 По CR рынка</option>
+            <option value="market_ar_desc">✅ По Approve % рынка</option>
+            <option value="updated_at_desc">🕒 Самые свежие данные</option>
+            <option value="name_asc">🔤 По имени (А → Я)</option>
+          </select>
+          <span id="marketUpdatedAt" class="text-xs text-slate-400"></span>
+          <button class="btn" onclick="refreshMarketData()">🔄 Обновить с Leads.su</button>
+        </div>
+      </div>
+      <p class="text-sm text-slate-400 mb-4">Источник: <code>/webmaster/offers?extendedFields=1</code> → <code>detail_stats.system.other_epc</code> (общий по бирже EPC) и <code>detail_stats.your.other_epc</code> (ваш). Помогает понять, стоит ли продолжать использовать оффер: если ваш EPC ниже рыночного — есть потенциал роста или проблема с трафиком. <span class="text-slate-500">«Потенциал ₽» = ваши клики по офферу × (EPC рынка − ваш EPC) — оценка дополнительной выручки при выходе на рыночный уровень.</span></p>
+      <div class="overflow-auto" style="max-height:600px">
+        <table class="w-full text-sm" id="marketOffersTable"><thead><tr>
+          <th class="sort-th" onclick="sortTable('marketOffersTable','name')">Оффер ↕</th>
+          <th class="sort-th text-right" onclick="sortTable('marketOffersTable','market_epc')">EPC рынка ↕</th>
+          <th class="sort-th text-right" onclick="sortTable('marketOffersTable','your_epc')">Ваш EPC ↕</th>
+          <th class="sort-th text-right" onclick="sortTable('marketOffersTable','epcDelta')" title="Абсолютное отклонение, ₽">Δ ₽ ↕</th>
+          <th class="sort-th text-right" onclick="sortTable('marketOffersTable','epcDeltaPct')" title="Относительное отклонение вашего EPC от рыночного, %">Δ % ↕</th>
+          <th class="sort-th text-right" onclick="sortTable('marketOffersTable','potential')" title="Потенциальная доп. выручка при выходе на рыночный EPC = клики × (EPC рынка − ваш EPC)">Потенциал ₽ ↕</th>
+          <th class="sort-th text-right" onclick="sortTable('marketOffersTable','market_cr')">CR рынка ↕</th>
+          <th class="sort-th text-right" onclick="sortTable('marketOffersTable','market_ar')">AR рынка ↕</th>
+          <th class="sort-th text-right" onclick="sortTable('marketOffersTable','updated_at')">Обновлено ↕</th>
         </tr></thead><tbody></tbody></table>
       </div>
     </div>
@@ -221,13 +292,20 @@
     <div class="card">
       <div class="flex flex-wrap gap-3 justify-between items-center mb-4">
         <h2 class="text-white font-bold">📈 Динамика баннера</h2>
-        <select id="bannerChartMetric" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm focus:outline-none" onchange="renderBannerChart()">
-          <option value="all">Показы + Клики + Конверсия</option>
-          <option value="impressions">Показы</option>
-          <option value="clicks">Клики</option>
-          <option value="conversion">Конверсия (%)</option>
-          <option value="imp_clicks">Показы + Клики</option>
-        </select>
+        <div class="flex gap-2">
+          <select id="bannerChartGrouping" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm focus:outline-none" onchange="renderBannerChart()">
+            <option value="day">По дням</option>
+            <option value="week">По неделям</option>
+            <option value="month">По месяцам</option>
+          </select>
+          <select id="bannerChartMetric" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm focus:outline-none" onchange="renderBannerChart()">
+            <option value="all">Показы + Клики + Конверсия</option>
+            <option value="impressions">Показы</option>
+            <option value="clicks">Клики</option>
+            <option value="conversion">Конверсия (%)</option>
+            <option value="imp_clicks">Показы + Клики</option>
+          </select>
+        </div>
       </div>
       <div class="chart-wrap"><canvas id="bannerConvChart"></canvas></div>
     </div>
@@ -264,6 +342,39 @@
       <div id="bannerUploadMsg" class="mt-3 text-sm hidden"></div>
     </div>
   </div>
+
+  <!-- TAB: AI ANALYTICS (issue 7) -->
+  <div id="tab-ai" class="tab-content space-y-6">
+    <div class="card">
+      <div class="flex flex-wrap gap-3 justify-between items-center mb-2">
+        <h2 class="text-white font-bold text-lg">🤖 AI-аналитика и подсказки</h2>
+        <button class="btn" onclick="renderAIInsights()">🔄 Пересчитать</button>
+      </div>
+      <p class="text-sm text-slate-400 mb-4">Автоматический разбор закономерностей: динамика выручки и трафика, аномалии EPC, низкоэффективные офферы и площадки, сравнение с рынком. Подсказки строятся из текущего диапазона дат.</p>
+      <div id="aiInsightsContainer" class="space-y-3"></div>
+    </div>
+
+    <div class="card">
+      <div class="flex flex-wrap gap-3 justify-between items-center mb-2">
+        <h2 class="text-white font-bold text-lg">🚀 Глубокий AI-анализ</h2>
+        <button id="aiDeepBtn" class="btn" onclick="runDeepAIAnalysis()">⚡ Запустить анализ</button>
+      </div>
+      <p class="text-sm text-slate-400 mb-4">Анализирует выбранный период и площадки, дающие суммарно ~99% выручки (мелкие игнорируются). Возвращает конкретные рекомендации, прогноз показателей, ключевые управленческие решения для роста выручки. Работает по текущему диапазону дат.</p>
+      <div id="aiDeepStatus" class="text-sm text-slate-400 mb-3"></div>
+      <div id="aiDeepResult" class="space-y-5 hidden"></div>
+    </div>
+
+    <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
+      <div class="card">
+        <h3 class="text-white font-bold mb-3">📉 Топ-5 просадок EPC</h3>
+        <div class="overflow-auto" style="max-height:320px"><table class="w-full text-sm" id="aiDropsTable"><thead><tr><th>Период</th><th class="text-right">EPC</th><th class="text-right">Δ от среднего</th></tr></thead><tbody></tbody></table></div>
+      </div>
+      <div class="card">
+        <h3 class="text-white font-bold mb-3">⚠️ Sub1 с аномалиями</h3>
+        <div class="overflow-auto" style="max-height:320px"><table class="w-full text-sm" id="aiSub1Table"><thead><tr><th>Sub1</th><th class="text-right">Клики</th><th class="text-right">EPC</th><th class="text-right">Сигнал</th></tr></thead><tbody></tbody></table></div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -271,11 +382,14 @@
 const API_BASE = './leads-proxy.php';
 const HARDCODED_TOKEN = '2104ce6ccd2ce95458a53926597416eb';
 const AUTO_REFRESH_INTERVAL_MS = 60 * 60 * 1000; // 1 час
+const LAST_REFRESH_KEY = 'leadsLastAutoRefresh';
 
 let originalData = [];
 let globalRawData = [];
 let bouncesData = [];
 let bannerData = [];
+let offerMarketMap = {}; // offer_id → { name, market_epc, market_cr, market_ar, your_epc, your_cr }
+let offerMarketByName = {}; // offer_name → market data (для рядов без offer_id из старой БД)
 
 let epcLineChart = null;
 let epcWeekdayChart = null;
@@ -292,6 +406,8 @@ let autoRefreshTimer = null;
 let tableSort = {
   sourceTable: { field: 'revenue', desc: true },
   offerTable: { field: 'revenue', desc: true },
+  sub1Table: { field: 'revenue', desc: true },
+  marketOffersTable: { field: 'market_epc', desc: true },
   epcDropsTable: { field: 'epc', desc: false }
 };
 
@@ -342,13 +458,13 @@ function escapeHtml(str) {
   return String(str).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#039;');
 }
 
-// Deduplicates data array by composite key (date+source_id+offer+sub1).
+// Deduplicates data array by composite key (date+source_id+offer_id+offer+sub1).
 // keepLast=false: first occurrence wins (for fresh API data where dupes are exact copies).
 // keepLast=true: last occurrence wins (for DB merge where DB data should overwrite in-memory).
 function deduplicateData(data, keepLast = false) {
   const dedup = new Map();
   for (const r of data) {
-    const key = `${r.date}|${r.source_id}|${r.offer}|${r.sub1}`;
+    const key = `${r.date}|${r.source_id}|${r.offer_id || ''}|${r.offer}|${r.sub1}`;
     if (keepLast || !dedup.has(key)) {
       dedup.set(key, r);
     }
@@ -426,6 +542,7 @@ function processDataFromDb(rows) {
     month: row.date.slice(0, 7),
     dayOfWeek: daysOfWeek[new Date(row.date).getDay()],
     offer: row.offer_name || 'Unknown',
+    offer_id: row.offer_id || '',
     source: mergeSourceName(row.source_name),
     source_id: row.source_id || 'all',
     sub1: row.sub1 || '',
@@ -509,11 +626,11 @@ async function loadFromAPI() {
       originalData.push({
         date: dateStr, week: getWeekNumber(new Date(dateStr)), month: dateStr.slice(0, 7),
         dayOfWeek: daysOfWeek[new Date(dateStr).getDay()],
-        offer: offerName,
+        offer: offerName, offer_id: offerId,
         source: sourceName, source_id: platformId || 'all', sub1, clicks, conversions, approved, revenue
       });
     }
-    // Deduplicate originalData by composite key (date + source_id + offer + sub1)
+    // Deduplicate originalData by composite key (date + source_id + offer_id + offer + sub1)
     originalData = deduplicateData(originalData, false);
     // Save data to DB via server-side update (more reliable with source_id handling)
     try {
@@ -521,11 +638,15 @@ async function loadFromAPI() {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ data: originalData.map(r => ({
           date: r.date, source_id: r.source_id || 'all', source_name: r.source,
-          offer: r.offer, sub1: r.sub1 || '', clicks: r.clicks,
+          offer: r.offer, offer_id: r.offer_id || '', sub1: r.sub1 || '', clicks: r.clicks,
           conversions: r.conversions, approved: r.approved, revenue: r.revenue
         })) })
       });
     } catch(e) { console.warn('Ошибка сохранения:', e); }
+    // Заодно подтягиваем рыночные показатели офферов в кэш на сервере
+    try { await fetch(`${API_BASE}?action=fetch_offers_market&token=${token}`); }
+    catch(e) { console.warn('Ошибка загрузки рыночных EPC:', e); }
+    await loadOfferMarketData();
     // Refresh dashboard with loaded data
     await applyGlobalFilters();
     updateProgress(100, 'Готово!');
@@ -548,65 +669,134 @@ function updateProgress(percent, text) {
 }
 
 // ========================== АВТООБНОВЛЕНИЕ КАЖДЫЙ ЧАС ==========================
+// Хранит время последнего запуска в localStorage, чтобы:
+//   а) при перезагрузке страницы / возврате во вкладку запускать обновление,
+//      если с прошлого раза прошло >= 1 ч (issue 2);
+//   б) корректно работало даже если setInterval throttling браузера задушил таймер.
 let visibilityListenerAdded = false;
+
+async function runAutoRefresh(force = false) {
+  const dFrom = document.getElementById('dateFrom').value;
+  const dTo = document.getElementById('dateTo').value;
+  if (!dFrom || !dTo) return;
+  const now = Date.now();
+  const last = Number(localStorage.getItem(LAST_REFRESH_KEY) || 0);
+  if (!force && last && (now - last) < AUTO_REFRESH_INTERVAL_MS) return;
+  console.log('[Auto-refresh] Триггер обновления данных...');
+  // Trigger server-side Leads.su update (like cron)
+  try {
+    await fetch(`${API_BASE}?action=update_stats&token=${HARDCODED_TOKEN}&start_date=${dFrom}&end_date=${dTo}&grouping=day&field=offer_id,source,aff_sub1`);
+  } catch(e) { console.warn('[Auto-refresh] Leads.su update error:', e); }
+  // Trigger server-side Yandex Metrika banner update
+  try {
+    await fetch(`${API_BASE}?action=ym_fetch_banner&start_date=${dFrom}&end_date=${dTo}`);
+  } catch(e) { console.warn('[Auto-refresh] YM update error:', e); }
+  // Refresh market EPC cache
+  try {
+    await fetch(`${API_BASE}?action=fetch_offers_market&token=${HARDCODED_TOKEN}`);
+  } catch(e) { console.warn('[Auto-refresh] Offers market update error:', e); }
+  localStorage.setItem(LAST_REFRESH_KEY, String(Date.now()));
+  // Then reload from DB and refresh all dashboards
+  await autoLoadSavedStats();
+  updateNextRefreshTime();
+}
 
 function startAutoRefresh() {
   if (autoRefreshTimer) clearInterval(autoRefreshTimer);
   updateNextRefreshTime();
-  autoRefreshTimer = setInterval(async () => {
-    console.log('[Auto-refresh] Обновление данных...');
-    const dFrom = document.getElementById('dateFrom').value;
-    const dTo = document.getElementById('dateTo').value;
-    if (!dFrom || !dTo) return;
-    // Trigger server-side Leads.su update (like cron)
-    try {
-      await fetch(`${API_BASE}?action=update_stats&token=${HARDCODED_TOKEN}&start_date=${dFrom}&end_date=${dTo}&grouping=day&field=offer_id,source,aff_sub1`);
-    } catch(e) { console.warn('[Auto-refresh] Leads.su update error:', e); }
-    // Trigger server-side Yandex Metrika banner update
-    try {
-      await fetch(`${API_BASE}?action=ym_fetch_banner&start_date=${dFrom}&end_date=${dTo}`);
-    } catch(e) { console.warn('[Auto-refresh] YM update error:', e); }
-    // Then reload from DB and refresh all dashboards
-    await autoLoadSavedStats();
-    updateNextRefreshTime();
-  }, AUTO_REFRESH_INTERVAL_MS);
+  // Немедленно запускаем, если пора (например, страница долго не открывалась)
+  runAutoRefresh(false);
+  autoRefreshTimer = setInterval(() => runAutoRefresh(false), AUTO_REFRESH_INTERVAL_MS);
 
   // Handle visibility change - refresh when tab becomes visible (register once)
   if (!visibilityListenerAdded) {
     visibilityListenerAdded = true;
     document.addEventListener('visibilitychange', () => {
-      if (!document.hidden && originalData.length) {
-        console.log('[Visibility] Tab visible, reloading data...');
+      if (!document.hidden) {
+        // При возврате во вкладку: всегда подтягиваем свежий снапшот из БД,
+        // и при необходимости (>= 1 ч) — запускаем полный refresh с API.
         autoLoadSavedStats();
+        runAutoRefresh(false);
       }
     });
   }
 }
 
 function updateNextRefreshTime() {
-  const next = new Date(Date.now() + AUTO_REFRESH_INTERVAL_MS);
+  const last = Number(localStorage.getItem(LAST_REFRESH_KEY) || Date.now());
+  const next = new Date(last + AUTO_REFRESH_INTERVAL_MS);
   const hh = String(next.getHours()).padStart(2, '0');
   const mm = String(next.getMinutes()).padStart(2, '0');
   const el = document.getElementById('nextRefreshTime');
   if (el) el.textContent = `${hh}:${mm}`;
 }
 
+async function loadOfferMarketData() {
+  try {
+    const res = await fetch(`${API_BASE}?action=get_offers_market`);
+    const json = await res.json();
+    if (json.status === 'success' && Array.isArray(json.data)) {
+      offerMarketMap = {};
+      offerMarketByName = {};
+      for (const o of json.data) {
+        const rec = {
+          name: o.name || '',
+          market_epc: Number(o.market_epc) || 0,
+          market_cr: Number(o.market_cr) || 0,
+          market_ar: Number(o.market_ar) || 0,
+          your_epc: Number(o.your_epc) || 0,
+          your_cr: Number(o.your_cr) || 0,
+          updated_at: o.updated_at || null
+        };
+        if (o.offer_id) offerMarketMap[String(o.offer_id)] = rec;
+        if (o.name) offerMarketByName[o.name] = rec;
+      }
+    }
+  } catch(e) { console.warn('loadOfferMarketData failed:', e); }
+}
+
+function getOfferMarket(row) {
+  if (row.offer_id && offerMarketMap[row.offer_id]) return offerMarketMap[row.offer_id];
+  if (row.offer && offerMarketByName[row.offer]) return offerMarketByName[row.offer];
+  return null;
+}
+
 async function autoLoadSavedStats() {
   const dFrom = document.getElementById('dateFrom').value;
   const dTo = document.getElementById('dateTo').value;
   if (!dFrom || !dTo) return;
+  // Подтягиваем рыночные EPC офферов из кэша
+  await loadOfferMarketData();
   const saved = await fetchSavedStats(dFrom, dTo);
   if (saved && saved.length) {
-    // Merge DB data with existing in-memory data:
-    // DB data takes priority for its date range, keep any in-memory data outside the fetched range
+    // Build a key→name lookup of in-memory data so we can preserve real offer names
+    // when DB returns "Unknown" (issue 1: при смене диапазона имена не должны теряться).
+    // Намеренно НЕ включаем offer name в ключ — мы как раз ищем имя для записи,
+    // у которой имя сейчас "Unknown" / "Offer #X" / пустое; ключ должен совпадать
+    // с lookup-ключом из DB-ряда (date|source_id|offer_id|sub1).
+    const inMemNames = new Map();
+    for (const r of originalData) {
+      const key = `${r.date}|${r.source_id}|${r.offer_id || ''}|${r.sub1}`;
+      if (r.offer && r.offer !== 'Unknown' && !/^Offer #/.test(r.offer) && !inMemNames.has(key)) {
+        inMemNames.set(key, r.offer);
+      }
+    }
     const dbRows = saved.map(row => {
       const d = new Date(row.date);
+      let offerName = row.offer_name || 'Unknown';
+      const key = `${row.date}|${row.source_id || 'all'}|${row.offer_id || ''}|${row.sub1 || ''}`;
+      // 1) Prefer offers_cache name (already merged server-side via LEFT JOIN), but if we
+      //    still have "Unknown" — try the in-memory previous name.
+      if ((offerName === 'Unknown' || /^Offer #/.test(offerName) || !offerName) && inMemNames.has(key)) {
+        offerName = inMemNames.get(key);
+      }
       return {
         date: row.date,
         week: getWeekNumber(d),
         month: row.date.slice(0, 7),
         dayOfWeek: daysOfWeek[d.getDay()],
-        offer: row.offer_name || 'Unknown',
+        offer: offerName,
+        offer_id: row.offer_id || '',
         source: mergeSourceName(row.source_name),
         source_id: row.source_id || 'all',
         sub1: row.sub1 || '',
@@ -643,44 +833,69 @@ function renderBannerKPI() {
     <div class="card"><div class="text-slate-400 text-xs uppercase">Средняя конверсия</div><div class="text-3xl font-black mt-2">${avgConv.toFixed(2)}%</div></div>`;
 }
 
+function aggregateBannerByPeriod(grouping) {
+  // Сводим dailyImpressions/clicks по дням/неделям/месяцам.
+  // Конверсия пересчитывается из суммарных показов и кликов периода.
+  const map = {};
+  for (const d of bannerData) {
+    if (!d.date) continue;
+    let key;
+    if (grouping === 'week') key = getWeekNumber(new Date(d.date));
+    else if (grouping === 'month') key = d.date.slice(0, 7);
+    else key = d.date;
+    if (!map[key]) map[key] = { impressions: 0, clicks: 0 };
+    map[key].impressions += Number(d.impressions) || 0;
+    map[key].clicks += Number(d.clicks) || 0;
+  }
+  const labels = Object.keys(map).sort();
+  return labels.map(l => ({
+    label: l,
+    impressions: map[l].impressions,
+    clicks: map[l].clicks,
+    conversion_rate: map[l].impressions > 0 ? (map[l].clicks / map[l].impressions * 100) : 0
+  }));
+}
+
 function renderBannerChart() {
   if (!bannerData.length) return;
   const ctx = document.getElementById('bannerConvChart').getContext('2d');
   if (bannerConvChart) bannerConvChart.destroy();
   const metric = (document.getElementById('bannerChartMetric') || {}).value || 'all';
-  const labels = bannerData.map(d => d.date.slice(5));
+  const grouping = (document.getElementById('bannerChartGrouping') || {}).value || 'day';
+  const series = aggregateBannerByPeriod(grouping);
+  const labels = series.map(s => grouping === 'day' ? s.label.slice(5) : s.label);
   let datasets = [];
   let scalesConfig = {};
   if (metric === 'impressions') {
     datasets = [{
-      label: 'Показы', data: bannerData.map(d => d.impressions),
+      label: 'Показы', data: series.map(s => s.impressions),
       borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,0.1)', fill: true, tension: 0.3, pointRadius: 3
     }];
     scalesConfig = { y: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } } };
   } else if (metric === 'clicks') {
     datasets = [{
-      label: 'Клики', data: bannerData.map(d => d.clicks),
+      label: 'Клики', data: series.map(s => s.clicks),
       borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,0.1)', fill: true, tension: 0.3, pointRadius: 3
     }];
     scalesConfig = { y: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } } };
   } else if (metric === 'conversion') {
     datasets = [{
-      label: 'Конверсия (%)', data: bannerData.map(d => d.conversion_rate),
+      label: 'Конверсия (%)', data: series.map(s => s.conversion_rate),
       borderColor: '#f97316', backgroundColor: 'rgba(249,115,22,0.1)', fill: true, tension: 0.3, pointRadius: 3
     }];
     scalesConfig = { y: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } } };
   } else if (metric === 'imp_clicks') {
     datasets = [
-      { label: 'Показы', data: bannerData.map(d => d.impressions), borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,0.1)', fill: true, tension: 0.3, pointRadius: 3, yAxisID: 'y' },
-      { label: 'Клики', data: bannerData.map(d => d.clicks), borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,0.1)', fill: true, tension: 0.3, pointRadius: 3, yAxisID: 'y' }
+      { label: 'Показы', data: series.map(s => s.impressions), borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,0.1)', fill: true, tension: 0.3, pointRadius: 3, yAxisID: 'y' },
+      { label: 'Клики', data: series.map(s => s.clicks), borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,0.1)', fill: true, tension: 0.3, pointRadius: 3, yAxisID: 'y' }
     ];
     scalesConfig = { y: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } } };
   } else {
     // "all" — show impressions + clicks on left axis, conversion on right axis
     datasets = [
-      { label: 'Показы', data: bannerData.map(d => d.impressions), borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,0.08)', fill: true, tension: 0.3, pointRadius: 3, yAxisID: 'y' },
-      { label: 'Клики', data: bannerData.map(d => d.clicks), borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,0.08)', fill: true, tension: 0.3, pointRadius: 3, yAxisID: 'y' },
-      { label: 'Конверсия (%)', data: bannerData.map(d => d.conversion_rate), borderColor: '#f97316', borderDash: [5, 5], tension: 0.3, pointRadius: 3, yAxisID: 'y1' }
+      { label: 'Показы', data: series.map(s => s.impressions), borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,0.08)', fill: true, tension: 0.3, pointRadius: 3, yAxisID: 'y' },
+      { label: 'Клики', data: series.map(s => s.clicks), borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,0.08)', fill: true, tension: 0.3, pointRadius: 3, yAxisID: 'y' },
+      { label: 'Конверсия (%)', data: series.map(s => s.conversion_rate), borderColor: '#f97316', borderDash: [5, 5], tension: 0.3, pointRadius: 3, yAxisID: 'y1' }
     ];
     scalesConfig = {
       y: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } },
@@ -715,7 +930,7 @@ async function applyGlobalFilters() {
   renderBannerKPI(); renderBannerChart();
 
   const sources = [...new Set(globalRawData.map(r => r.source))].sort();
-  for (const selectId of ['chartSourceFilter', 'offerSourceFilter', 'epcSourceSelect']) {
+  for (const selectId of ['chartSourceFilter', 'offerSourceFilter', 'sub1SourceFilter', 'epcSourceSelect']) {
     const sel = document.getElementById(selectId);
     if (!sel) continue;
     const current = sel.value;
@@ -738,6 +953,8 @@ async function applyGlobalFilters() {
 
   renderUI(); renderTables(); refreshChart(); drawExtraCharts();
   renderEPCAnalytics(); renderMatrixAnalytics(); renderPlatformCharts();
+  renderMarketTable();
+  renderAIInsights();
 }
 
 function renderUI() {
@@ -781,14 +998,34 @@ function aggregateBy(field, sourceFilter) {
 function renderTables() {
   const selSrc = document.getElementById('offerSourceFilter').value;
   const srcMap = aggregateBy('source','all');
-  const offMap = aggregateBy('offer', selSrc);
+  // Aggregate offers separately so we can keep offer_id for market EPC lookup
+  const offMap = {};
+  for (const r of globalRawData) {
+    if (selSrc !== 'all' && r.source !== selSrc) continue;
+    const key = r.offer;
+    if (!offMap[key]) offMap[key] = { clicks:0, conversions:0, approved:0, revenue:0, offer_id: r.offer_id || '' };
+    if (!offMap[key].offer_id && r.offer_id) offMap[key].offer_id = r.offer_id;
+    offMap[key].clicks += r.clicks;
+    offMap[key].conversions += r.conversions;
+    offMap[key].approved += r.approved;
+    offMap[key].revenue += r.revenue;
+  }
   const doSort = (arr, sc) => arr.sort((a,b) => {
     let va=a[sc.field], vb=b[sc.field];
     if (typeof va==='string') return sc.desc ? vb.localeCompare(va) : va.localeCompare(vb);
     return sc.desc ? vb-va : va-vb;
   });
   let sRows = Object.entries(srcMap).map(([n,v]) => ({name:n, clicks:v.clicks, conversions:v.conversions, approved:v.approved, revenue:v.revenue, epc:v.clicks?(v.revenue/v.clicks):0, approveRate:v.conversions?(v.approved/v.conversions*100):0}));
-  let oRows = Object.entries(offMap).map(([n,v]) => ({name:n, clicks:v.clicks, conversions:v.conversions, approved:v.approved, revenue:v.revenue, epc:v.clicks?(v.revenue/v.clicks):0, approveRate:v.conversions?(v.approved/v.conversions*100):0}));
+  let oRows = Object.entries(offMap).map(([n,v]) => {
+    const epc = v.clicks ? (v.revenue/v.clicks) : 0;
+    const market = (v.offer_id && offerMarketMap[v.offer_id]) || offerMarketByName[n] || null;
+    const marketEpc = market ? market.market_epc : 0;
+    return {
+      name: n, clicks: v.clicks, conversions: v.conversions, approved: v.approved, revenue: v.revenue,
+      epc, approveRate: v.conversions ? (v.approved/v.conversions*100) : 0,
+      marketEpc, epcDelta: marketEpc > 0 ? (epc - marketEpc) : 0
+    };
+  });
   doSort(sRows, tableSort.sourceTable);
   doSort(oRows, tableSort.offerTable);
   document.querySelector('#sourceTable tbody').innerHTML = sRows.map(r => `<tr class="hover:bg-slate-800"><td>${escapeHtml(r.name)}</td><td class="text-right">${r.clicks.toLocaleString('ru-RU')}</td><td class="text-right">${r.conversions.toLocaleString('ru-RU')}</td><td class="text-right">${r.approveRate.toFixed(1)}%</td><td class="text-right">${Math.round(r.revenue).toLocaleString('ru-RU')} ₽</td><td class="text-right font-semibold">${r.epc.toFixed(2)} ₽</td></tr>`).join('');
@@ -796,8 +1033,155 @@ function renderTables() {
     let cc='text-red-400';
     if(r.epc>=80&&r.epc<100)cc='text-yellow-400';else if(r.epc>=100&&r.epc<140)cc='text-green-500';else if(r.epc>=140)cc='text-emerald-300';
     if(!r.clicks)cc='text-slate-400';
-    return `<tr class="hover:bg-slate-800"><td>${escapeHtml(r.name)}</td><td class="text-right">${r.clicks.toLocaleString('ru-RU')}</td><td class="text-right">${r.conversions.toLocaleString('ru-RU')}</td><td class="text-right">${r.approveRate.toFixed(1)}%</td><td class="text-right">${Math.round(r.revenue).toLocaleString('ru-RU')} ₽</td><td class="text-right font-bold ${cc}">${r.epc.toFixed(2)} ₽</td></tr>`;
+    const mEpcCell = r.marketEpc > 0 ? `${r.marketEpc.toFixed(2)} ₽` : '<span class="text-slate-500">—</span>';
+    let deltaCell = '<span class="text-slate-500">—</span>';
+    if (r.marketEpc > 0 && r.clicks > 0) {
+      const cls = r.epcDelta >= 0 ? 'text-emerald-400' : 'text-red-400';
+      const sign = r.epcDelta >= 0 ? '+' : '';
+      deltaCell = `<span class="${cls}">${sign}${r.epcDelta.toFixed(2)} ₽</span>`;
+    }
+    return `<tr class="hover:bg-slate-800"><td>${escapeHtml(r.name)}</td><td class="text-right">${r.clicks.toLocaleString('ru-RU')}</td><td class="text-right">${r.conversions.toLocaleString('ru-RU')}</td><td class="text-right">${r.approveRate.toFixed(1)}%</td><td class="text-right">${Math.round(r.revenue).toLocaleString('ru-RU')} ₽</td><td class="text-right font-bold ${cc}">${r.epc.toFixed(2)} ₽</td><td class="text-right">${mEpcCell}</td><td class="text-right">${deltaCell}</td></tr>`;
   }).join('');
+  renderSub1Table();
+  renderMarketTable();
+}
+
+// ========================== SUB1 BREAKDOWN (issue 4) ==========================
+function renderSub1Table() {
+  const sel = document.getElementById('sub1SourceFilter');
+  if (!sel) return;
+  const filterVal = sel.value || 'all';
+  const map = {};
+  for (const r of globalRawData) {
+    if (filterVal !== 'all' && r.source !== filterVal) continue;
+    const key = r.sub1 && r.sub1.trim() ? r.sub1 : '(пусто)';
+    if (!map[key]) map[key] = { clicks: 0, conversions: 0, approved: 0, revenue: 0 };
+    map[key].clicks += r.clicks;
+    map[key].conversions += r.conversions;
+    map[key].approved += r.approved;
+    map[key].revenue += r.revenue;
+  }
+  let rows = Object.entries(map).map(([n, v]) => ({
+    name: n, clicks: v.clicks, conversions: v.conversions, approved: v.approved, revenue: v.revenue,
+    epc: v.clicks ? (v.revenue / v.clicks) : 0,
+    approveRate: v.conversions ? (v.approved / v.conversions * 100) : 0
+  }));
+  const sc = tableSort.sub1Table || { field: 'revenue', desc: true };
+  rows.sort((a, b) => {
+    let va = a[sc.field], vb = b[sc.field];
+    if (typeof va === 'string') return sc.desc ? vb.localeCompare(va) : va.localeCompare(vb);
+    return sc.desc ? vb - va : va - vb;
+  });
+  const tbody = document.querySelector('#sub1Table tbody');
+  if (!tbody) return;
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="6" class="text-center text-slate-500 py-4">Нет данных Sub1 за выбранный период</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows.map(r => `<tr class="hover:bg-slate-800"><td>${escapeHtml(r.name)}</td><td class="text-right">${r.clicks.toLocaleString('ru-RU')}</td><td class="text-right">${r.conversions.toLocaleString('ru-RU')}</td><td class="text-right">${r.approveRate.toFixed(1)}%</td><td class="text-right">${Math.round(r.revenue).toLocaleString('ru-RU')} ₽</td><td class="text-right font-semibold">${r.epc.toFixed(2)} ₽</td></tr>`).join('');
+}
+
+// ========================== MARKET OFFERS TABLE (issue 8) ==========================
+function renderMarketTable() {
+  const tbody = document.querySelector('#marketOffersTable tbody');
+  if (!tbody) return;
+  const all = Object.values(offerMarketMap);
+  if (!all.length) {
+    tbody.innerHTML = '<tr><td colspan="9" class="text-center text-slate-500 py-4">Нет данных. Нажмите «Обновить с Leads.su».</td></tr>';
+    const ts = document.getElementById('marketUpdatedAt');
+    if (ts) ts.textContent = '';
+    return;
+  }
+  // updated_at — берём максимальный из кэша
+  let lastTs = '';
+  for (const o of all) if (o.updated_at && o.updated_at > lastTs) lastTs = o.updated_at;
+  const tsEl = document.getElementById('marketUpdatedAt');
+  if (tsEl) tsEl.textContent = lastTs ? `Обновлено: ${lastTs}` : '';
+  // Сводка по вашим кликам/выручке для расчёта потенциала: ваши клики по офферу × (рыночный EPC − ваш EPC).
+  // Берём из текущего среза globalRawData, чтобы потенциал был контекстен периоду.
+  const clicksByOfferId = {}, clicksByOfferName = {};
+  for (const r of globalRawData) {
+    if (r.offer_id) clicksByOfferId[String(r.offer_id)] = (clicksByOfferId[String(r.offer_id)] || 0) + (r.clicks || 0);
+    if (r.offer)    clicksByOfferName[r.offer]         = (clicksByOfferName[r.offer]         || 0) + (r.clicks || 0);
+  }
+  // Build rows with computed delta
+  let rows = Object.entries(offerMarketMap).map(([oid, o]) => {
+    const yourEpc = o.your_epc || 0;
+    const marketEpc = o.market_epc || 0;
+    const delta = yourEpc - marketEpc;
+    const deltaPct = (marketEpc > 0 && yourEpc > 0) ? (delta / marketEpc * 100) : null;
+    const yourClicks = clicksByOfferId[String(oid)] || clicksByOfferName[o.name] || 0;
+    // Потенциал: только когда ваш EPC ниже рынка (есть «зазор» для роста) и есть ваши клики.
+    const potential = (yourClicks > 0 && marketEpc > 0 && yourEpc > 0 && delta < 0)
+      ? yourClicks * (marketEpc - yourEpc)
+      : 0;
+    return {
+      name: o.name || '(без имени)',
+      market_epc: marketEpc,
+      your_epc: yourEpc,
+      epcDelta: delta,
+      epcDeltaPct: deltaPct,
+      potential: potential,
+      market_cr: o.market_cr || 0,
+      market_ar: o.market_ar || 0,
+      updated_at: o.updated_at || ''
+    };
+  });
+  const sc = tableSort.marketOffersTable || { field: 'market_epc', desc: true };
+  rows.sort((a, b) => {
+    let va = a[sc.field], vb = b[sc.field];
+    // Пустые/нулевые/null значения всегда уезжают в конец независимо от направления.
+    const aEmpty = (va === null || va === undefined || va === '' || (typeof va === 'number' && !va));
+    const bEmpty = (vb === null || vb === undefined || vb === '' || (typeof vb === 'number' && !vb));
+    if (aEmpty && !bEmpty) return 1;
+    if (!aEmpty && bEmpty) return -1;
+    if (aEmpty && bEmpty) return 0;
+    if (typeof va === 'string') return sc.desc ? vb.localeCompare(va) : va.localeCompare(vb);
+    return sc.desc ? vb - va : va - vb;
+  });
+  tbody.innerHTML = rows.map(r => {
+    const deltaCls = r.epcDelta >= 0 ? 'text-emerald-400' : 'text-red-400';
+    const sign = r.epcDelta >= 0 ? '+' : '';
+    const yourEpcCell = r.your_epc > 0 ? `${r.your_epc.toFixed(2)} ₽` : '<span class="text-slate-500">—</span>';
+    const deltaCell = (r.your_epc > 0 && r.market_epc > 0)
+      ? `<span class="${deltaCls}">${sign}${r.epcDelta.toFixed(2)} ₽</span>`
+      : '<span class="text-slate-500">—</span>';
+    const deltaPctCell = (r.epcDeltaPct !== null)
+      ? `<span class="${deltaCls}">${r.epcDeltaPct >= 0 ? '+' : ''}${r.epcDeltaPct.toFixed(1)}%</span>`
+      : '<span class="text-slate-500">—</span>';
+    const potentialCell = r.potential > 0
+      ? `<span class="text-yellow-400 font-semibold" title="При выходе на рыночный EPC">+${Math.round(r.potential).toLocaleString('ru-RU')} ₽</span>`
+      : '<span class="text-slate-500">—</span>';
+    const updCell = r.updated_at ? `<span class="text-slate-400">${escapeHtml(r.updated_at)}</span>` : '<span class="text-slate-500">—</span>';
+    return `<tr class="hover:bg-slate-800"><td>${escapeHtml(r.name)}</td><td class="text-right font-bold">${r.market_epc.toFixed(2)} ₽</td><td class="text-right">${yourEpcCell}</td><td class="text-right">${deltaCell}</td><td class="text-right">${deltaPctCell}</td><td class="text-right">${potentialCell}</td><td class="text-right">${r.market_cr.toFixed(2)}%</td><td class="text-right">${r.market_ar.toFixed(2)}%</td><td class="text-right">${updCell}</td></tr>`;
+  }).join('');
+}
+
+// Применить пресет сортировки таблицы Market: значение вида "field_dir".
+function applyMarketSortPreset(value) {
+  if (!value) return;
+  const idx = value.lastIndexOf('_');
+  const field = value.slice(0, idx);
+  const dir = value.slice(idx + 1);
+  tableSort.marketOffersTable = { field, desc: dir === 'desc' };
+  renderMarketTable();
+}
+
+async function refreshMarketData() {
+  const btn = event && event.target;
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Загрузка...'; }
+  try {
+    const res = await fetch(`${API_BASE}?action=fetch_offers_market&token=${HARDCODED_TOKEN}`);
+    const json = await res.json();
+    if (json.error) throw new Error(json.error);
+    await loadOfferMarketData();
+    renderMarketTable();
+    renderTables(); // обновим колонку EPC рынка в таблице офферов
+    if (btn) { btn.textContent = `✅ Загружено ${json.count || 0} офферов`; setTimeout(() => { btn.textContent = '🔄 Обновить с Leads.su'; btn.disabled = false; }, 2500); }
+  } catch (e) {
+    alert('Ошибка загрузки рыночных данных: ' + e.message);
+    if (btn) { btn.textContent = '🔄 Обновить с Leads.su'; btn.disabled = false; }
+  }
 }
 
 function refreshChart() {
@@ -865,7 +1249,10 @@ function drawExtraCharts() {
     options:{responsive:true,maintainAspectRatio:false,plugins:{
       legend:{position:'right',labels:{color:'#ffffff',font:{size:13},padding:20,generateLabels:function(chart){
         const data=chart.data;if(!data.labels.length||!data.datasets.length)return[];
-        return data.labels.map((label,i)=>{const v=data.datasets[0].data[i];const p=totalRev>0?((v/totalRev)*100).toFixed(1):0;return{text:`${label} (${p}%)`,fillStyle:data.datasets[0].backgroundColor[i],index:i};});
+        // ВАЖНО (issue 3): когда мы возвращаем кастомные элементы из generateLabels,
+        // Chart.js может не унаследовать labels.color — поэтому явно проставляем
+        // и `fontColor` (legacy для v2), и `color` (актуальный API v3+).
+        return data.labels.map((label,i)=>{const v=data.datasets[0].data[i];const p=totalRev>0?((v/totalRev)*100).toFixed(1):0;return{text:`${label} (${p}%)`,fillStyle:data.datasets[0].backgroundColor[i],strokeStyle:data.datasets[0].backgroundColor[i],fontColor:'#ffffff',color:'#ffffff',index:i};});
       }}},tooltip:{...sharedTooltipConfig,titleColor:'#ffffff',bodyColor:'#ffffff',callbacks:{label:function(context){const v=context.raw;const p=totalRev>0?((v/totalRev)*100).toFixed(1):0;return ` ${Math.round(v).toLocaleString('ru-RU')} ₽ (${p}%)`;}}}}
     }
   });
@@ -959,25 +1346,43 @@ function renderEPCAnalytics() {
       scales:{y:{ticks:{color:'#94a3b8'},grid:{color:'#1e293b'}},x:{ticks:{color:'#94a3b8'},grid:{display:false}}}}
   });
 
-  // Heatmap
-  const heatData={};
-  for(const row of data){const m=row.month;const wd=new Date(row.date).getDay();const key=`${m}_${wd}`;if(!heatData[key])heatData[key]={clicks:0,revenue:0};heatData[key].clicks+=row.clicks;heatData[key].revenue+=row.revenue;}
-  let hHtml='<table class="w-full text-xs matrix-table"><thead><tr><th>Месяц</th>';
-  wdNames.forEach(d=>hHtml+=`<th class="text-center">${d}</th>`);
-  hHtml+='</tr></thead><tbody>';
-  for(const m of mLabels){
-    hHtml+=`<tr><td class="font-bold">${m}</td>`;
-    for(let wd=0;wd<7;wd++){
-      const key=`${m}_${wd}`;
-      const epc=heatData[key]&&heatData[key].clicks>0?heatData[key].revenue/heatData[key].clicks:0;
-      let bg='rgba(100,116,139,0.2)';
-      if(epc>0){const ratio=avgEpc>0?epc/avgEpc:1;if(ratio<0.7)bg='rgba(239,68,68,0.4)';else if(ratio<0.9)bg='rgba(245,158,11,0.3)';else if(ratio<1.1)bg='rgba(59,130,246,0.3)';else bg='rgba(16,185,129,0.4)';}
-      hHtml+=`<td class="text-center" style="background:${bg}" title="EPC: ${epc.toFixed(2)} ₽">${epc>0?epc.toFixed(1):'—'}</td>`;
-    }
-    hHtml+='</tr>';
+  // Heatmap: ось Y — месяц или неделя (issue 5).
+  const heatAxis = (document.getElementById('epcHeatmapAxis') || {}).value || 'month';
+  const heatData = {};
+  for (const row of data) {
+    const yKey = heatAxis === 'week' ? row.week : row.month;
+    const wd = new Date(row.date).getDay();
+    const key = `${yKey}_${wd}`;
+    if (!heatData[key]) heatData[key] = { clicks: 0, revenue: 0 };
+    heatData[key].clicks += row.clicks;
+    heatData[key].revenue += row.revenue;
   }
-  hHtml+='</tbody></table>';
-  document.getElementById('epcHeatmapContainer').innerHTML=hHtml;
+  const yLabels = heatAxis === 'week'
+    ? [...new Set(data.map(r => r.week))].sort()
+    : mLabels;
+  const yHeader = heatAxis === 'week' ? 'Неделя' : 'Месяц';
+  let hHtml = `<table class="w-full text-xs matrix-table"><thead><tr><th>${yHeader}</th>`;
+  wdNames.forEach(d => hHtml += `<th class="text-center">${d}</th>`);
+  hHtml += '</tr></thead><tbody>';
+  for (const yKey of yLabels) {
+    hHtml += `<tr><td class="font-bold">${escapeHtml(yKey)}</td>`;
+    for (let wd = 0; wd < 7; wd++) {
+      const key = `${yKey}_${wd}`;
+      const epc = heatData[key] && heatData[key].clicks > 0 ? heatData[key].revenue / heatData[key].clicks : 0;
+      let bg = 'rgba(100,116,139,0.2)';
+      if (epc > 0) {
+        const ratio = avgEpc > 0 ? epc / avgEpc : 1;
+        if (ratio < 0.7) bg = 'rgba(239,68,68,0.4)';
+        else if (ratio < 0.9) bg = 'rgba(245,158,11,0.3)';
+        else if (ratio < 1.1) bg = 'rgba(59,130,246,0.3)';
+        else bg = 'rgba(16,185,129,0.4)';
+      }
+      hHtml += `<td class="text-center" style="background:${bg}" title="EPC: ${epc.toFixed(2)} ₽">${epc > 0 ? epc.toFixed(1) : '—'}</td>`;
+    }
+    hHtml += '</tr>';
+  }
+  hHtml += '</tbody></table>';
+  document.getElementById('epcHeatmapContainer').innerHTML = hHtml;
 
   // Drops table
   const threshold=avgEpc*0.7;
@@ -1105,12 +1510,534 @@ function renderMatrixShareChart(sources,months) {
   });
 }
 
-// ========================== SORTING ==========================
+// ========================== AI INSIGHTS (issue 7) ==========================
+// Простой "rule-based AI": разбираем последний срез данных и выводим
+// текстовые подсказки. Логика построена на бизнес-эвристиках:
+//   • динамика выручки/трафика по неделям → рост/спад,
+//   • EPC просадки относительно среднего по периоду,
+//   • сравнение «ваш EPC» vs рыночный (если есть данные из offers_cache),
+//   • концентрация выручки (если 1-2 площадки дают > 70% — риск),
+//   • Sub1 с большим объёмом, но низким Approve / EPC.
+// Каждая подсказка имеет уровень: success / info / warn / danger.
+function classifyInsight(level) {
+  if (level === 'success') return { color: 'border-emerald-500 bg-emerald-500/10', icon: '✅' };
+  if (level === 'warn')    return { color: 'border-yellow-500 bg-yellow-500/10', icon: '⚠️' };
+  if (level === 'danger')  return { color: 'border-red-500 bg-red-500/10', icon: '🚨' };
+  return { color: 'border-blue-500 bg-blue-500/10', icon: '💡' };
+}
+
+function generateInsights() {
+  const insights = [];
+  if (!globalRawData.length) {
+    insights.push({ level: 'info', text: 'Нет данных для анализа за выбранный период. Загрузите статистику или измените даты.' });
+    return insights;
+  }
+  // --- 1. Общая выручка и динамика по неделям ---
+  const byWeek = {};
+  for (const r of globalRawData) {
+    if (!byWeek[r.week]) byWeek[r.week] = { rev: 0, clicks: 0, conv: 0, app: 0 };
+    byWeek[r.week].rev += r.revenue;
+    byWeek[r.week].clicks += r.clicks;
+    byWeek[r.week].conv += r.conversions;
+    byWeek[r.week].app += r.approved;
+  }
+  const weeks = Object.keys(byWeek).sort();
+  if (weeks.length >= 2) {
+    const last = byWeek[weeks[weeks.length - 1]];
+    const prev = byWeek[weeks[weeks.length - 2]];
+    const revDelta = prev.rev > 0 ? ((last.rev - prev.rev) / prev.rev * 100) : 0;
+    const clkDelta = prev.clicks > 0 ? ((last.clicks - prev.clicks) / prev.clicks * 100) : 0;
+    if (revDelta >= 10) insights.push({ level: 'success', text: `Выручка последней недели выросла на ${revDelta.toFixed(1)}% относительно предыдущей (${Math.round(prev.rev).toLocaleString('ru-RU')} ₽ → ${Math.round(last.rev).toLocaleString('ru-RU')} ₽).` });
+    else if (revDelta <= -10) insights.push({ level: 'danger', text: `Выручка последней недели упала на ${Math.abs(revDelta).toFixed(1)}% (${Math.round(prev.rev).toLocaleString('ru-RU')} ₽ → ${Math.round(last.rev).toLocaleString('ru-RU')} ₽). Проверьте Approve % и просадки EPC по офферам.` });
+    if (clkDelta <= -15 && Math.abs(revDelta) < 5) insights.push({ level: 'warn', text: `Трафик упал на ${Math.abs(clkDelta).toFixed(1)}%, но выручка осталась примерно той же — возможно, выросла конверсия. Проверьте, не пропали ли низкоконверсионные источники.` });
+    if (clkDelta >= 20 && revDelta < 5) insights.push({ level: 'warn', text: `Трафик вырос на ${clkDelta.toFixed(1)}%, но выручка не выросла — возможна просадка EPC или Approve. Изучите вкладку «EPC-анализ».` });
+  }
+  // --- 2. EPC: общий и просадки ---
+  const totClicks = globalRawData.reduce((s, r) => s + r.clicks, 0);
+  const totRev = globalRawData.reduce((s, r) => s + r.revenue, 0);
+  const totAppr = globalRawData.reduce((s, r) => s + r.approved, 0);
+  const totConv = globalRawData.reduce((s, r) => s + r.conversions, 0);
+  const overallEpc = totClicks > 0 ? totRev / totClicks : 0;
+  const overallAr = totConv > 0 ? totAppr / totConv * 100 : 0;
+  insights.push({ level: 'info', text: `Сводка по периоду: ${totClicks.toLocaleString('ru-RU')} кликов → ${totConv.toLocaleString('ru-RU')} лидов → ${totAppr.toLocaleString('ru-RU')} approved. Общий EPC = ${overallEpc.toFixed(2)} ₽, Approve = ${overallAr.toFixed(1)}%, выручка = ${Math.round(totRev).toLocaleString('ru-RU')} ₽.` });
+  // --- 3. Топ-офферы с просадкой EPC относительно среднего по периоду ---
+  const byOffer = {};
+  for (const r of globalRawData) {
+    if (!byOffer[r.offer]) byOffer[r.offer] = { clicks: 0, rev: 0, offer_id: r.offer_id || '' };
+    byOffer[r.offer].clicks += r.clicks;
+    byOffer[r.offer].rev += r.revenue;
+    if (!byOffer[r.offer].offer_id && r.offer_id) byOffer[r.offer].offer_id = r.offer_id;
+  }
+  const offerStats = Object.entries(byOffer)
+    .filter(([, v]) => v.clicks >= 100)
+    .map(([n, v]) => ({ name: n, clicks: v.clicks, rev: v.rev, epc: v.rev / v.clicks, offer_id: v.offer_id }));
+  const losers = offerStats.filter(o => o.epc < overallEpc * 0.6).sort((a, b) => b.clicks - a.clicks).slice(0, 3);
+  losers.forEach(o => {
+    // Защита от деления на околонулевой EPC: если оффер фактически "мёртв"
+    // (EPC < 0.5 ₽), формулируем сообщение без числового множителя.
+    if (o.epc < 0.5) {
+      insights.push({ level: 'danger', text: `Оффер «${o.name}» практически не приносит дохода (EPC ${o.epc.toFixed(2)} ₽ при ${o.clicks.toLocaleString('ru-RU')} кликах). Среднее по периоду — ${overallEpc.toFixed(2)} ₽. Рассмотрите паузу или замену.` });
+    } else {
+      insights.push({ level: 'danger', text: `Оффер «${o.name}» даёт EPC ${o.epc.toFixed(2)} ₽ при ${o.clicks.toLocaleString('ru-RU')} кликах — это в ${(overallEpc / o.epc).toFixed(1)} раза ниже среднего по периоду (${overallEpc.toFixed(2)} ₽). Рассмотрите паузу или замену.` });
+    }
+  });
+  // --- 4. Сравнение с рынком (issue 8 → AI) ---
+  if (Object.keys(offerMarketMap).length) {
+    const marketLag = offerStats.filter(o => {
+      const m = (o.offer_id && offerMarketMap[o.offer_id]) || offerMarketByName[o.name];
+      return m && m.market_epc > 0 && o.epc > 0 && o.epc < m.market_epc * 0.7;
+    }).slice(0, 3);
+    marketLag.forEach(o => {
+      const m = (o.offer_id && offerMarketMap[o.offer_id]) || offerMarketByName[o.name];
+      insights.push({ level: 'warn', text: `Оффер «${o.name}»: ваш EPC ${o.epc.toFixed(2)} ₽ заметно ниже рыночного ${m.market_epc.toFixed(2)} ₽. Возможные причины: качество трафика, неправильный Sub-таргетинг, технические проблемы с лендингом.` });
+    });
+    const top = offerStats.filter(o => {
+      const m = (o.offer_id && offerMarketMap[o.offer_id]) || offerMarketByName[o.name];
+      return m && m.market_epc > 0 && o.epc > m.market_epc * 1.2;
+    }).slice(0, 3);
+    top.forEach(o => {
+      const m = (o.offer_id && offerMarketMap[o.offer_id]) || offerMarketByName[o.name];
+      insights.push({ level: 'success', text: `Оффер «${o.name}»: ваш EPC ${o.epc.toFixed(2)} ₽ выше рыночного ${m.market_epc.toFixed(2)} ₽ (+${((o.epc - m.market_epc) / m.market_epc * 100).toFixed(0)}%). Имеет смысл наращивать трафик.` });
+    });
+  } else {
+    insights.push({ level: 'info', text: 'Рыночные показатели EPC ещё не загружены. Откройте вкладку «🌐 Рынок офферов» и нажмите «Обновить с Leads.su» — это даст контекст «ваш EPC vs рынок».' });
+  }
+  // --- 5. Концентрация выручки по площадкам ---
+  const bySrc = {};
+  for (const r of globalRawData) bySrc[r.source] = (bySrc[r.source] || 0) + r.revenue;
+  const srcSorted = Object.entries(bySrc).sort((a, b) => b[1] - a[1]);
+  if (srcSorted.length && totRev > 0) {
+    const topShare = srcSorted[0][1] / totRev * 100;
+    if (topShare >= 70 && srcSorted.length > 1) {
+      insights.push({ level: 'warn', text: `Концентрация: площадка «${srcSorted[0][0]}» приносит ${topShare.toFixed(1)}% всей выручки. Высокий риск зависимости — стоит развивать вторую/третью по доходности.` });
+    }
+  }
+  // --- 6. Sub1 аномалии (большой объём, но низкий EPC) ---
+  const bySub = {};
+  for (const r of globalRawData) {
+    if (!r.sub1) continue;
+    if (!bySub[r.sub1]) bySub[r.sub1] = { clicks: 0, rev: 0, conv: 0, app: 0 };
+    bySub[r.sub1].clicks += r.clicks;
+    bySub[r.sub1].rev += r.revenue;
+    bySub[r.sub1].conv += r.conversions;
+    bySub[r.sub1].app += r.approved;
+  }
+  const subList = Object.entries(bySub)
+    .filter(([, v]) => v.clicks >= 200)
+    .map(([n, v]) => ({ name: n, clicks: v.clicks, epc: v.rev / v.clicks, ar: v.conv ? v.app / v.conv * 100 : 0 }));
+  const subBad = subList.filter(s => s.epc < overallEpc * 0.5).sort((a, b) => b.clicks - a.clicks).slice(0, 2);
+  subBad.forEach(s => {
+    insights.push({ level: 'warn', text: `Sub1 «${s.name}»: ${s.clicks.toLocaleString('ru-RU')} кликов, но EPC всего ${s.epc.toFixed(2)} ₽ (среднее ${overallEpc.toFixed(2)} ₽). Возможен фрод или некачественный источник — проверьте.` });
+  });
+  // --- 7. Approve Rate ---
+  if (overallAr > 0 && overallAr < 30) {
+    insights.push({ level: 'danger', text: `Низкий Approve Rate: ${overallAr.toFixed(1)}%. Это ключевой драйвер выручки — поговорите с менеджером оффера о причинах отклонений.` });
+  }
+  return insights;
+}
+
+function renderAIInsights() {
+  const container = document.getElementById('aiInsightsContainer');
+  if (!container) return;
+  const insights = generateInsights();
+  container.innerHTML = insights.map(i => {
+    const c = classifyInsight(i.level);
+    return `<div class="border-l-4 ${c.color} p-3 rounded text-sm"><span class="mr-2">${c.icon}</span>${escapeHtml(i.text)}</div>`;
+  }).join('');
+  // Drops table
+  const dropsTbody = document.querySelector('#aiDropsTable tbody');
+  if (dropsTbody) {
+    const byDate = {};
+    for (const r of globalRawData) {
+      if (!byDate[r.date]) byDate[r.date] = { clicks: 0, rev: 0 };
+      byDate[r.date].clicks += r.clicks;
+      byDate[r.date].rev += r.revenue;
+    }
+    const dates = Object.keys(byDate).sort();
+    const epcs = dates.map(d => ({ date: d, epc: byDate[d].clicks > 0 ? byDate[d].rev / byDate[d].clicks : 0 }));
+    const validEpcs = epcs.filter(e => e.epc > 0);
+    const avg = validEpcs.length ? validEpcs.reduce((s, e) => s + e.epc, 0) / validEpcs.length : 0;
+    const drops = validEpcs.map(e => ({ ...e, dev: avg > 0 ? (e.epc - avg) / avg * 100 : 0 }))
+      .filter(e => e.dev < -20).sort((a, b) => a.dev - b.dev).slice(0, 5);
+    dropsTbody.innerHTML = drops.length
+      ? drops.map(d => `<tr><td>${d.date}</td><td class="text-right text-red-400 font-bold">${d.epc.toFixed(2)} ₽</td><td class="text-right text-red-400">${d.dev.toFixed(1)}%</td></tr>`).join('')
+      : '<tr><td colspan="3" class="text-center text-slate-500 py-2">Просадок не обнаружено</td></tr>';
+  }
+  // Sub1 anomalies table
+  const subTbody = document.querySelector('#aiSub1Table tbody');
+  if (subTbody) {
+    const totClicks = globalRawData.reduce((s, r) => s + r.clicks, 0);
+    const totRev = globalRawData.reduce((s, r) => s + r.revenue, 0);
+    const overallEpc = totClicks > 0 ? totRev / totClicks : 0;
+    const bySub = {};
+    for (const r of globalRawData) {
+      if (!r.sub1) continue;
+      if (!bySub[r.sub1]) bySub[r.sub1] = { clicks: 0, rev: 0 };
+      bySub[r.sub1].clicks += r.clicks;
+      bySub[r.sub1].rev += r.revenue;
+    }
+    const rows = Object.entries(bySub)
+      .filter(([, v]) => v.clicks >= 50)
+      .map(([n, v]) => ({ name: n, clicks: v.clicks, epc: v.clicks > 0 ? v.rev / v.clicks : 0 }))
+      .map(r => {
+        let signal = '<span class="text-slate-400">в норме</span>';
+        if (overallEpc > 0 && r.epc < overallEpc * 0.5) signal = '<span class="text-red-400">слабый источник</span>';
+        else if (overallEpc > 0 && r.epc > overallEpc * 1.5) signal = '<span class="text-emerald-400">топ источник</span>';
+        return { ...r, signal };
+      })
+      .sort((a, b) => b.clicks - a.clicks).slice(0, 10);
+    subTbody.innerHTML = rows.length
+      ? rows.map(r => `<tr><td>${escapeHtml(r.name)}</td><td class="text-right">${r.clicks.toLocaleString('ru-RU')}</td><td class="text-right font-semibold">${r.epc.toFixed(2)} ₽</td><td class="text-right">${r.signal}</td></tr>`).join('')
+      : '<tr><td colspan="4" class="text-center text-slate-500 py-2">Нет данных Sub1</td></tr>';
+  }
+}
+
+// ========================== ГЛУБОКИЙ AI-АНАЛИЗ ==========================
+// Собираем компактный numeric-payload (только цифры, без PII), сервер вызывает
+// внешнего AI-провайдера (название провайдера/модели намеренно не светим в UI)
+// и возвращает структурированный JSON. Здесь — сборка payload, вызов и рендер.
+
+// Помощник: округлить число до n знаков (или вернуть 0).
+function _r(v, d = 2) {
+  const n = Number(v);
+  if (!isFinite(n)) return 0;
+  const k = Math.pow(10, d);
+  return Math.round(n * k) / k;
+}
+
+// Площадки, дающие суммарно ~99% выручки (но не более 10).
+// Мелкие игнорируем — для AI они шум.
+function _topPlatformsByRevenue(rows, sharePct = 99, hardCap = 10) {
+  const by = {};
+  for (const r of rows) {
+    const k = r.source || 'Unknown';
+    if (!by[k]) by[k] = { name: k, clicks: 0, conversions: 0, approved: 0, revenue: 0 };
+    by[k].clicks += r.clicks; by[k].conversions += r.conversions;
+    by[k].approved += r.approved; by[k].revenue += r.revenue;
+  }
+  const total = Object.values(by).reduce((s, v) => s + v.revenue, 0) || 1;
+  const sorted = Object.values(by).sort((a, b) => b.revenue - a.revenue);
+  const out = [];
+  let cum = 0;
+  for (const p of sorted) {
+    out.push({
+      name: p.name,
+      clicks: p.clicks,
+      conversions: p.conversions,
+      approved: p.approved,
+      revenue: _r(p.revenue, 2),
+      revenue_share_pct: _r(p.revenue / total * 100, 2),
+      epc: _r(p.clicks ? p.revenue / p.clicks : 0, 2),
+      cr_pct: _r(p.clicks ? p.conversions / p.clicks * 100 : 0, 2),
+      approve_rate_pct: _r(p.conversions ? p.approved / p.conversions * 100 : 0, 2),
+    });
+    cum += p.revenue / total * 100;
+    if (cum >= sharePct && out.length >= 1) break;
+    if (out.length >= hardCap) break;
+  }
+  return out;
+}
+
+function buildAIPayload() {
+  const rows = globalRawData;
+  if (!rows.length) return null;
+
+  // Период
+  const dates = rows.map(r => r.date).sort();
+  const dateFrom = dates[0], dateTo = dates[dates.length - 1];
+
+  // Тоталы
+  const tot = rows.reduce((a, r) => {
+    a.clicks += r.clicks; a.conversions += r.conversions;
+    a.approved += r.approved; a.revenue += r.revenue;
+    return a;
+  }, { clicks: 0, conversions: 0, approved: 0, revenue: 0 });
+  const epc = tot.clicks ? tot.revenue / tot.clicks : 0;
+  const cr  = tot.clicks ? tot.conversions / tot.clicks * 100 : 0;
+  const ar  = tot.conversions ? tot.approved / tot.conversions * 100 : 0;
+
+  // Тренды по неделям и месяцам
+  const buildSeries = (key) => {
+    const map = {};
+    for (const r of rows) {
+      const k = r[key];
+      if (!map[k]) map[k] = { clicks: 0, conversions: 0, approved: 0, revenue: 0 };
+      map[k].clicks += r.clicks; map[k].conversions += r.conversions;
+      map[k].approved += r.approved; map[k].revenue += r.revenue;
+    }
+    return Object.entries(map).sort((a, b) => a[0] < b[0] ? -1 : 1).map(([p, v]) => ({
+      period: String(p),
+      clicks: v.clicks,
+      revenue: _r(v.revenue, 2),
+      epc: _r(v.clicks ? v.revenue / v.clicks : 0, 2),
+      approve_rate_pct: _r(v.conversions ? v.approved / v.conversions * 100 : 0, 2),
+      cr_pct: _r(v.clicks ? v.conversions / v.clicks * 100 : 0, 2),
+    }));
+  };
+
+  // Площадки — только те, что дают ~99% выручки (≤10 шт.)
+  const topPlatforms = _topPlatformsByRevenue(rows, 99, 10);
+
+  // Офферы: топ по выручке, и underperformers — большой объём, но низкий EPC.
+  const offMap = {};
+  for (const r of rows) {
+    const k = r.offer || 'Unknown';
+    if (!offMap[k]) offMap[k] = { name: k, clicks: 0, conversions: 0, approved: 0, revenue: 0, offer_id: r.offer_id || '' };
+    offMap[k].clicks += r.clicks; offMap[k].conversions += r.conversions;
+    offMap[k].approved += r.approved; offMap[k].revenue += r.revenue;
+  }
+  const offerArr = Object.values(offMap).map(o => ({
+    name: o.name,
+    clicks: o.clicks,
+    revenue: _r(o.revenue, 2),
+    epc: _r(o.clicks ? o.revenue / o.clicks : 0, 2),
+    cr_pct: _r(o.clicks ? o.conversions / o.clicks * 100 : 0, 2),
+    approve_rate_pct: _r(o.conversions ? o.approved / o.conversions * 100 : 0, 2),
+    offer_id: o.offer_id,
+  }));
+  const offersTop = [...offerArr].sort((a, b) => b.revenue - a.revenue).slice(0, 15);
+  const offersUnder = offerArr.filter(o => o.clicks >= 100 && epc > 0 && o.epc < epc * 0.6)
+    .sort((a, b) => b.clicks - a.clicks).slice(0, 10);
+
+  // Сравнение с рынком (если есть кэш market EPC)
+  const marketCompare = [];
+  for (const o of offerArr) {
+    const m = (o.offer_id && offerMarketMap[o.offer_id]) || offerMarketByName[o.name];
+    if (!m || !m.market_epc) continue;
+    const delta = o.epc - m.market_epc;
+    marketCompare.push({
+      name: o.name,
+      clicks: o.clicks,
+      your_epc: o.epc,
+      market_epc: _r(m.market_epc, 2),
+      delta_pct: m.market_epc ? _r(delta / m.market_epc * 100, 1) : 0,
+      revenue_gap_potential: _r(delta < 0 ? o.clicks * Math.abs(delta) : 0, 0),
+    });
+  }
+  marketCompare.sort((a, b) => Math.abs(b.delta_pct) - Math.abs(a.delta_pct));
+
+  // Sub1 аномалии
+  const subMap = {};
+  for (const r of rows) {
+    if (!r.sub1) continue;
+    if (!subMap[r.sub1]) subMap[r.sub1] = { clicks: 0, conversions: 0, approved: 0, revenue: 0 };
+    subMap[r.sub1].clicks += r.clicks; subMap[r.sub1].conversions += r.conversions;
+    subMap[r.sub1].approved += r.approved; subMap[r.sub1].revenue += r.revenue;
+  }
+  const sub1Anom = Object.entries(subMap).filter(([, v]) => v.clicks >= 200).map(([n, v]) => ({
+    name: n,
+    clicks: v.clicks,
+    epc: _r(v.clicks ? v.revenue / v.clicks : 0, 2),
+    approve_rate_pct: _r(v.conversions ? v.approved / v.conversions * 100 : 0, 2),
+  })).sort((a, b) => a.epc - b.epc).slice(0, 15);
+
+  // Последние 30 дней — для прогноза
+  const byDate = {};
+  for (const r of rows) {
+    if (!byDate[r.date]) byDate[r.date] = { clicks: 0, revenue: 0, conversions: 0, approved: 0 };
+    byDate[r.date].clicks += r.clicks; byDate[r.date].revenue += r.revenue;
+    byDate[r.date].conversions += r.conversions; byDate[r.date].approved += r.approved;
+  }
+  const dailyRecent = Object.entries(byDate).sort((a, b) => a[0] < b[0] ? 1 : -1).slice(0, 30).reverse().map(([d, v]) => ({
+    date: d, clicks: v.clicks, revenue: _r(v.revenue, 2),
+    epc: _r(v.clicks ? v.revenue / v.clicks : 0, 2),
+  }));
+
+  return {
+    period: { from: dateFrom, to: dateTo, days: new Set(dates).size },
+    kpi: {
+      revenue: _r(tot.revenue, 2),
+      clicks: tot.clicks,
+      conversions: tot.conversions,
+      approved: tot.approved,
+      epc: _r(epc, 2),
+      cr_pct: _r(cr, 2),
+      approve_rate_pct: _r(ar, 2),
+    },
+    top_platforms: topPlatforms,
+    offers_top: offersTop,
+    offers_underperforming: offersUnder,
+    market_compare: marketCompare.slice(0, 25),
+    sub1_anomalies: sub1Anom,
+    weekly_trend: buildSeries('week'),
+    monthly_trend: buildSeries('month'),
+    daily_recent: dailyRecent,
+  };
+}
+
+async function runDeepAIAnalysis() {
+  const btn = document.getElementById('aiDeepBtn');
+  const statusEl = document.getElementById('aiDeepStatus');
+  const resEl = document.getElementById('aiDeepResult');
+  if (!statusEl || !resEl) return;
+
+  if (!globalRawData.length) {
+    statusEl.innerHTML = '<span class="text-yellow-400">Нет данных за выбранный период. Загрузите статистику или измените даты.</span>';
+    return;
+  }
+
+  const payload = buildAIPayload();
+  if (!payload) {
+    statusEl.innerHTML = '<span class="text-yellow-400">Не удалось собрать данные для анализа.</span>';
+    return;
+  }
+
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Анализирую...'; }
+  statusEl.innerHTML = '<span class="text-slate-400">Идёт глубокий анализ — это может занять до минуты...</span>';
+  resEl.classList.add('hidden');
+
+  try {
+    const res = await fetch(`${API_BASE}?action=ai_analyze`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const json = await res.json();
+    if (json.status !== 'success' || !json.data) {
+      throw new Error(json.error || 'Не удалось получить результат');
+    }
+    renderDeepAIResult(json.data);
+    statusEl.innerHTML = `<span class="text-emerald-400">✅ Готово. Период: ${payload.period.from} — ${payload.period.to}, площадок в анализе: ${payload.top_platforms.length} (≈99% выручки).</span>`;
+  } catch (e) {
+    console.warn('Deep AI analysis failed:', e);
+    statusEl.innerHTML = '<span class="text-red-400">⚠️ Анализ временно недоступен. Попробуйте ещё раз через минуту.</span>';
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '⚡ Запустить анализ'; }
+  }
+}
+
+function renderDeepAIResult(d) {
+  const resEl = document.getElementById('aiDeepResult');
+  if (!resEl) return;
+  const fmtRub = v => Math.round(Number(v) || 0).toLocaleString('ru-RU') + ' ₽';
+  const fmtNum = v => Math.round(Number(v) || 0).toLocaleString('ru-RU');
+  const fmtPct = v => (Number(v) || 0).toFixed(1) + '%';
+
+  const prio = p => {
+    if (p === 'high') return '<span class="px-2 py-0.5 rounded text-xs bg-red-500/20 text-red-300 font-semibold">HIGH</span>';
+    if (p === 'medium') return '<span class="px-2 py-0.5 rounded text-xs bg-yellow-500/20 text-yellow-300 font-semibold">MED</span>';
+    return '<span class="px-2 py-0.5 rounded text-xs bg-blue-500/20 text-blue-300 font-semibold">LOW</span>';
+  };
+  const statusBadge = s => {
+    const map = {
+      grow:   ['bg-emerald-500/20 text-emerald-300', '🚀 Масштабировать'],
+      stable: ['bg-blue-500/20 text-blue-300',       '⚖️ Удерживать'],
+      watch:  ['bg-yellow-500/20 text-yellow-300',   '👀 Наблюдать'],
+      risk:   ['bg-red-500/20 text-red-300',         '⚠️ Риск'],
+    };
+    const [cls, label] = map[s] || ['bg-slate-700 text-slate-200', s || '—'];
+    return `<span class="px-2 py-0.5 rounded text-xs font-semibold ${cls}">${label}</span>`;
+  };
+  const conf = c => {
+    if (c === 'high') return '<span class="text-emerald-300">высокая</span>';
+    if (c === 'medium') return '<span class="text-yellow-300">средняя</span>';
+    return '<span class="text-slate-400">низкая</span>';
+  };
+
+  const summary = d.summary
+    ? `<div class="border-l-4 border-blue-500 bg-blue-500/10 p-4 rounded"><div class="text-xs uppercase text-slate-400 mb-1">📌 Резюме</div><div class="text-sm text-white leading-relaxed">${escapeHtml(d.summary)}</div></div>`
+    : '';
+
+  const recs = Array.isArray(d.recommendations) ? d.recommendations : [];
+  const recsHtml = recs.length ? `
+    <div>
+      <h3 class="text-white font-bold mb-3">🎯 Конкретные рекомендации</h3>
+      <div class="space-y-2">
+        ${recs.map(r => `
+          <div class="border border-slate-700 rounded p-3 bg-slate-900/50">
+            <div class="flex justify-between items-start gap-3 mb-1">
+              <div class="font-semibold text-white">${escapeHtml(r.title || '')}</div>
+              ${prio(r.priority)}
+            </div>
+            <div class="text-sm text-slate-200 mb-1"><span class="text-slate-400">Действие:</span> ${escapeHtml(r.action || '')}</div>
+            ${r.expected_impact ? `<div class="text-sm text-emerald-300"><span class="text-slate-400">Ожидаемый эффект:</span> ${escapeHtml(r.expected_impact)}</div>` : ''}
+            ${r.evidence ? `<div class="text-xs text-slate-400 mt-1">📊 ${escapeHtml(r.evidence)}</div>` : ''}
+          </div>
+        `).join('')}
+      </div>
+    </div>` : '';
+
+  const fc = d.forecast || {};
+  const fcCard = (label, p) => p ? `
+    <div class="border border-slate-700 rounded p-3 bg-slate-900/50">
+      <div class="text-xs uppercase text-slate-400 mb-2">${label}</div>
+      <div class="grid grid-cols-2 gap-2 text-sm">
+        <div><span class="text-slate-400">Выручка:</span> <strong class="text-emerald-300">${fmtRub(p.revenue)}</strong></div>
+        <div><span class="text-slate-400">Клики:</span> <strong>${fmtNum(p.clicks)}</strong></div>
+        <div><span class="text-slate-400">EPC:</span> <strong>${(Number(p.epc)||0).toFixed(2)} ₽</strong></div>
+        <div><span class="text-slate-400">Approve:</span> <strong>${fmtPct(p.approve_rate)}</strong></div>
+      </div>
+      <div class="text-xs text-slate-400 mt-2">Уверенность: ${conf(p.confidence)}${p.basis ? ` · ${escapeHtml(p.basis)}` : ''}</div>
+    </div>` : '';
+  const forecastHtml = (fc.period_7d || fc.period_30d) ? `
+    <div>
+      <h3 class="text-white font-bold mb-3">📈 Прогноз показателей</h3>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+        ${fcCard('Следующие 7 дней', fc.period_7d)}
+        ${fcCard('Следующие 30 дней', fc.period_30d)}
+      </div>
+    </div>` : '';
+
+  const pb = Array.isArray(d.platforms_breakdown) ? d.platforms_breakdown : [];
+  const platformsHtml = pb.length ? `
+    <div>
+      <h3 class="text-white font-bold mb-3">🏬 Разбор по ключевым площадкам (≈99% выручки)</h3>
+      <div class="overflow-auto"><table class="w-full text-sm">
+        <thead><tr class="text-left text-slate-400">
+          <th class="py-1">Площадка</th>
+          <th class="text-right">Доля выручки</th>
+          <th>Статус</th>
+          <th>Инсайт</th>
+          <th>Действие</th>
+        </tr></thead>
+        <tbody>
+          ${pb.map(p => `
+            <tr class="border-t border-slate-800">
+              <td class="py-2 font-semibold">${escapeHtml(p.name || '')}</td>
+              <td class="text-right">${fmtPct(p.revenue_share_pct)}</td>
+              <td>${statusBadge(p.status)}</td>
+              <td class="text-slate-200">${escapeHtml(p.insight || '')}</td>
+              <td class="text-emerald-300">${escapeHtml(p.action || '')}</td>
+            </tr>`).join('')}
+        </tbody>
+      </table></div>
+    </div>` : '';
+
+  const kd = Array.isArray(d.key_decisions) ? d.key_decisions : [];
+  const kdHtml = kd.length ? `
+    <div>
+      <h3 class="text-white font-bold mb-3">🧭 Ключевые решения для роста выручки</h3>
+      <div class="space-y-2">
+        ${kd.map(k => `
+          <div class="border-l-4 border-emerald-500 bg-emerald-500/5 p-3 rounded">
+            <div class="font-semibold text-white">${escapeHtml(k.decision || '')}</div>
+            ${k.rationale ? `<div class="text-sm text-slate-300 mt-1"><span class="text-slate-400">Обоснование:</span> ${escapeHtml(k.rationale)}</div>` : ''}
+            ${k.kpi_impact ? `<div class="text-sm text-emerald-300 mt-1"><span class="text-slate-400">Эффект на KPI:</span> ${escapeHtml(k.kpi_impact)}</div>` : ''}
+          </div>`).join('')}
+      </div>
+    </div>` : '';
+
+  const risks = Array.isArray(d.risks) ? d.risks : [];
+  const risksHtml = risks.length ? `
+    <div>
+      <h3 class="text-white font-bold mb-3">⚠️ Риски и аномалии</h3>
+      <ul class="space-y-1 text-sm">
+        ${risks.map(r => `<li class="border-l-4 border-red-500 bg-red-500/5 p-2 rounded">${escapeHtml(String(r))}</li>`).join('')}
+      </ul>
+    </div>` : '';
+
+  resEl.innerHTML = [summary, recsHtml, forecastHtml, platformsHtml, kdHtml, risksHtml].filter(Boolean).join('');
+  resEl.classList.remove('hidden');
+}
+
+
 function sortTable(tableId, field) {
   if (!tableSort[tableId]) tableSort[tableId] = { field, desc: true };
   if (tableSort[tableId].field === field) tableSort[tableId].desc = !tableSort[tableId].desc;
   else { tableSort[tableId].field = field; tableSort[tableId].desc = true; }
   if (tableId === 'epcDropsTable') renderEPCAnalytics();
+  else if (tableId === 'sub1Table') renderSub1Table();
+  else if (tableId === 'marketOffersTable') renderMarketTable();
   else renderTables();
 }
 
