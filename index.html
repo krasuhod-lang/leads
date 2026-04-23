@@ -407,7 +407,7 @@
         <h2 class="text-white font-bold text-lg">🚀 Глубокий AI-анализ</h2>
         <button id="aiDeepBtn" class="btn" onclick="runDeepAIAnalysis()">⚡ Запустить анализ</button>
       </div>
-      <p class="text-sm text-slate-400 mb-4">Анализирует выбранный период и площадки, дающие суммарно ~99% выручки (мелкие игнорируются). Возвращает конкретные рекомендации, прогноз показателей, ключевые управленческие решения для роста выручки. Работает по текущему диапазону дат.</p>
+      <p class="text-sm text-slate-400 mb-4">Анализирует выбранный период и площадки, дающие суммарно ~99% выручки (мелкие игнорируются). Возвращает структурированные блоки: пути конверсий и слабые точки воронки, поофферный анализ vs рыночный EPC с прогнозом и watchlist для роста доходности, идеи кросс-сейла другим продуктам займовой аудитории, диагностика резких просадок EPC ото дня ко дню с обоснованием и рекомендуемым оффером для замены — а также общие рекомендации, прогноз показателей и ключевые управленческие решения. Работает по текущему диапазону дат.</p>
       <div id="aiDeepStatus" class="text-sm text-slate-400 mb-3"></div>
       <div id="aiDeepResult" class="space-y-5 hidden"></div>
     </div>
@@ -689,17 +689,26 @@ function processDataFromDb(rows) {
   }));
 }
 
-async function loadFromAPI() {
+async function loadFromAPI(opts = {}) {
+  // silent=true → авто-режим: не блокируем кнопку, не показываем alert при ошибке,
+  // прогресс не рисуем (фоновый сценарий "автообновление по такой же логике").
+  // ВАЖНО: вся остальная логика — точно та же, что и при ручном клике, чтобы
+  // передача переменных не нарушалась ни в одном месте.
+  const silent = !!opts.silent;
   const token = HARDCODED_TOKEN;
   const dFrom = document.getElementById('dateFrom').value;
   const dTo = document.getElementById('dateTo').value;
   const btn = document.getElementById('btnLoadAPI');
-  const originalText = btn.innerHTML;
-  if (!dFrom || !dTo) return alert('Укажите даты');
-  btn.disabled = true;
-  updateProgress(5, 'Проверка наличия данных...');
+  const originalText = btn ? btn.innerHTML : '';
+  if (!dFrom || !dTo) {
+    if (!silent) alert('Укажите даты');
+    return false;
+  }
+  if (btn && !silent) btn.disabled = true;
+  const prog = (pct, text) => { if (!silent) updateProgress(pct, text); };
+  prog(5, 'Проверка наличия данных...');
   try {
-    updateProgress(10, 'Получение структуры API...');
+    prog(10, 'Получение структуры API...');
     // Fetch offers with robust error handling.
     // ВАЖНО: max limit на /webmaster/offers по докам = 500. Используем fetchAll,
     // который сам пагинирует с limit=500.
@@ -726,7 +735,7 @@ async function loadFromAPI() {
       let loaded = 0;
       for (const pid of activePlatformIds) {
         let pct = 10 + Math.round((loaded / activePlatformIds.length) * 80);
-        updateProgress(pct, `Загрузка отчетов: площадка ${loaded + 1} из ${activePlatformIds.length}`);
+        prog(pct, `Загрузка отчетов: площадка ${loaded + 1} из ${activePlatformIds.length}`);
         const pData = await fetchAll('reports/summary', {
           token, start_date: `${dFrom} 00:00:00`, end_date: `${dTo} 23:59:59`,
           grouping: 'day', field: 'offer_id,source,aff_sub1', platform_id: pid
@@ -736,13 +745,13 @@ async function loadFromAPI() {
         loaded++;
       }
     } else {
-      updateProgress(50, 'Загрузка общего отчета...');
+      prog(50, 'Загрузка общего отчета...');
       reportData = await fetchAll('reports/summary', {
         token, start_date: `${dFrom} 00:00:00`, end_date: `${dTo} 23:59:59`,
         grouping: 'day', field: 'offer_id,source,aff_sub1'
       });
     }
-    updateProgress(95, 'Обработка данных...');
+    prog(95, 'Обработка данных...');
     originalData = [];
     for (const row of reportData) {
       const rawDate = row.period_day || row.period_hour || row.periodday || row.period || row.date || null;
@@ -794,14 +803,20 @@ async function loadFromAPI() {
     await loadOfferMarketData();
     // Refresh dashboard with loaded data
     await applyGlobalFilters();
-    updateProgress(100, 'Готово!');
-    setTimeout(() => updateProgress(0), 1500);
+    prog(100, 'Готово!');
+    if (!silent) setTimeout(() => updateProgress(0), 1500);
+    return true;
   } catch (e) {
     console.error('API ERROR:', e);
-    alert(`Ошибка загрузки:\n${e.message}`);
-    updateProgress(0);
+    if (!silent) {
+      alert(`Ошибка загрузки:\n${e.message}`);
+      updateProgress(0);
+    } else {
+      console.warn('[Auto-refresh] loadFromAPI failed:', e.message);
+    }
+    return false;
   } finally {
-    btn.disabled = false; btn.innerHTML = originalText;
+    if (btn && !silent) { btn.disabled = false; btn.innerHTML = originalText; }
   }
 }
 
@@ -828,20 +843,23 @@ async function runAutoRefresh(force = false) {
   const last = Number(localStorage.getItem(LAST_REFRESH_KEY) || 0);
   if (!force && last && (now - last) < AUTO_REFRESH_INTERVAL_MS) return;
   console.log('[Auto-refresh] Триггер обновления данных...');
-  // ВАЖНО: API leads.su интерпретирует end_date без времени как ИСКЛЮЧИТЕЛЬНУЮ
-  // границу, и сегодняшний день обрезается. Дописываем явное "00:00:00" /
-  // "23:59:59", чтобы автообновление подтягивало в т.ч. сегодняшние данные.
-  const apiStart = encodeURIComponent(`${dFrom} 00:00:00`);
-  const apiEnd   = encodeURIComponent(`${dTo} 23:59:59`);
-  // Trigger server-side Leads.su update (like cron)
+  // ВАЖНО: автообновление должно использовать ровно ту же логику, что и
+  // ручная кнопка «Загрузить данные» — иначе передача переменных
+  // (token, dateFrom/dateTo, platform_id, fields, source_id, offer_id, sub1)
+  // расходится между ручным и авто-сценариями. Поэтому вызываем тот же
+  // loadFromAPI, но в silent-режиме (без alert и без блокировки кнопки).
+  let leadsOk = false;
   try {
-    await fetch(`${API_BASE}?action=update_stats&token=${HARDCODED_TOKEN}&start_date=${apiStart}&end_date=${apiEnd}&grouping=day&field=offer_id,source,aff_sub1`);
-  } catch(e) { console.warn('[Auto-refresh] Leads.su update error:', e); }
+    leadsOk = await loadFromAPI({ silent: true });
+  } catch (e) {
+    console.warn('[Auto-refresh] loadFromAPI throw:', e);
+  }
   // Yandex Metrika ждёт даты вида YYYY-MM-DD без времени.
   try {
     await fetch(`${API_BASE}?action=ym_fetch_banner&start_date=${dFrom}&end_date=${dTo}`);
   } catch(e) { console.warn('[Auto-refresh] YM update error:', e); }
-  // Refresh market EPC cache
+  // Refresh market EPC cache (на случай если loadFromAPI не дошёл до этого шага
+  // из-за ошибки на стороне leads.su — рынок офферов всё равно подтягиваем).
   try {
     await fetch(`${API_BASE}?action=fetch_offers_market&token=${HARDCODED_TOKEN}`);
   } catch(e) { console.warn('[Auto-refresh] Offers market update error:', e); }
@@ -851,9 +869,13 @@ async function runAutoRefresh(force = false) {
   try { await fetch(`${API_BASE}?action=tg_check_alerts`); }
   catch(e) { console.warn('[Auto-refresh] TG alerts error:', e); }
   localStorage.setItem(LAST_REFRESH_KEY, String(Date.now()));
-  // Then reload from DB and refresh all dashboards
-  await autoLoadSavedStats();
+  // Если loadFromAPI не сработал (сетевая ошибка/таймаут) — fallback:
+  // подтянуть как минимум сохранённый снапшот из БД и обновить дашборд.
+  if (!leadsOk) {
+    try { await autoLoadSavedStats(); } catch(e) { console.warn('[Auto-refresh] autoLoadSavedStats error:', e); }
+  }
   updateNextRefreshTime();
+  console.log('[Auto-refresh] Готово.');
 }
 
 function startAutoRefresh() {
@@ -2038,6 +2060,55 @@ function buildAIPayload() {
     epc: _r(v.clicks ? v.revenue / v.clicks : 0, 2),
   }));
 
+  // Дневной EPC по топ-офферам (для блока epc_drops и offers_market_analysis):
+  // берём топ-12 офферов по выручке и для каждого строим дневной ряд EPC
+  // за последние 30 дат, чтобы AI мог обосновать просадки и предложить
+  // замену из ретроданных.
+  const topOfferNames = [...offerArr].sort((a, b) => b.revenue - a.revenue).slice(0, 12).map(o => o.name);
+  const offerDateMap = {};
+  for (const r of rows) {
+    if (!topOfferNames.includes(r.offer)) continue;
+    const k = r.offer;
+    if (!offerDateMap[k]) offerDateMap[k] = {};
+    if (!offerDateMap[k][r.date]) offerDateMap[k][r.date] = { clicks: 0, revenue: 0, conversions: 0, approved: 0 };
+    offerDateMap[k][r.date].clicks += r.clicks;
+    offerDateMap[k][r.date].revenue += r.revenue;
+    offerDateMap[k][r.date].conversions += r.conversions;
+    offerDateMap[k][r.date].approved += r.approved;
+  }
+  const offersDailyEpc = topOfferNames.map(name => {
+    const series = Object.entries(offerDateMap[name] || {})
+      .sort((a, b) => a[0] < b[0] ? -1 : 1)
+      .slice(-30)
+      .map(([d, v]) => ({
+        date: d,
+        clicks: v.clicks,
+        revenue: _r(v.revenue, 2),
+        epc: _r(v.clicks ? v.revenue / v.clicks : 0, 2),
+        approve_rate_pct: _r(v.conversions ? v.approved / v.conversions * 100 : 0, 2),
+      }));
+    return { name, series };
+  });
+
+  // Подсказки о просадках EPC день-к-дню (>=20% относительно прошлого дня),
+  // чтобы AI мог сразу обосновать причины и подобрать замену из ретроданных.
+  const epcDropsSignals = [];
+  for (let i = 1; i < dailyRecent.length; i++) {
+    const prev = dailyRecent[i - 1];
+    const curr = dailyRecent[i];
+    if (!prev.epc || !curr.epc) continue;
+    const dropPct = _r((curr.epc - prev.epc) / prev.epc * 100, 1);
+    if (dropPct <= -20) {
+      epcDropsSignals.push({
+        prev_date: prev.date, date: curr.date,
+        prev_epc: prev.epc, curr_epc: curr.epc,
+        drop_pct: dropPct,
+        prev_clicks: prev.clicks, curr_clicks: curr.clicks,
+        prev_revenue: prev.revenue, curr_revenue: curr.revenue,
+      });
+    }
+  }
+
   return {
     period: { from: dateFrom, to: dateTo, days: new Set(dates).size },
     kpi: {
@@ -2057,6 +2128,8 @@ function buildAIPayload() {
     weekly_trend: buildSeries('week'),
     monthly_trend: buildSeries('month'),
     daily_recent: dailyRecent,
+    offers_daily_epc: offersDailyEpc,
+    epc_drops_signals: epcDropsSignals,
   };
 }
 
@@ -2221,7 +2294,175 @@ function renderDeepAIResult(d) {
       </ul>
     </div>` : '';
 
-  resEl.innerHTML = [summary, recsHtml, forecastHtml, platformsHtml, kdHtml, risksHtml].filter(Boolean).join('');
+  // ===== Блок 1: Пути конверсий и слабые точки =====
+  const cp = d.conversion_paths || null;
+  const sevBadge = s => {
+    if (s === 'high') return '<span class="px-2 py-0.5 rounded text-xs bg-red-500/20 text-red-300 font-semibold">HIGH</span>';
+    if (s === 'medium') return '<span class="px-2 py-0.5 rounded text-xs bg-yellow-500/20 text-yellow-300 font-semibold">MED</span>';
+    return '<span class="px-2 py-0.5 rounded text-xs bg-blue-500/20 text-blue-300 font-semibold">LOW</span>';
+  };
+  const stageLabel = s => ({
+    click_to_conversion: 'Клик → Конверсия',
+    conversion_to_approve: 'Конверсия → Approve',
+    approve_to_revenue: 'Approve → Выручка',
+  }[s] || s || '—');
+  const cpHtml = cp ? `
+    <div>
+      <h3 class="text-white font-bold mb-3">🧪 Пути конверсий и слабые точки</h3>
+      ${cp.funnel ? `
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3">
+          <div class="border border-slate-700 rounded p-3 bg-slate-900/50"><div class="text-xs text-slate-400">Клики</div><div class="text-xl font-bold text-white">${fmtNum(cp.funnel.clicks)}</div></div>
+          <div class="border border-slate-700 rounded p-3 bg-slate-900/50"><div class="text-xs text-slate-400">Конверсии</div><div class="text-xl font-bold text-white">${fmtNum(cp.funnel.conversions)} <span class="text-xs text-slate-400">(${fmtPct(cp.funnel.cr_pct)})</span></div></div>
+          <div class="border border-slate-700 rounded p-3 bg-slate-900/50"><div class="text-xs text-slate-400">Approved</div><div class="text-xl font-bold text-white">${fmtNum(cp.funnel.approved)} <span class="text-xs text-slate-400">(${fmtPct(cp.funnel.approve_rate_pct)})</span></div></div>
+          <div class="border border-slate-700 rounded p-3 bg-slate-900/50"><div class="text-xs text-slate-400">Выручка / EPC</div><div class="text-xl font-bold text-emerald-300">${fmtRub(cp.funnel.revenue)}</div><div class="text-xs text-slate-400">EPC ${(Number(cp.funnel.epc)||0).toFixed(2)} ₽</div></div>
+        </div>` : ''}
+      ${Array.isArray(cp.weak_points) && cp.weak_points.length ? `
+        <div class="space-y-2">
+          ${cp.weak_points.map(w => `
+            <div class="border border-slate-700 rounded p-3 bg-slate-900/50">
+              <div class="flex justify-between items-start gap-3 mb-1">
+                <div class="font-semibold text-white">${escapeHtml(stageLabel(w.stage))} · ${escapeHtml(w.where || '')}</div>
+                ${sevBadge(w.severity)}
+              </div>
+              <div class="text-sm text-slate-300"><span class="text-slate-400">Метрика:</span> ${escapeHtml(w.metric || '')} = <strong>${escapeHtml(String(w.value ?? ''))}</strong> · бенчмарк <strong>${escapeHtml(String(w.benchmark ?? ''))}</strong></div>
+              ${w.root_cause ? `<div class="text-sm text-slate-200 mt-1"><span class="text-slate-400">Причина:</span> ${escapeHtml(w.root_cause)}</div>` : ''}
+              ${w.fix ? `<div class="text-sm text-emerald-300 mt-1"><span class="text-slate-400">Что сделать:</span> ${escapeHtml(w.fix)}</div>` : ''}
+              ${w.expected_uplift ? `<div class="text-xs text-slate-400 mt-1">Ожидаемый эффект: ${escapeHtml(w.expected_uplift)}</div>` : ''}
+            </div>`).join('')}
+        </div>` : '<div class="text-sm text-slate-400">Слабых точек воронки не выявлено.</div>'}
+      ${cp.summary ? `<div class="text-xs text-slate-400 mt-2">${escapeHtml(cp.summary)}</div>` : ''}
+    </div>` : '';
+
+  // ===== Блок 2: Анализ офферов vs рыночный EPC + прогноз =====
+  const oma = d.offers_market_analysis || null;
+  const verdictBadge = v => {
+    const map = {
+      scale:   ['bg-emerald-500/20 text-emerald-300', '🚀 Масштабировать'],
+      hold:    ['bg-blue-500/20 text-blue-300',       '⚖️ Удерживать'],
+      replace: ['bg-red-500/20 text-red-300',         '🔁 Заменить'],
+      test:    ['bg-yellow-500/20 text-yellow-300',   '🧪 Тестировать'],
+    };
+    const [cls, label] = map[v] || ['bg-slate-700 text-slate-200', v || '—'];
+    return `<span class="px-2 py-0.5 rounded text-xs font-semibold ${cls}">${label}</span>`;
+  };
+  const omaHtml = oma ? `
+    <div>
+      <h3 class="text-white font-bold mb-3">💼 Анализ офферов vs рыночный EPC + прогноз</h3>
+      ${Array.isArray(oma.offers) && oma.offers.length ? `
+        <div class="overflow-auto"><table class="w-full text-sm">
+          <thead><tr class="text-left text-slate-400">
+            <th class="py-1">Оффер</th>
+            <th class="text-right">Ваш EPC</th>
+            <th class="text-right">Рынок</th>
+            <th class="text-right">Δ</th>
+            <th>Вердикт</th>
+            <th class="text-right">Прогноз EPC</th>
+            <th>Рекомендация</th>
+          </tr></thead>
+          <tbody>
+            ${oma.offers.map(o => {
+              const dlt = Number(o.delta_pct) || 0;
+              const dCls = dlt >= 0 ? 'text-emerald-300' : 'text-red-300';
+              return `<tr class="border-t border-slate-800 align-top">
+                <td class="py-2 font-semibold">${escapeHtml(o.name || '')}</td>
+                <td class="text-right">${(Number(o.your_epc)||0).toFixed(2)} ₽</td>
+                <td class="text-right">${(Number(o.market_epc)||0).toFixed(2)} ₽</td>
+                <td class="text-right ${dCls}">${dlt >= 0 ? '+' : ''}${dlt.toFixed(1)}%</td>
+                <td>${verdictBadge(o.verdict)}</td>
+                <td class="text-right">${(Number(o.forecast_epc)||0).toFixed(2)} ₽</td>
+                <td class="text-slate-200">
+                  ${escapeHtml(o.recommendation || '')}
+                  ${o.forecast_revenue_uplift ? `<div class="text-xs text-emerald-300 mt-1">${escapeHtml(o.forecast_revenue_uplift)}</div>` : ''}
+                  ${o.evidence ? `<div class="text-xs text-slate-400 mt-1">📊 ${escapeHtml(o.evidence)} · уверенность: ${conf(o.confidence)}</div>` : ''}
+                </td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table></div>` : ''}
+      ${Array.isArray(oma.watchlist) && oma.watchlist.length ? `
+        <div class="mt-3">
+          <div class="text-xs uppercase text-slate-400 mb-1">⭐ Watchlist — обратить внимание для роста доходности</div>
+          <ul class="space-y-1 text-sm">
+            ${oma.watchlist.map(w => `<li class="border-l-4 border-yellow-500 bg-yellow-500/5 p-2 rounded"><strong class="text-white">${escapeHtml(w.name || '')}</strong> — ${escapeHtml(w.reason || '')}</li>`).join('')}
+          </ul>
+        </div>` : ''}
+      ${oma.summary ? `<div class="text-xs text-slate-400 mt-2">${escapeHtml(oma.summary)}</div>` : ''}
+    </div>` : '';
+
+  // ===== Блок 3: Кросс-сейл другим продуктам займовой аудитории =====
+  const cs = d.cross_sell || null;
+  const fitBadge = f => {
+    const map = {
+      high:   ['bg-emerald-500/20 text-emerald-300', 'high'],
+      medium: ['bg-yellow-500/20 text-yellow-300',   'medium'],
+      low:    ['bg-slate-700 text-slate-300',        'low'],
+    };
+    const [cls, label] = map[f] || ['bg-slate-700 text-slate-200', f || '—'];
+    return `<span class="px-2 py-0.5 rounded text-xs font-semibold ${cls}">fit: ${label}</span>`;
+  };
+  const csHtml = cs ? `
+    <div>
+      <h3 class="text-white font-bold mb-3">🔄 Кросс-сейл — другие продукты для аудитории</h3>
+      ${cs.audience ? `<div class="text-sm text-slate-300 mb-2"><span class="text-slate-400">Аудитория:</span> ${escapeHtml(cs.audience)}</div>` : ''}
+      ${Array.isArray(cs.products) && cs.products.length ? `
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+          ${cs.products.map(p => `
+            <div class="border border-slate-700 rounded p-3 bg-slate-900/50">
+              <div class="flex justify-between items-start gap-3 mb-1">
+                <div class="font-semibold text-white">${escapeHtml(p.product || '')}</div>
+                ${fitBadge(p.fit_score)}
+              </div>
+              ${p.why ? `<div class="text-sm text-slate-200"><span class="text-slate-400">Почему:</span> ${escapeHtml(p.why)}</div>` : ''}
+              ${Array.isArray(p.suggested_offer_types) && p.suggested_offer_types.length ? `<div class="text-sm text-slate-300 mt-1"><span class="text-slate-400">Типы офферов:</span> ${p.suggested_offer_types.map(t => escapeHtml(t)).join(', ')}</div>` : ''}
+              ${p.expected_epc_range ? `<div class="text-sm text-emerald-300 mt-1"><span class="text-slate-400">Ожидаемый EPC:</span> ${escapeHtml(p.expected_epc_range)}</div>` : ''}
+              ${p.kpi_impact ? `<div class="text-xs text-slate-400 mt-1">KPI: ${escapeHtml(p.kpi_impact)}</div>` : ''}
+            </div>`).join('')}
+        </div>` : '<div class="text-sm text-slate-400">Идей кросс-сейла не сформировано.</div>'}
+      ${cs.summary ? `<div class="text-xs text-slate-400 mt-2">${escapeHtml(cs.summary)}</div>` : ''}
+    </div>` : '';
+
+  // ===== Блок 4: Резкие просадки EPC день-к-дню =====
+  const ed = d.epc_drops || null;
+  const edHtml = ed ? `
+    <div>
+      <h3 class="text-white font-bold mb-3">📉 Резкие просадки EPC ото дня ко дню</h3>
+      ${ed.detected === false || !Array.isArray(ed.drops) || !ed.drops.length ? `
+        <div class="text-sm text-slate-300">Значимых просадок EPC (≥20%) не обнаружено.${ed.summary ? ' ' + escapeHtml(ed.summary) : ''}</div>
+      ` : `
+        <div class="space-y-3">
+          ${ed.drops.map(x => {
+            const dropPct = Number(x.drop_pct) || 0;
+            const rec = x.recommended_replacement || {};
+            return `
+            <div class="border border-red-700/40 rounded p-3 bg-red-500/5">
+              <div class="flex justify-between items-start gap-3 mb-1">
+                <div class="font-semibold text-white">${escapeHtml(x.prev_date || '')} → ${escapeHtml(x.date || '')}</div>
+                <span class="text-red-300 font-bold">${dropPct.toFixed(1)}%</span>
+              </div>
+              <div class="text-sm text-slate-300">EPC: ${(Number(x.prev_epc)||0).toFixed(2)} ₽ → <strong class="text-red-300">${(Number(x.curr_epc)||0).toFixed(2)} ₽</strong></div>
+              ${Array.isArray(x.affected_offers) && x.affected_offers.length ? `<div class="text-sm text-slate-300 mt-1"><span class="text-slate-400">Офферы:</span> ${x.affected_offers.map(t => escapeHtml(t)).join(', ')}</div>` : ''}
+              ${Array.isArray(x.affected_platforms) && x.affected_platforms.length ? `<div class="text-sm text-slate-300"><span class="text-slate-400">Площадки:</span> ${x.affected_platforms.map(t => escapeHtml(t)).join(', ')}</div>` : ''}
+              ${Array.isArray(x.evidence_based_reasons) && x.evidence_based_reasons.length ? `
+                <div class="text-sm text-slate-200 mt-2">
+                  <div class="text-slate-400 mb-1">Аргументированные причины:</div>
+                  <ul class="list-disc pl-5 space-y-0.5">
+                    ${x.evidence_based_reasons.map(r => `<li>${escapeHtml(r)}</li>`).join('')}
+                  </ul>
+                </div>` : ''}
+              ${rec && rec.offer ? `
+                <div class="mt-2 border-l-4 border-emerald-500 bg-emerald-500/5 p-2 rounded">
+                  <div class="text-sm text-white"><span class="text-slate-400">Рекомендуем заменить на:</span> <strong>${escapeHtml(rec.offer)}</strong>${rec.expected_epc ? ` · ожидаемый EPC <strong class="text-emerald-300">${(Number(rec.expected_epc)||0).toFixed(2)} ₽</strong>` : ''}</div>
+                  ${rec.basis ? `<div class="text-xs text-slate-400 mt-1">Обоснование (ретроданные${rec.historical_period ? ', период ' + escapeHtml(rec.historical_period) : ''}): ${escapeHtml(rec.basis)}</div>` : ''}
+                </div>` : ''}
+              <div class="text-xs text-slate-400 mt-1">Уверенность: ${conf(x.confidence)}</div>
+            </div>`;
+          }).join('')}
+        </div>
+        ${ed.summary ? `<div class="text-xs text-slate-400 mt-2">${escapeHtml(ed.summary)}</div>` : ''}
+      `}
+    </div>` : '';
+
+  resEl.innerHTML = [summary, cpHtml, omaHtml, csHtml, edHtml, recsHtml, forecastHtml, platformsHtml, kdHtml, risksHtml].filter(Boolean).join('');
   resEl.classList.remove('hidden');
 }
 

@@ -702,6 +702,7 @@ function aiBuildSignature() {
             'Сделать прогноз ключевых показателей (выручка, EPC, клики, approve %, конверсия) на следующие 7 и 30 дней.',
             'Анализировать в разрезе площадок, дающих суммарно ~99% выручки (top-площадки, мелкие игнорировать).',
             'Помочь принять ключевые решения, влияющие на рост выручки.',
+            'Структурировано отделить: пути конверсий и слабые точки; анализ офферов vs рынок (с прогнозом); кросс-сейл для займовой аудитории; диагностику резких просадок EPC ото дня ко дню.',
         ],
         // Схема выходного JSON. Используем её одновременно как часть промта и для валидации.
         'output_schema' => [
@@ -712,6 +713,11 @@ function aiBuildSignature() {
             'platforms_breakdown' => 'array<{name:string, revenue_share_pct:number, status:"grow"|"stable"|"watch"|"risk", insight:string, action:string}> — разбор только по площадкам из top_platforms (до 10), с долей в выручке',
             'key_decisions' => 'array<{decision:string, rationale:string, kpi_impact:string}> — 2-5 ключевых управленческих решений, направленных на рост выручки',
             'risks' => 'array<string> — риски и аномалии, требующие внимания (фрод, концентрация, просадки)',
+            // НОВЫЕ структурированные блоки.
+            'conversion_paths' => '{funnel:{clicks:number, conversions:number, approved:number, revenue:number, cr_pct:number, approve_rate_pct:number, epc:number}, weak_points:array<{stage:"click_to_conversion"|"conversion_to_approve"|"approve_to_revenue", where:string, metric:string, value:number, benchmark:number, severity:"high"|"medium"|"low", root_cause:string, fix:string, expected_uplift:string}>, summary:string} — пути конверсии и слабые точки воронки. weak_points — 2-6 шт.',
+            'offers_market_analysis' => '{offers:array<{name:string, your_epc:number, market_epc:number, delta_pct:number, verdict:"scale"|"hold"|"replace"|"test", recommendation:string, forecast_epc:number, forecast_revenue_uplift:string, confidence:"low"|"medium"|"high", evidence:string}>, watchlist:array<{name:string, reason:string}>, summary:string} — поофферный анализ vs рыночный EPC, прогноз и список офферов, на которые стоит обратить внимание для увеличения доходности трафика. offers — 5-12 шт.',
+            'cross_sell' => '{audience:string, products:array<{product:string, why:string, fit_score:"low"|"medium"|"high", suggested_offer_types:array<string>, expected_epc_range:string, kpi_impact:string}>, summary:string} — закономерности и идеи кросс-сейла другим продуктам займовой аудитории (страхование, карты, рефинанс, БКИ, мед.услуги, телеком и т.п.). 3-6 продуктов.',
+            'epc_drops' => '{detected:boolean, drops:array<{date:string, prev_date:string, prev_epc:number, curr_epc:number, drop_pct:number, affected_offers:array<string>, affected_platforms:array<string>, evidence_based_reasons:array<string>, recommended_replacement:{offer:string, basis:string, expected_epc:number, historical_period:string}, confidence:"low"|"medium"|"high"}>, summary:string} — диагностика резких просадок EPC ото дня ко дню. Если просадок >=20% не обнаружено — detected=false, drops=[]. Иначе для каждой просадки даётся аргументированное обоснование (на основании daily_recent / weekly_trend / sub1_anomalies / market_compare) и рекомендуется оффер для замены, опираясь на ретроданные прошлых периодов.',
         ],
     ];
 }
@@ -720,7 +726,7 @@ function aiBuildSystemPrompt($sig) {
     $schemaJson = json_encode($sig['output_schema'], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
     $goals = "- " . implode("\n- ", $sig['goals']);
     return <<<PROMPT
-Ты — старший бизнес-аналитик и консультант по росту выручки в performance-маркетинге (CPA, affiliate).
+Ты — старший бизнес-аналитик и консультант по росту выручки в performance-маркетинге (CPA, affiliate, займовая вертикаль).
 Задача: {$sig['task']}
 
 Цели вывода:
@@ -737,6 +743,12 @@ function aiBuildSystemPrompt($sig) {
 5. Прогноз строй на основании weekly_trend / monthly_trend и текущих KPI; осознанно учитывай сезонность и снижение/рост последних недель. Если данных мало — confidence=«low».
 6. Никогда не упоминай свою модель, провайдера или "AI". Пиши как аналитик.
 7. Язык вывода — русский, профессиональный, без воды и без «возможно стоит подумать».
+
+Дополнительные требования по структурированным блокам (обязательно заполни все, даже если данных мало):
+A. conversion_paths — построй сквозную воронку (clicks → conversions → approved → revenue) на основании kpi и offers_top/sub1_anomalies. Выдели 2-6 слабых точек. Для каждой укажи: на какой стадии («click_to_conversion», «conversion_to_approve», «approve_to_revenue»), где конкретно (площадка/оффер/sub1), фактическое значение метрики, бенчмарк (средний по портфелю или рыночный), severity, корневую причину и конкретный fix с ожидаемым uplift.
+B. offers_market_analysis — пройди по market_compare и offers_top: для каждого оффера сравни your_epc с market_epc, поставь verdict (scale/hold/replace/test), дай рекомендацию и прогноз forecast_epc на ближайший период + диапазон uplift к выручке. Сформируй watchlist — офферы, на которые стоит обратить внимание для роста доходности (большой объём + положительный delta_pct, либо растущий тренд EPC). Используй цифры из payload в evidence.
+C. cross_sell — определи аудиторию (займы / микрозаймы / PDL / installment) и предложи 3-6 смежных продуктов, которые можно предлагать той же аудитории (например: страхование жизни/здоровья, дебетовые/кредитные карты, рефинансирование, БКИ, юр.помощь по долгам, телеком/онлайн-сервисы). Для каждого продукта — fit_score, типы офферов, ожидаемый диапазон EPC и эффект на KPI. Привязывай к закономерностям, видимым в данных (sub1, площадки, сезонность).
+D. epc_drops — пройди по daily_recent и offers_daily_epc: найди дни, где EPC просел >=20% относительно предыдущего дня (и/или относительно скользящего среднего). Для каждой просадки укажи затронутые офферы/площадки, аргументированные причины (на основании данных: падение approve %, рост дешёвых sub1, перераспределение трафика, расхождение с market_epc и т.п.) и рекомендуемый оффер для замены — выбирая из ретроданных прошлых периодов (offers_top / market_compare с устойчиво высоким EPC) с указанием периода, на котором этот оффер показывал хороший результат. Если значимых просадок нет — detected=false, drops=[], в summary это явно укажи.
 
 Схема выходного JSON (ключи и типы строго такие):
 {$schemaJson}
@@ -759,11 +771,22 @@ function aiTrimPayload($p) {
         'weekly_trend' => 26,         // полгода по неделям
         'monthly_trend' => 18,        // полтора года по месяцам
         'daily_recent' => 30,
+        'offers_daily_epc' => 12,     // топ-12 офферов по выручке с дневным EPC
+        'epc_drops_signals' => 15,    // подсказки о просадках EPC день-к-дню
     ];
     foreach ($caps as $k => $n) {
         if (isset($p[$k]) && is_array($p[$k]) && count($p[$k]) > $n) {
             $p[$k] = array_slice($p[$k], 0, $n);
         }
+    }
+    // У offers_daily_epc внутри есть массив series — обрежем по 30 точек на оффер.
+    if (isset($p['offers_daily_epc']) && is_array($p['offers_daily_epc'])) {
+        foreach ($p['offers_daily_epc'] as &$o) {
+            if (isset($o['series']) && is_array($o['series']) && count($o['series']) > 30) {
+                $o['series'] = array_slice($o['series'], -30);
+            }
+        }
+        unset($o);
     }
     return $p;
 }
@@ -777,6 +800,13 @@ function aiValidateOutput($obj, $sig) {
     if (!is_array($obj['forecast']) || !isset($obj['forecast']['period_7d'], $obj['forecast']['period_30d'])) return 'forecast.period_7d/period_30d required';
     if (!is_array($obj['platforms_breakdown'])) return 'platforms_breakdown must be array';
     if (!is_array($obj['key_decisions'])) return 'key_decisions must be array';
+    // Новые блоки — проверяем тип, если присутствуют (мягкая валидация: пустые
+    // блоки допустимы, чтобы не ронять весь анализ при дефиците данных).
+    foreach (['conversion_paths', 'offers_market_analysis', 'cross_sell', 'epc_drops'] as $opt) {
+        if (array_key_exists($opt, $obj) && !is_array($obj[$opt])) {
+            return "{$opt} must be an object";
+        }
+    }
     return null;
 }
 
@@ -821,8 +851,11 @@ function aiCallProvider($sysPrompt, $userPrompt, $model) {
         // Для reasoner поднимаем лимит: модель кладёт chain-of-thought в
         // отдельное поле reasoning_content, но этот текст ТОЖЕ учитывается
         // в max_tokens. На 3000 итоговый JSON часто обрывается → JSON-парс
-        // падает → fallback тоже валится. 8000 хватает с большим запасом.
-        'max_tokens' => $isReasoner ? 8000 : 3000,
+        // падает → fallback тоже валится. С добавлением 4 структурированных
+        // блоков (conversion_paths, offers_market_analysis, cross_sell, epc_drops)
+        // объём ответа вырос, поэтому базовый лимит подняли до 5000,
+        // а для reasoner — до 12000 с учётом скрытого reasoning_content.
+        'max_tokens' => $isReasoner ? 12000 : 5000,
         'stream' => false,
     ];
     if (!$isReasoner) {
