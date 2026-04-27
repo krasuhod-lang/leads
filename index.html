@@ -407,7 +407,7 @@
         <h2 class="text-white font-bold text-lg">🚀 Глубокий AI-анализ</h2>
         <button id="aiDeepBtn" class="btn" onclick="runDeepAIAnalysis()">⚡ Запустить анализ</button>
       </div>
-      <p class="text-sm text-slate-400 mb-4">Анализирует выбранный период и площадки, дающие суммарно ~99% выручки (мелкие игнорируются). Возвращает структурированные блоки: пути конверсий и слабые точки воронки, поофферный анализ vs рыночный EPC с прогнозом и watchlist для роста доходности, идеи кросс-сейла другим продуктам займовой аудитории, диагностика резких просадок EPC ото дня ко дню с обоснованием и рекомендуемым оффером для замены — а также общие рекомендации, прогноз показателей и ключевые управленческие решения. Работает по текущему диапазону дат.</p>
+      <p class="text-sm text-slate-400 mb-4">Анализирует выбранный период и площадки, дающие суммарно ~99% выручки (мелкие игнорируются), и сегментирует отказной трафик МФО по 4 каналам домонетизации (витрина в ЛК, SMS, оффлайн-коллцентр, мобильное приложение). Возвращает результат в виде 4 вкладок: «Сводка и Риски» (резюме, статус здоровья, прогноз 7/30 дней, риски), «Маршрутизация отказников» (рекомендации офферов под каждый канал с обоснованием), «Точки роста» (что и насколько нарастить + проседающие сегменты), «Офферы и площадки» (vs рынок, разбор top-площадок, дневные просадки EPC). Работает по текущему диапазону дат.</p>
       <div id="aiDeepStatus" class="text-sm text-slate-400 mb-3"></div>
       <div id="aiDeepResult" class="space-y-5 hidden"></div>
     </div>
@@ -1922,6 +1922,46 @@ function _r(v, d = 2) {
   return Math.round(n * k) / k;
 }
 
+// Эвристическая классификация строки трафика по каналу домонетизации
+// отказного трафика МФО. Для AI критично различать «горячий» трафик с витрины
+// в ЛК сразу после отказа и «остывшую» SMS-базу. В сырых данных явного
+// признака канала нет, поэтому классифицируем по ключевым словам в названии
+// площадки (source) и в sub1.
+//   showcase  — витрина в ЛК МФО (горячий: высокий CR/Approve, средний EPC)
+//   sms       — SMS-рассылки по остывшей базе (триггерные офферы 0% / «всем»)
+//   offline   — колл-центр / брокеры / прозвон (сложные офферы с дожимом)
+//   mobile_app— мобильное приложение МФО (LTV, кредитки, длинные займы)
+//   other     — всё, что не классифицировано (обычная веб-выдача, SEO и т.п.)
+function classifyTrafficChannel(source, sub1) {
+  const s = ((source || '') + ' ' + (sub1 || '')).toLowerCase();
+  if (/sms|смс|push[\-_ ]?sms/.test(s)) return 'sms';
+  if (/витрин|showcase|\bлк\b|cabinet|widget|кросс[\-_ ]?сейл|cross[\-_ ]?sell|reject|отказник|отказ\b/.test(s)) return 'showcase';
+  if (/оффлайн|offline|call[\-_ ]?center|cc[\-_]|колл[\-_ ]?центр|broker|брокер|обзвон|telesale/.test(s)) return 'offline';
+  if (/\bapp\b|mobile|приложен|android|\bios\b|in[\-_ ]?app/.test(s)) return 'mobile_app';
+  return 'other';
+}
+
+// Эвристические флаги оффера по названию + измеренной статистике.
+// Сырые данные не содержат явных признаков, поэтому пытаемся вытянуть из
+// имени (триггеры «0%», «рассрочка», «залог», «всем») и сверяемся с реальным
+// approve rate. AI просили не выдумывать поля, поэтому возвращаем только то,
+// что обоснованно выводится из данных.
+function inferOfferFlags(offerName, approveRatePct) {
+  const n = (offerName || '').toLowerCase();
+  const isZero = /(^|[^0-9])0\s?%|под\s?ноль|первый\s?займ\s?бесплат|без\s?процент|0\s?проц/.test(n);
+  const isInst = /рассрочк|installment|залог|кредитн[аы]я?\s?карт|подбор\s?кредит|долгосроч|на\s?\d{2,3}\s?(дн|мес)/.test(n);
+  let difficulty = 'unknown';
+  if (typeof approveRatePct === 'number' && isFinite(approveRatePct) && approveRatePct > 0) {
+    if (approveRatePct >= 40) difficulty = 'easy';
+    else if (approveRatePct >= 20) difficulty = 'medium';
+    else difficulty = 'hard';
+  }
+  // Подсказки по названию могут переопределить difficulty в сторону «easy»
+  // (явные триггеры «всем / любая КИ») — это типичные офферы для витрины ЛК.
+  if (/всем|любая\s?(ки|кред)|без\s?отказ|плох(ая|ой)\s?(ки|кред)/.test(n)) difficulty = 'easy';
+  return { is_zero_percent: isZero, is_installment: isInst, approval_difficulty: difficulty };
+}
+
 // Площадки, дающие суммарно ~99% выручки (но не более 10).
 // Мелкие игнорируем — для AI они шум.
 function _topPlatformsByRevenue(rows, sharePct = 99, hardCap = 10) {
@@ -2003,15 +2043,23 @@ function buildAIPayload() {
     offMap[k].clicks += r.clicks; offMap[k].conversions += r.conversions;
     offMap[k].approved += r.approved; offMap[k].revenue += r.revenue;
   }
-  const offerArr = Object.values(offMap).map(o => ({
-    name: o.name,
-    clicks: o.clicks,
-    revenue: _r(o.revenue, 2),
-    epc: _r(o.clicks ? o.revenue / o.clicks : 0, 2),
-    cr_pct: _r(o.clicks ? o.conversions / o.clicks * 100 : 0, 2),
-    approve_rate_pct: _r(o.conversions ? o.approved / o.conversions * 100 : 0, 2),
-    offer_id: o.offer_id,
-  }));
+  const offerArr = Object.values(offMap).map(o => {
+    const epcOffer = _r(o.clicks ? o.revenue / o.clicks : 0, 2);
+    const arOffer = _r(o.conversions ? o.approved / o.conversions * 100 : 0, 2);
+    const flags = inferOfferFlags(o.name, arOffer);
+    return {
+      name: o.name,
+      clicks: o.clicks,
+      revenue: _r(o.revenue, 2),
+      epc: epcOffer,
+      cr_pct: _r(o.clicks ? o.conversions / o.clicks * 100 : 0, 2),
+      approve_rate_pct: arOffer,
+      offer_id: o.offer_id,
+      is_zero_percent: flags.is_zero_percent,
+      is_installment: flags.is_installment,
+      approval_difficulty: flags.approval_difficulty,
+    };
+  });
   const offersTop = [...offerArr].sort((a, b) => b.revenue - a.revenue).slice(0, 15);
   const offersUnder = offerArr.filter(o => o.clicks >= 100 && epc > 0 && o.epc < epc * 0.6)
     .sort((a, b) => b.clicks - a.clicks).slice(0, 10);
@@ -2109,6 +2157,84 @@ function buildAIPayload() {
     }
   }
 
+  // ===== Сегментация трафика по каналам домонетизации отказников =====
+  // Эвристически разделяем строки на showcase / sms / offline / mobile_app /
+  // other, считаем по каждому каналу clicks → conversions → approved → revenue,
+  // EPC, CR, Approve %. Кроме того, выделяем топ-офферы по выручке внутри
+  // каждого канала — AI на их основе формирует reject_monetization_strategy.
+  const channelKeys = ['showcase', 'sms', 'offline', 'mobile_app', 'other'];
+  const channelAgg = {};
+  const channelOffers = {};
+  for (const k of channelKeys) {
+    channelAgg[k] = { clicks: 0, conversions: 0, approved: 0, revenue: 0 };
+    channelOffers[k] = {};
+  }
+  for (const r of rows) {
+    const ch = classifyTrafficChannel(r.source, r.sub1);
+    const a = channelAgg[ch];
+    a.clicks += r.clicks; a.conversions += r.conversions;
+    a.approved += r.approved; a.revenue += r.revenue;
+    const oName = r.offer || 'Unknown';
+    if (!channelOffers[ch][oName]) channelOffers[ch][oName] = { name: oName, clicks: 0, conversions: 0, approved: 0, revenue: 0 };
+    const co = channelOffers[ch][oName];
+    co.clicks += r.clicks; co.conversions += r.conversions;
+    co.approved += r.approved; co.revenue += r.revenue;
+  }
+  const trafficSourcesBreakdown = {};
+  for (const k of channelKeys) {
+    const a = channelAgg[k];
+    const topOffers = Object.values(channelOffers[k])
+      .sort((x, y) => y.revenue - x.revenue)
+      .slice(0, 5)
+      .map(o => ({
+        name: o.name,
+        clicks: o.clicks,
+        revenue: _r(o.revenue, 2),
+        epc: _r(o.clicks ? o.revenue / o.clicks : 0, 2),
+        cr_pct: _r(o.clicks ? o.conversions / o.clicks * 100 : 0, 2),
+        approve_rate_pct: _r(o.conversions ? o.approved / o.conversions * 100 : 0, 2),
+      }));
+    trafficSourcesBreakdown[k] = {
+      clicks: a.clicks,
+      conversions: a.conversions,
+      approved: a.approved,
+      revenue: _r(a.revenue, 2),
+      epc: _r(a.clicks ? a.revenue / a.clicks : 0, 2),
+      cr_pct: _r(a.clicks ? a.conversions / a.clicks * 100 : 0, 2),
+      approve_rate_pct: _r(a.conversions ? a.approved / a.conversions * 100 : 0, 2),
+      revenue_share_pct: _r(tot.revenue ? a.revenue / tot.revenue * 100 : 0, 2),
+      top_offers: topOffers,
+    };
+  }
+
+  // ===== Воронка отказников =====
+  // Сырые данные не содержат прямого поля «отказ», но мы можем оценить:
+  //   • primary_rejects — лиды, не получившие approve на нешоукейс-каналах
+  //     (conversions − approved). Это и есть пул, который теоретически
+  //     уходит в кросс-сейл / SMS / витрину.
+  //   • cross_sell_clicks / cross_sell_approved — клики и одобрения на канале
+  //     showcase (трафик, пришедший после первичного отказа).
+  // Если showcase-канал не определился (нет ключевых слов) — метрики честно
+  // показываем нулями, чтобы AI не галлюцинировал.
+  const nonShowcase = channelKeys.filter(k => k !== 'showcase').reduce((s, k) => {
+    const a = channelAgg[k]; s.conv += a.conversions; s.app += a.approved; return s;
+  }, { conv: 0, app: 0 });
+  const showcaseAgg = channelAgg['showcase'];
+  const primaryRejects = Math.max(0, nonShowcase.conv - nonShowcase.app);
+  const rejectFunnel = {
+    primary_rejects: primaryRejects,
+    cross_sell_clicks: showcaseAgg.clicks,
+    cross_sell_approved: showcaseAgg.approved,
+    cross_sell_revenue: _r(showcaseAgg.revenue, 2),
+    cross_sell_pickup_rate_pct: _r(
+      primaryRejects > 0 ? showcaseAgg.clicks / primaryRejects * 100 : 0,
+      2
+    ),
+    notes: showcaseAgg.clicks === 0
+      ? 'Showcase-канал не определён в данных (нет источников/sub1 с признаками витрины/ЛК/reject) — оценка кросс-сейл-воронки невозможна.'
+      : 'Оценка по эвристической сегментации каналов; primary_rejects = conversions − approved по нешоукейс-каналам.',
+  };
+
   return {
     period: { from: dateFrom, to: dateTo, days: new Set(dates).size },
     kpi: {
@@ -2130,6 +2256,8 @@ function buildAIPayload() {
     daily_recent: dailyRecent,
     offers_daily_epc: offersDailyEpc,
     epc_drops_signals: epcDropsSignals,
+    traffic_sources_breakdown: trafficSourcesBreakdown,
+    reject_funnel: rejectFunnel,
   };
 }
 
@@ -2174,6 +2302,24 @@ async function runDeepAIAnalysis() {
   }
 }
 
+// Локальный таб-свитчер для глубокого AI-анализа. Изолирован от глобального
+// switchTab(): переключает только подвкладки внутри #aiDeepResult, чтобы не
+// конфликтовать с верхнеуровневыми вкладками дашборда.
+function switchAiDeepTab(tabName) {
+  const root = document.getElementById('aiDeepResult');
+  if (!root) return;
+  root.querySelectorAll('[data-aitab]').forEach(el => {
+    el.classList.toggle('hidden', el.dataset.aitab !== tabName);
+  });
+  root.querySelectorAll('[data-aitab-btn]').forEach(btn => {
+    const active = btn.dataset.aitabBtn === tabName;
+    btn.classList.toggle('bg-blue-600', active);
+    btn.classList.toggle('text-white', active);
+    btn.classList.toggle('bg-slate-800', !active);
+    btn.classList.toggle('text-slate-300', !active);
+  });
+}
+
 function renderDeepAIResult(d) {
   const resEl = document.getElementById('aiDeepResult');
   if (!resEl) return;
@@ -2201,29 +2347,102 @@ function renderDeepAIResult(d) {
     if (c === 'medium') return '<span class="text-yellow-300">средняя</span>';
     return '<span class="text-slate-400">низкая</span>';
   };
+  const sevBadge = s => {
+    if (s === 'high') return '<span class="px-2 py-0.5 rounded text-xs bg-red-500/20 text-red-300 font-semibold">HIGH</span>';
+    if (s === 'medium') return '<span class="px-2 py-0.5 rounded text-xs bg-yellow-500/20 text-yellow-300 font-semibold">MED</span>';
+    return '<span class="px-2 py-0.5 rounded text-xs bg-blue-500/20 text-blue-300 font-semibold">LOW</span>';
+  };
+  const stageLabel = s => ({
+    click_to_conversion: 'Клик → Конверсия',
+    conversion_to_approve: 'Конверсия → Approve',
+    approve_to_revenue: 'Approve → Выручка',
+  }[s] || s || '—');
+  const verdictBadge = v => {
+    const map = {
+      scale:   ['bg-emerald-500/20 text-emerald-300', '🚀 Масштабировать'],
+      hold:    ['bg-blue-500/20 text-blue-300',       '⚖️ Удерживать'],
+      replace: ['bg-red-500/20 text-red-300',         '🔁 Заменить'],
+      test:    ['bg-yellow-500/20 text-yellow-300',   '🧪 Тестировать'],
+    };
+    const [cls, label] = map[v] || ['bg-slate-700 text-slate-200', v || '—'];
+    return `<span class="px-2 py-0.5 rounded text-xs font-semibold ${cls}">${label}</span>`;
+  };
+  const fitBadge = f => {
+    const map = {
+      high:   ['bg-emerald-500/20 text-emerald-300', 'high'],
+      medium: ['bg-yellow-500/20 text-yellow-300',   'medium'],
+      low:    ['bg-slate-700 text-slate-300',        'low'],
+    };
+    const [cls, label] = map[f] || ['bg-slate-700 text-slate-200', f || '—'];
+    return `<span class="px-2 py-0.5 rounded text-xs font-semibold ${cls}">fit: ${label}</span>`;
+  };
+  const actionBadge = a => {
+    const map = {
+      add:     ['bg-emerald-500/20 text-emerald-300', '➕ Добавить'],
+      promote: ['bg-blue-500/20 text-blue-300',       '⬆️ Поднять в топ'],
+      remove:  ['bg-red-500/20 text-red-300',         '🗑 Убрать'],
+    };
+    const [cls, label] = map[a] || ['bg-slate-700 text-slate-200', a || '—'];
+    return `<span class="px-2 py-0.5 rounded text-xs font-semibold ${cls}">${label}</span>`;
+  };
 
+  // ============== ВКЛАДКА 1: Сводка и Риски ==============
   const summary = d.summary
     ? `<div class="border-l-4 border-blue-500 bg-blue-500/10 p-4 rounded"><div class="text-xs uppercase text-slate-400 mb-1">📌 Резюме</div><div class="text-sm text-white leading-relaxed">${escapeHtml(d.summary)}</div></div>`
     : '';
 
-  const recs = Array.isArray(d.recommendations) ? d.recommendations : [];
-  const recsHtml = recs.length ? `
+  // Статус здоровья: возьмём из conversion_paths.funnel, если есть.
+  // Цветовая индикация: EPC (>=4 зел / >=2 жёлт / иначе кр), Approve (>=35 зел / >=20 жёлт / иначе кр).
+  const funnel = (d.conversion_paths && d.conversion_paths.funnel) || null;
+  const healthColor = (val, green, yellow) => {
+    const v = Number(val) || 0;
+    if (v >= green) return 'text-emerald-300';
+    if (v >= yellow) return 'text-yellow-300';
+    return 'text-red-300';
+  };
+  const healthHtml = funnel ? `
     <div>
-      <h3 class="text-white font-bold mb-3">🎯 Конкретные рекомендации</h3>
-      <div class="space-y-2">
-        ${recs.map(r => `
-          <div class="border border-slate-700 rounded p-3 bg-slate-900/50">
-            <div class="flex justify-between items-start gap-3 mb-1">
-              <div class="font-semibold text-white">${escapeHtml(r.title || '')}</div>
-              ${prio(r.priority)}
-            </div>
-            <div class="text-sm text-slate-200 mb-1"><span class="text-slate-400">Действие:</span> ${escapeHtml(r.action || '')}</div>
-            ${r.expected_impact ? `<div class="text-sm text-emerald-300"><span class="text-slate-400">Ожидаемый эффект:</span> ${escapeHtml(r.expected_impact)}</div>` : ''}
-            ${r.evidence ? `<div class="text-xs text-slate-400 mt-1">📊 ${escapeHtml(r.evidence)}</div>` : ''}
-          </div>
-        `).join('')}
+      <h3 class="text-white font-bold mb-3">❤️ Статус здоровья</h3>
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-2">
+        <div class="border border-slate-700 rounded p-3 bg-slate-900/50">
+          <div class="text-xs text-slate-400">Общий EPC</div>
+          <div class="text-2xl font-bold ${healthColor(funnel.epc, 4, 2)}">${(Number(funnel.epc)||0).toFixed(2)} ₽</div>
+        </div>
+        <div class="border border-slate-700 rounded p-3 bg-slate-900/50">
+          <div class="text-xs text-slate-400">Approve %</div>
+          <div class="text-2xl font-bold ${healthColor(funnel.approve_rate_pct, 35, 20)}">${fmtPct(funnel.approve_rate_pct)}</div>
+        </div>
+        <div class="border border-slate-700 rounded p-3 bg-slate-900/50">
+          <div class="text-xs text-slate-400">CR клик→лид</div>
+          <div class="text-2xl font-bold ${healthColor(funnel.cr_pct, 8, 3)}">${fmtPct(funnel.cr_pct)}</div>
+        </div>
+        <div class="border border-slate-700 rounded p-3 bg-slate-900/50">
+          <div class="text-xs text-slate-400">Выручка</div>
+          <div class="text-2xl font-bold text-emerald-300">${fmtRub(funnel.revenue)}</div>
+        </div>
       </div>
     </div>` : '';
+
+  const risks = Array.isArray(d.risks) ? d.risks : [];
+  const risksHtml = risks.length ? `
+    <div>
+      <h3 class="text-white font-bold mb-3">🚨 Критические риски и аномалии</h3>
+      <ul class="space-y-1 text-sm">
+        ${risks.map(r => `<li class="border-l-4 border-red-500 bg-red-500/5 p-2 rounded">${escapeHtml(String(r))}</li>`).join('')}
+      </ul>
+    </div>` : '';
+
+  // Chain-of-Thought из reasoning_log (на английском, со ссылками на цифры
+  // payload). Показываем свёрнутым, чтобы не перегружать UI, но был доступен
+  // для аудита галлюцинаций.
+  const rl = Array.isArray(d.reasoning_log) ? d.reasoning_log.filter(x => typeof x === 'string' && x.trim()) : [];
+  const rlHtml = rl.length ? `
+    <details class="border border-slate-700 rounded bg-slate-900/50">
+      <summary class="cursor-pointer px-3 py-2 text-sm text-slate-300 font-semibold">🧠 Chain-of-Thought (reasoning_log) — ${rl.length} шагов</summary>
+      <ol class="px-5 py-2 space-y-1 text-xs text-slate-300 list-decimal">
+        ${rl.map(s => `<li class="leading-relaxed font-mono">${escapeHtml(s)}</li>`).join('')}
+      </ol>
+    </details>` : '';
 
   const fc = d.forecast || {};
   const fcCard = (label, p) => p ? `
@@ -2246,29 +2465,136 @@ function renderDeepAIResult(d) {
       </div>
     </div>` : '';
 
-  const pb = Array.isArray(d.platforms_breakdown) ? d.platforms_breakdown : [];
-  const platformsHtml = pb.length ? `
+  const tab1 = [summary, healthHtml, risksHtml, forecastHtml, rlHtml].filter(Boolean).join('<div class="h-1"></div>');
+
+  // ============== ВКЛАДКА 2: Маршрутизация отказников ==============
+  const rms = d.reject_monetization_strategy || null;
+  // Считаем «пустым» состояние, когда нет блока вовсе ИЛИ все 4 подмассива
+  // пустые (например, бэкенд бэкфилнул их в []). Это срабатывает при
+  // дефиците данных или мягком фолбэке парсера и показывает баннер
+  // «Недостаточно данных для сегментации» по требованию ТЗ.
+  const rmsHasAny = rms && [
+    rms.showcase_optimization, rms.sms_campaigns, rms.offline_routing, rms.mobile_app_retention
+  ].some(arr => Array.isArray(arr) && arr.length);
+  const channelCard = (icon, title, items, renderItem, emptyText) => `
+    <div class="border border-slate-700 rounded p-4 bg-slate-900/50">
+      <div class="flex items-center gap-2 mb-3">
+        <span class="text-2xl">${icon}</span>
+        <h4 class="text-white font-bold">${title}</h4>
+      </div>
+      ${Array.isArray(items) && items.length
+        ? `<div class="space-y-2">${items.map(renderItem).join('')}</div>`
+        : `<div class="text-sm text-slate-400 italic">${emptyText}</div>`}
+    </div>`;
+  const rmsHtml = rmsHasAny ? `
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+      ${channelCard('📱', 'Витрина в ЛК', rms.showcase_optimization,
+        o => `<div class="border-l-2 border-emerald-500 bg-slate-800/40 p-2 rounded">
+          <div class="flex justify-between items-start gap-2 mb-1">
+            <div class="font-semibold text-white text-sm">${escapeHtml(o.offer_name || '')}</div>
+            ${actionBadge(o.action)}
+          </div>
+          ${o.reasoning ? `<div class="text-xs text-slate-300">${escapeHtml(o.reasoning)}</div>` : ''}
+        </div>`,
+        'Нет рекомендаций для витрины в ЛК (мало данных по showcase-каналу).')}
+      ${channelCard('💬', 'SMS-рассылки', rms.sms_campaigns,
+        o => {
+          const uplift = Number(o.expected_epc_uplift);
+          const upliftHtml = isFinite(uplift) && uplift !== 0
+            ? `<span class="text-xs text-emerald-300 font-semibold">+${uplift.toFixed(1)}% EPC</span>`
+            : '';
+          return `<div class="border-l-2 border-blue-500 bg-slate-800/40 p-2 rounded">
+            <div class="flex justify-between items-start gap-2 mb-1">
+              <div class="font-semibold text-white text-sm">${escapeHtml(o.offer_name || '')}</div>
+              ${upliftHtml}
+            </div>
+            ${o.trigger_message_idea ? `<div class="text-xs text-slate-200 italic">«${escapeHtml(o.trigger_message_idea)}»</div>` : ''}
+          </div>`;
+        },
+        'Нет идей SMS-кампаний.')}
+      ${channelCard('🎧', 'Оффлайн-коллцентр', rms.offline_routing,
+        o => `<div class="border-l-2 border-yellow-500 bg-slate-800/40 p-2 rounded">
+          <div class="font-semibold text-white text-sm mb-1">${escapeHtml(o.offer_name || '')}</div>
+          ${o.reasoning ? `<div class="text-xs text-slate-300">${escapeHtml(o.reasoning)}</div>` : ''}
+        </div>`,
+        'Нет офферов для прозвона в этом периоде.')}
+      ${channelCard('📲', 'Мобильное приложение', rms.mobile_app_retention,
+        o => `<div class="border-l-2 border-purple-500 bg-slate-800/40 p-2 rounded">
+          <div class="font-semibold text-white text-sm mb-1">${escapeHtml(o.offer_name || '')}</div>
+          ${o.placement_strategy ? `<div class="text-xs text-slate-300"><span class="text-slate-400">Размещение:</span> ${escapeHtml(o.placement_strategy)}</div>` : ''}
+        </div>`,
+        'Нет рекомендаций по удержанию в приложении.')}
+    </div>
+    ${rms && rms.summary ? `<div class="text-xs text-slate-400 mt-3">${escapeHtml(rms.summary)}</div>` : ''}
+  ` : `
+    <div class="border-l-4 border-yellow-500 bg-yellow-500/10 p-4 rounded">
+      <div class="text-sm text-yellow-200 font-semibold mb-1">Недостаточно данных для сегментации отказного трафика</div>
+      <div class="text-xs text-slate-300">Анализатор не вернул блок маршрутизации (reject_monetization_strategy) либо все 4 канала вернулись пустыми. Возможные причины: дефицит данных по каналам showcase / sms / offline / mobile_app, либо мягкий фолбэк парсера. Запустите анализ повторно или расширьте период.${rms && rms.summary ? '<br><br>' + escapeHtml(rms.summary) : ''}</div>
+    </div>`;
+  const tab2 = rmsHtml;
+
+  // ============== ВКЛАДКА 3: Точки роста и масштабирования ==============
+  const gp = Array.isArray(d.growth_points) ? d.growth_points : [];
+  const gpHtml = gp.length ? `
     <div>
-      <h3 class="text-white font-bold mb-3">🏬 Разбор по ключевым площадкам (≈99% выручки)</h3>
+      <h3 class="text-white font-bold mb-3">📈 Точки роста</h3>
       <div class="overflow-auto"><table class="w-full text-sm">
         <thead><tr class="text-left text-slate-400">
-          <th class="py-1">Площадка</th>
-          <th class="text-right">Доля выручки</th>
-          <th>Статус</th>
-          <th>Инсайт</th>
-          <th>Действие</th>
+          <th class="py-1">Что растим</th>
+          <th>Сейчас</th>
+          <th>Цель</th>
+          <th>Что сделать</th>
         </tr></thead>
         <tbody>
-          ${pb.map(p => `
-            <tr class="border-t border-slate-800">
-              <td class="py-2 font-semibold">${escapeHtml(p.name || '')}</td>
-              <td class="text-right">${fmtPct(p.revenue_share_pct)}</td>
-              <td>${statusBadge(p.status)}</td>
-              <td class="text-slate-200">${escapeHtml(p.insight || '')}</td>
-              <td class="text-emerald-300">${escapeHtml(p.action || '')}</td>
+          ${gp.map(g => `
+            <tr class="border-t border-slate-800 align-top">
+              <td class="py-2 font-semibold text-white">${escapeHtml(g.dimension || '')}</td>
+              <td class="text-slate-300">${escapeHtml(g.current_metric || '')}</td>
+              <td class="text-emerald-300 font-semibold">${escapeHtml(g.target_metric || '')}</td>
+              <td class="text-slate-200">${escapeHtml(g.action_plan || '')}</td>
             </tr>`).join('')}
         </tbody>
       </table></div>
+    </div>` : '';
+
+  const us = Array.isArray(d.underperforming_segments) ? d.underperforming_segments : [];
+  const segLabel = s => ({
+    showcase: '📱 Витрина в ЛК',
+    sms: '💬 SMS',
+    offline: '🎧 Оффлайн',
+    app: '📲 Приложение',
+    web: '🌐 Веб',
+  }[s] || s || '—');
+  const usHtml = us.length ? `
+    <div>
+      <h3 class="text-white font-bold mb-3">📉 Слабые места — где теряем деньги</h3>
+      <div class="space-y-2">
+        ${us.map(u => `
+          <div class="border-l-4 border-red-500 bg-red-500/5 p-3 rounded">
+            <div class="font-semibold text-white mb-1">${escapeHtml(segLabel(u.segment))}</div>
+            ${u.issue ? `<div class="text-sm text-slate-200"><span class="text-slate-400">Проблема:</span> ${escapeHtml(u.issue)}</div>` : ''}
+            ${u.solution ? `<div class="text-sm text-emerald-300 mt-1"><span class="text-slate-400">Решение:</span> ${escapeHtml(u.solution)}</div>` : ''}
+          </div>`).join('')}
+      </div>
+    </div>` : '';
+
+  const recs = Array.isArray(d.recommendations) ? d.recommendations : [];
+  const recsHtml = recs.length ? `
+    <div>
+      <h3 class="text-white font-bold mb-3">🎯 Конкретные рекомендации</h3>
+      <div class="space-y-2">
+        ${recs.map(r => `
+          <div class="border border-slate-700 rounded p-3 bg-slate-900/50">
+            <div class="flex justify-between items-start gap-3 mb-1">
+              <div class="font-semibold text-white">${escapeHtml(r.title || '')}</div>
+              ${prio(r.priority)}
+            </div>
+            <div class="text-sm text-slate-200 mb-1"><span class="text-slate-400">Действие:</span> ${escapeHtml(r.action || '')}</div>
+            ${r.expected_impact ? `<div class="text-sm text-emerald-300"><span class="text-slate-400">Ожидаемый эффект:</span> ${escapeHtml(r.expected_impact)}</div>` : ''}
+            ${r.evidence ? `<div class="text-xs text-slate-400 mt-1">📊 ${escapeHtml(r.evidence)}</div>` : ''}
+          </div>
+        `).join('')}
+      </div>
     </div>` : '';
 
   const kd = Array.isArray(d.key_decisions) ? d.key_decisions : [];
@@ -2285,27 +2611,12 @@ function renderDeepAIResult(d) {
       </div>
     </div>` : '';
 
-  const risks = Array.isArray(d.risks) ? d.risks : [];
-  const risksHtml = risks.length ? `
-    <div>
-      <h3 class="text-white font-bold mb-3">⚠️ Риски и аномалии</h3>
-      <ul class="space-y-1 text-sm">
-        ${risks.map(r => `<li class="border-l-4 border-red-500 bg-red-500/5 p-2 rounded">${escapeHtml(String(r))}</li>`).join('')}
-      </ul>
-    </div>` : '';
+  const tab3 = [gpHtml, usHtml, recsHtml, kdHtml].filter(Boolean).join('<div class="h-1"></div>')
+    || '<div class="text-sm text-slate-400">Нет данных для блока «Точки роста».</div>';
 
-  // ===== Блок 1: Пути конверсий и слабые точки =====
+  // ============== ВКЛАДКА 4: Анализ офферов и площадок ==============
+  // Блок: пути конверсий и слабые точки
   const cp = d.conversion_paths || null;
-  const sevBadge = s => {
-    if (s === 'high') return '<span class="px-2 py-0.5 rounded text-xs bg-red-500/20 text-red-300 font-semibold">HIGH</span>';
-    if (s === 'medium') return '<span class="px-2 py-0.5 rounded text-xs bg-yellow-500/20 text-yellow-300 font-semibold">MED</span>';
-    return '<span class="px-2 py-0.5 rounded text-xs bg-blue-500/20 text-blue-300 font-semibold">LOW</span>';
-  };
-  const stageLabel = s => ({
-    click_to_conversion: 'Клик → Конверсия',
-    conversion_to_approve: 'Конверсия → Approve',
-    approve_to_revenue: 'Approve → Выручка',
-  }[s] || s || '—');
   const cpHtml = cp ? `
     <div>
       <h3 class="text-white font-bold mb-3">🧪 Пути конверсий и слабые точки</h3>
@@ -2333,21 +2644,11 @@ function renderDeepAIResult(d) {
       ${cp.summary ? `<div class="text-xs text-slate-400 mt-2">${escapeHtml(cp.summary)}</div>` : ''}
     </div>` : '';
 
-  // ===== Блок 2: Анализ офферов vs рыночный EPC + прогноз =====
+  // Анализ офферов vs рынок
   const oma = d.offers_market_analysis || null;
-  const verdictBadge = v => {
-    const map = {
-      scale:   ['bg-emerald-500/20 text-emerald-300', '🚀 Масштабировать'],
-      hold:    ['bg-blue-500/20 text-blue-300',       '⚖️ Удерживать'],
-      replace: ['bg-red-500/20 text-red-300',         '🔁 Заменить'],
-      test:    ['bg-yellow-500/20 text-yellow-300',   '🧪 Тестировать'],
-    };
-    const [cls, label] = map[v] || ['bg-slate-700 text-slate-200', v || '—'];
-    return `<span class="px-2 py-0.5 rounded text-xs font-semibold ${cls}">${label}</span>`;
-  };
   const omaHtml = oma ? `
     <div>
-      <h3 class="text-white font-bold mb-3">💼 Анализ офферов vs рыночный EPC + прогноз</h3>
+      <h3 class="text-white font-bold mb-3">💼 Победители и аутсайдеры (vs рыночный EPC)</h3>
       ${Array.isArray(oma.offers) && oma.offers.length ? `
         <div class="overflow-auto"><table class="w-full text-sm">
           <thead><tr class="text-left text-slate-400">
@@ -2389,39 +2690,33 @@ function renderDeepAIResult(d) {
       ${oma.summary ? `<div class="text-xs text-slate-400 mt-2">${escapeHtml(oma.summary)}</div>` : ''}
     </div>` : '';
 
-  // ===== Блок 3: Кросс-сейл другим продуктам займовой аудитории =====
-  const cs = d.cross_sell || null;
-  const fitBadge = f => {
-    const map = {
-      high:   ['bg-emerald-500/20 text-emerald-300', 'high'],
-      medium: ['bg-yellow-500/20 text-yellow-300',   'medium'],
-      low:    ['bg-slate-700 text-slate-300',        'low'],
-    };
-    const [cls, label] = map[f] || ['bg-slate-700 text-slate-200', f || '—'];
-    return `<span class="px-2 py-0.5 rounded text-xs font-semibold ${cls}">fit: ${label}</span>`;
-  };
-  const csHtml = cs ? `
+  // Разбор площадок
+  const pb = Array.isArray(d.platforms_breakdown) ? d.platforms_breakdown : [];
+  const platformsHtml = pb.length ? `
     <div>
-      <h3 class="text-white font-bold mb-3">🔄 Кросс-сейл — другие продукты для аудитории</h3>
-      ${cs.audience ? `<div class="text-sm text-slate-300 mb-2"><span class="text-slate-400">Аудитория:</span> ${escapeHtml(cs.audience)}</div>` : ''}
-      ${Array.isArray(cs.products) && cs.products.length ? `
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-          ${cs.products.map(p => `
-            <div class="border border-slate-700 rounded p-3 bg-slate-900/50">
-              <div class="flex justify-between items-start gap-3 mb-1">
-                <div class="font-semibold text-white">${escapeHtml(p.product || '')}</div>
-                ${fitBadge(p.fit_score)}
-              </div>
-              ${p.why ? `<div class="text-sm text-slate-200"><span class="text-slate-400">Почему:</span> ${escapeHtml(p.why)}</div>` : ''}
-              ${Array.isArray(p.suggested_offer_types) && p.suggested_offer_types.length ? `<div class="text-sm text-slate-300 mt-1"><span class="text-slate-400">Типы офферов:</span> ${p.suggested_offer_types.map(t => escapeHtml(t)).join(', ')}</div>` : ''}
-              ${p.expected_epc_range ? `<div class="text-sm text-emerald-300 mt-1"><span class="text-slate-400">Ожидаемый EPC:</span> ${escapeHtml(p.expected_epc_range)}</div>` : ''}
-              ${p.kpi_impact ? `<div class="text-xs text-slate-400 mt-1">KPI: ${escapeHtml(p.kpi_impact)}</div>` : ''}
-            </div>`).join('')}
-        </div>` : '<div class="text-sm text-slate-400">Идей кросс-сейла не сформировано.</div>'}
-      ${cs.summary ? `<div class="text-xs text-slate-400 mt-2">${escapeHtml(cs.summary)}</div>` : ''}
+      <h3 class="text-white font-bold mb-3">🏬 Разбор по ключевым площадкам (≈99% выручки)</h3>
+      <div class="overflow-auto"><table class="w-full text-sm">
+        <thead><tr class="text-left text-slate-400">
+          <th class="py-1">Площадка</th>
+          <th class="text-right">Доля выручки</th>
+          <th>Статус</th>
+          <th>Инсайт</th>
+          <th>Действие</th>
+        </tr></thead>
+        <tbody>
+          ${pb.map(p => `
+            <tr class="border-t border-slate-800">
+              <td class="py-2 font-semibold">${escapeHtml(p.name || '')}</td>
+              <td class="text-right">${fmtPct(p.revenue_share_pct)}</td>
+              <td>${statusBadge(p.status)}</td>
+              <td class="text-slate-200">${escapeHtml(p.insight || '')}</td>
+              <td class="text-emerald-300">${escapeHtml(p.action || '')}</td>
+            </tr>`).join('')}
+        </tbody>
+      </table></div>
     </div>` : '';
 
-  // ===== Блок 4: Резкие просадки EPC день-к-дню =====
+  // Резкие просадки EPC
   const ed = d.epc_drops || null;
   const edHtml = ed ? `
     <div>
@@ -2462,9 +2757,51 @@ function renderDeepAIResult(d) {
       `}
     </div>` : '';
 
-  resEl.innerHTML = [summary, cpHtml, omaHtml, csHtml, edHtml, recsHtml, forecastHtml, platformsHtml, kdHtml, risksHtml].filter(Boolean).join('');
+  // Кросс-сейл — оставляем на 4-й вкладке вместе с разбором офферов.
+  const cs = d.cross_sell || null;
+  const csHtml = cs ? `
+    <div>
+      <h3 class="text-white font-bold mb-3">🔄 Кросс-сейл — другие продукты для аудитории</h3>
+      ${cs.audience ? `<div class="text-sm text-slate-300 mb-2"><span class="text-slate-400">Аудитория:</span> ${escapeHtml(cs.audience)}</div>` : ''}
+      ${Array.isArray(cs.products) && cs.products.length ? `
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+          ${cs.products.map(p => `
+            <div class="border border-slate-700 rounded p-3 bg-slate-900/50">
+              <div class="flex justify-between items-start gap-3 mb-1">
+                <div class="font-semibold text-white">${escapeHtml(p.product || '')}</div>
+                ${fitBadge(p.fit_score)}
+              </div>
+              ${p.why ? `<div class="text-sm text-slate-200"><span class="text-slate-400">Почему:</span> ${escapeHtml(p.why)}</div>` : ''}
+              ${Array.isArray(p.suggested_offer_types) && p.suggested_offer_types.length ? `<div class="text-sm text-slate-300 mt-1"><span class="text-slate-400">Типы офферов:</span> ${p.suggested_offer_types.map(t => escapeHtml(t)).join(', ')}</div>` : ''}
+              ${p.expected_epc_range ? `<div class="text-sm text-emerald-300 mt-1"><span class="text-slate-400">Ожидаемый EPC:</span> ${escapeHtml(p.expected_epc_range)}</div>` : ''}
+              ${p.kpi_impact ? `<div class="text-xs text-slate-400 mt-1">KPI: ${escapeHtml(p.kpi_impact)}</div>` : ''}
+            </div>`).join('')}
+        </div>` : '<div class="text-sm text-slate-400">Идей кросс-сейла не сформировано.</div>'}
+      ${cs.summary ? `<div class="text-xs text-slate-400 mt-2">${escapeHtml(cs.summary)}</div>` : ''}
+    </div>` : '';
+
+  const tab4 = [omaHtml, platformsHtml, edHtml, cpHtml, csHtml].filter(Boolean).join('<div class="h-1"></div>')
+    || '<div class="text-sm text-slate-400">Нет данных для блока «Офферы и площадки».</div>';
+
+  // ============== Сборка таб-навигации ==============
+  const tabBtn = (key, label) => `<button data-aitab-btn="${key}" onclick="switchAiDeepTab('${key}')" class="px-3 py-2 rounded text-sm font-semibold bg-slate-800 text-slate-300 hover:bg-slate-700 transition">${label}</button>`;
+  resEl.innerHTML = `
+    <div class="flex flex-wrap gap-2 mb-4 border-b border-slate-700 pb-3">
+      ${tabBtn('summary', '📊 Сводка и Риски')}
+      ${tabBtn('reject',  '🔄 Маршрутизация отказников')}
+      ${tabBtn('growth',  '📈 Точки роста')}
+      ${tabBtn('offers',  '🎯 Офферы и площадки')}
+    </div>
+    <div data-aitab="summary" class="space-y-4">${tab1 || '<div class="text-sm text-slate-400">Нет данных для сводки.</div>'}</div>
+    <div data-aitab="reject"  class="space-y-4 hidden">${tab2}</div>
+    <div data-aitab="growth"  class="space-y-4 hidden">${tab3}</div>
+    <div data-aitab="offers"  class="space-y-4 hidden">${tab4}</div>
+  `;
   resEl.classList.remove('hidden');
+  // Подсветка активной вкладки по умолчанию.
+  switchAiDeepTab('summary');
 }
+
 
 
 function sortTable(tableId, field) {
