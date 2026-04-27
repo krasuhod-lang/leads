@@ -695,7 +695,7 @@ function saveReportRows($db, $rows, $offerMap) {
 function aiBuildSignature() {
     return [
         // Описание модуля и его контракт.
-        'task' => 'Глубокий бизнес-анализ статистики аффилиатной CPA-площадки с целью увеличения выручки.',
+        'task' => 'Глубокий бизнес-анализ статистики аффилиатной CPA-площадки в займовой/МФО-вертикали с фокусом на домонетизацию ОТКАЗНОГО трафика по каналам (витрина в ЛК / SMS / оффлайн / мобильное приложение).',
         'goals' => [
             'Дать конкретные, исполнимые рекомендации (а не общие фразы).',
             'Опираться строго на полученные цифры, явно ссылаться на них в выводах.',
@@ -703,61 +703,115 @@ function aiBuildSignature() {
             'Анализировать в разрезе площадок, дающих суммарно ~99% выручки (top-площадки, мелкие игнорировать).',
             'Помочь принять ключевые решения, влияющие на рост выручки.',
             'Структурировано отделить: пути конверсий и слабые точки; анализ офферов vs рынок (с прогнозом); кросс-сейл для займовой аудитории; диагностику резких просадок EPC ото дня ко дню.',
+            'Сегментировать отказной трафик по каналам домонетизации и для каждого канала рекомендовать офферы из payload (showcase / sms / offline / mobile_app), исходя из специфики канала.',
+            'Указать точки роста и проседающие сегменты с числовыми метриками и планом действий.',
         ],
         // Схема выходного JSON. Используем её одновременно как часть промта и для валидации.
         'output_schema' => [
-            'reasoning' => 'string — краткое рассуждение по данным (3-6 предложений). НЕ копировать в ответ ничего, кроме фактов.',
+            'reasoning_log' => 'array<string> — Chain-of-Thought на английском, 4-6 пунктов: PHASE 1 DATA SANITY → PHASE 2 FRAUD DETECTION → PHASE 3 MARKET & DROPS → PHASE 4 ROUTING. В каждом пункте — конкретные числа из payload и микро-вычисления.',
+            'reasoning' => 'string — краткое резюме CoT для аналитика (опционально).',
             'summary' => 'string — деловое резюме периода (2-4 предложения), без воды.',
             'recommendations' => 'array<{title:string, action:string, expected_impact:string, priority:"high"|"medium"|"low", evidence:string}> — 3-7 конкретных рекомендаций, каждая с действием и ожидаемым эффектом, привязкой к цифрам в evidence',
             'forecast' => '{period_7d:{revenue:number, clicks:number, epc:number, approve_rate:number, confidence:"low"|"medium"|"high", basis:string}, period_30d:{revenue:number, clicks:number, epc:number, approve_rate:number, confidence:"low"|"medium"|"high", basis:string}}',
             'platforms_breakdown' => 'array<{name:string, revenue_share_pct:number, status:"grow"|"stable"|"watch"|"risk", insight:string, action:string}> — разбор только по площадкам из top_platforms (до 10), с долей в выручке',
             'key_decisions' => 'array<{decision:string, rationale:string, kpi_impact:string}> — 2-5 ключевых управленческих решений, направленных на рост выручки',
             'risks' => 'array<string> — риски и аномалии, требующие внимания (фрод, концентрация, просадки)',
-            // НОВЫЕ структурированные блоки.
+            // Структурированные блоки.
             'conversion_paths' => '{funnel:{clicks:number, conversions:number, approved:number, revenue:number, cr_pct:number, approve_rate_pct:number, epc:number}, weak_points:array<{stage:"click_to_conversion"|"conversion_to_approve"|"approve_to_revenue", where:string, metric:string, value:number, benchmark:number, severity:"high"|"medium"|"low", root_cause:string, fix:string, expected_uplift:string}>, summary:string} — пути конверсии и слабые точки воронки. weak_points — 2-6 шт.',
             'offers_market_analysis' => '{offers:array<{name:string, your_epc:number, market_epc:number, delta_pct:number, verdict:"scale"|"hold"|"replace"|"test", recommendation:string, forecast_epc:number, forecast_revenue_uplift:string, confidence:"low"|"medium"|"high", evidence:string}>, watchlist:array<{name:string, reason:string}>, summary:string} — поофферный анализ vs рыночный EPC, прогноз и список офферов, на которые стоит обратить внимание для увеличения доходности трафика. offers — 5-12 шт.',
             'cross_sell' => '{audience:string, products:array<{product:string, why:string, fit_score:"low"|"medium"|"high", suggested_offer_types:array<string>, expected_epc_range:string, kpi_impact:string}>, summary:string} — закономерности и идеи кросс-сейла другим продуктам займовой аудитории (страхование, карты, рефинанс, БКИ, мед.услуги, телеком и т.п.). 3-6 продуктов.',
             'epc_drops' => '{detected:boolean, drops:array<{date:string, prev_date:string, prev_epc:number, curr_epc:number, drop_pct:number, affected_offers:array<string>, affected_platforms:array<string>, evidence_based_reasons:array<string>, recommended_replacement:{offer:string, basis:string, expected_epc:number, historical_period:string}, confidence:"low"|"medium"|"high"}>, summary:string} — диагностика резких просадок EPC ото дня ко дню. Если просадок >=20% не обнаружено — detected=false, drops=[]. Иначе для каждой просадки даётся аргументированное обоснование (на основании daily_recent / weekly_trend / sub1_anomalies / market_compare) и рекомендуется оффер для замены, опираясь на ретроданные прошлых периодов.',
+            // НОВЫЕ блоки для модернизации под отказной трафик МФО.
+            'reject_monetization_strategy' => '{showcase_optimization:array<{offer_name:string, action:"add"|"promote"|"remove", reasoning:string}>, sms_campaigns:array<{offer_name:string, trigger_message_idea:string, expected_epc_uplift:number}>, offline_routing:array<{offer_name:string, reasoning:string}>, mobile_app_retention:array<{offer_name:string, placement_strategy:string}>, summary:string} — стратегия домонетизации отказного трафика по 4 каналам. По 2-5 офферов в каждом подмассиве. Все offer_name ОБЯЗАНЫ быть из offers_top / traffic_sources_breakdown.*.top_offers. Подбор: showcase = высокий CR + высокий Approve + средний/низкий EPC (горячий трафик после отказа); sms = высокий EPC + высокий CR + триггер 0%/одобрение всем; offline = высокая выплата за лид + низкий CR (сложные офферы для дожима оператором); mobile_app = долгосрочные/LTV-офферы (карты, рассрочка, длинные займы).',
+            'growth_points' => 'array<{dimension:string, current_metric:string, target_metric:string, action_plan:string}> — 3-6 точек роста с числовыми текущими и целевыми метриками. dimension — например «Увеличение CR в SMS», «Рост EPC на витрине ЛК», «Снижение CPL в оффлайне».',
+            'underperforming_segments' => 'array<{segment:"showcase"|"sms"|"offline"|"app"|"web", issue:string, solution:string}> — 2-5 проседающих сегментов отказного трафика. issue должен содержать конкретные числа из traffic_sources_breakdown.',
         ],
     ];
 }
 
 function aiBuildSystemPrompt($sig) {
+    // Полная JSON-схема ответа — встраиваем как авторитетный OUTPUT SCHEMA.
+    // Сохраняем все ранее введённые блоки (forecast, conversion_paths,
+    // offers_market_analysis, cross_sell, epc_drops, platforms_breakdown,
+    // key_decisions, recommendations, growth_points, underperforming_segments),
+    // но добавляем reasoning_log и формализуем CoT-фазы.
     $schemaJson = json_encode($sig['output_schema'], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
-    $goals = "- " . implode("\n- ", $sig['goals']);
     return <<<PROMPT
-Ты — старший бизнес-аналитик и консультант по росту выручки в performance-маркетинге (CPA, affiliate, займовая вертикаль).
-Задача: {$sig['task']}
+[ROLE & CONTEXT]
+You are a Senior Affiliate Marketing Analyst and Data Scientist specializing in Payday Loans (MFO) and Reject Traffic monetization.
+Your objective is to analyze the provided JSON payload containing daily performance metrics, detect anomalies, and strategically route underperforming or rejected traffic to the most profitable monetization channels.
 
-Цели вывода:
-{$goals}
+[CRITICAL CONSTRAINTS - STRICT COMPLIANCE REQUIRED]
+1. NO HALLUCINATIONS: You MUST ONLY recommend offer names, platform names and sub1 values that exactly match strings present in the input JSON (offers_top[].name, traffic_sources_breakdown.*.top_offers[].name, market_compare[].name, offers_daily_epc[].name, top_platforms[].name, sub1_anomalies[].name). Do NOT invent, guess, translate or paraphrase offer names. If a channel has no eligible offers in the payload — return an empty array for that channel and explain why in reject_monetization_strategy.summary.
+2. DATA-DRIVEN ONLY: Every recommendation MUST be backed by numbers from the payload. Always cite the exact metric value (e.g. "AR=18.4%, CR=12.1%, EPC=2.7₽").
+3. SILENT OPERATION: Do not introduce yourself, do not apologize, do not mention you are an AI, do not mention the model or provider.
+4. JSON FORMAT: Your entire response MUST be a single, valid, parseable JSON object matching the OUTPUT SCHEMA below. No markdown, no code fences, no commentary outside JSON.
+5. LANGUAGE: User-facing text fields (summary, reasoning, recommendations.*, platforms_breakdown.*, conversion_paths.*, offers_market_analysis.*, cross_sell.*, epc_drops.*, reject_monetization_strategy.*, growth_points.*, underperforming_segments.*, risks) — Russian, professional, no fluff. The reasoning_log array — English, technical, with numbers.
+6. NUMERIC TYPES: All numeric fields (revenue, clicks, epc, *_pct, expected_epc_uplift, forecast_epc, etc.) — JSON numbers, never strings. Currency = ₽. Percentages = numbers like 27.4 (meaning 27.4%).
 
-Жёсткие правила:
-1. Отвечай ТОЛЬКО валидным JSON в одной строке/блоке (без markdown, без ```), который точно соответствует схеме ниже.
-2. Все числовые значения в forecast — числа (не строки), валюта = ₽, проценты — числа в виде N (например 27.4 для 27.4%).
-3. В platforms_breakdown анализируй ТОЛЬКО площадки из массива top_platforms (это уже отфильтрованные ~99% выручки). Мелкие игнорируй.
-4. Каждая recommendation должна:
-   - быть конкретной (что именно сделать на следующей неделе),
-   - содержать evidence — цитату/значение из переданных данных (например «EPC оффера X = 1.2₽ при среднем 4.7₽»),
-   - иметь expected_impact с примерной оценкой (например «+8-12% к выручке за 14 дней»).
-5. Прогноз строй на основании weekly_trend / monthly_trend и текущих KPI; осознанно учитывай сезонность и снижение/рост последних недель. Если данных мало — confidence=«low».
-6. Никогда не упоминай свою модель, провайдера или "AI". Пиши как аналитик.
-7. Язык вывода — русский, профессиональный, без воды и без «возможно стоит подумать».
+[MATHEMATICS & DEFINITIONS — TREAT AS AXIOMS]
+- EPC (Earnings Per Click) = Revenue / Clicks
+- CR (Conversion Rate, %) = (Leads / Clicks) * 100        [Leads = "conversions" in payload]
+- AR (Approval Rate, %) = (Approved / Leads) * 100
+- CPA (Cost / Payout Per Action) = Revenue / Approved      [revenue per approved lead]
+- Market Delta (%) = (your_epc - market_epc) / market_epc * 100
+- EPC variance for an offer = stdev(offers_daily_epc[i].series[].epc) / mean(...)
 
-Дополнительные требования по структурированным блокам (обязательно заполни все, даже если данных мало):
-A. conversion_paths — построй сквозную воронку (clicks → conversions → approved → revenue) на основании kpi и offers_top/sub1_anomalies. Выдели 2-6 слабых точек. Для каждой укажи: на какой стадии («click_to_conversion», «conversion_to_approve», «approve_to_revenue»), где конкретно (площадка/оффер/sub1), фактическое значение метрики, бенчмарк (средний по портфелю или рыночный), severity, корневую причину и конкретный fix с ожидаемым uplift.
-B. offers_market_analysis — пройди по market_compare и offers_top: для каждого оффера сравни your_epc с market_epc, поставь verdict (scale/hold/replace/test), дай рекомендацию и прогноз forecast_epc на ближайший период + диапазон uplift к выручке. Сформируй watchlist — офферы, на которые стоит обратить внимание для роста доходности (большой объём + положительный delta_pct, либо растущий тренд EPC). Используй цифры из payload в evidence.
-C. cross_sell — определи аудиторию (займы / микрозаймы / PDL / installment) и предложи 3-6 смежных продуктов, которые можно предлагать той же аудитории (например: страхование жизни/здоровья, дебетовые/кредитные карты, рефинансирование, БКИ, юр.помощь по долгам, телеком/онлайн-сервисы). Для каждого продукта — fit_score, типы офферов, ожидаемый диапазон EPC и эффект на KPI. Привязывай к закономерностям, видимым в данных (sub1, площадки, сезонность).
-D. epc_drops — пройди по daily_recent и offers_daily_epc: найди дни, где EPC просел >=20% относительно предыдущего дня (и/или относительно скользящего среднего). Для каждой просадки укажи затронутые офферы/площадки, аргументированные причины (на основании данных: падение approve %, рост дешёвых sub1, перераспределение трафика, расхождение с market_epc и т.п.) и рекомендуемый оффер для замены — выбирая из ретроданных прошлых периодов (offers_top / market_compare с устойчиво высоким EPC) с указанием периода, на котором этот оффер показывал хороший результат. Если значимых просадок нет — detected=false, drops=[], в summary это явно укажи.
+[REJECT TRAFFIC ROUTING LOGIC — APPLY STRICTLY]
+Classify and route candidate offers from the payload into FOUR reject monetization channels using these strict criteria. Use offers_top, traffic_sources_breakdown.*.top_offers and offers_daily_epc as the candidate pool.
 
-Схема выходного JSON (ключи и типы строго такие):
+1. SHOWCASE (Витрина в ЛК МФО — Hot Online Rejects)
+   • Hard condition: AR > 15% AND CR > 10%.
+   • Goal: Maximize probability of instant approval for users who just got rejected on the primary offer.
+   • Signals from payload: high approve_rate_pct, high cr_pct, approval_difficulty="easy" or is_zero_percent=true.
+   • action: "add" (new on showcase), "promote" (raise in ranking), "remove" (kick out an underperformer that was already there).
+
+2. SMS CAMPAIGNS (Cold/Warm Rejects)
+   • Hard condition: Highest CR (Click → Lead) AND high EPC among candidates.
+   • Goal: Maximize clickbait conversion on a cooled-down base. CPA matters less than high-volume CR.
+   • Signals: high cr_pct, high epc, is_zero_percent=true or approval_difficulty="easy".
+   • trigger_message_idea: short SMS copy (≤140 chars) with a concrete trigger ("0%", "одобрение всем", "до 30 000₽ за 5 мин").
+   • expected_epc_uplift: numeric expected % uplift of the SMS-channel EPC.
+
+3. OFFLINE CALL-CENTER (Hard Rejects)
+   • Hard condition: Highest CPA among candidates. Low overall CR is acceptable if CPA is massive — that's what funds the operator.
+   • Goal: Cover the expensive cost of human brokers/operators with high margin per closed sale.
+   • Signals: is_installment=true, approval_difficulty="hard", low cr_pct + high revenue/conversions.
+
+4. MOBILE APP (Retention Rejects)
+   • Hard condition: Stable EPC across the offers_daily_epc[].series array (low variance).
+   • Goal: Long-term LTV — credit cards, installment loans, long PDL for loyal returning users.
+   • Signals: stable daily epc series, is_installment=true, sustained approve_rate_pct.
+   • placement_strategy: where exactly inside the app (home screen / push / re-loan widget / post-repayment offer).
+
+[ANALYSIS PHASES - CHAIN OF THOUGHT]
+Before producing the final blocks, document your analytical work in the reasoning_log array (English, with numbers). Execute these phases in order:
+- PHASE 1 — DATA SANITY: Check for logical impossibilities (e.g. conversions > clicks, approved > conversions, negative revenue). Note any payload defects.
+- PHASE 2 — FRAUD DETECTION: Scan sub1_anomalies for clicks > 300 with AR < 2% or CR < 1%. Flag suspicious sub1 values with their numbers.
+- PHASE 3 — MARKET & DROPS: Walk market_compare and epc_drops_signals. Compute lost-revenue potential = sum(clicks * |delta|) for negative deltas.
+- PHASE 4 — ROUTING: Apply [REJECT TRAFFIC ROUTING LOGIC] to top offers. For each routed offer name explicitly cite AR/CR/CPA/EPC values from the payload and which channel it goes to and why.
+
+[ADDITIONAL BLOCK GUIDANCE — keep all of these populated]
+A. conversion_paths — full funnel (clicks → conversions → approved → revenue) from kpi + 2-6 weak_points (stage / where / metric / value / benchmark / severity / root_cause / fix / expected_uplift).
+B. offers_market_analysis — for each offer in market_compare set verdict (scale/hold/replace/test) using Market Delta, give recommendation, forecast_epc, forecast_revenue_uplift; build watchlist of high-volume offers with positive delta.
+C. cross_sell — pick audience (PDL / installment / microloans) and propose 3-6 adjacent products (insurance, debit/credit cards, refinance, BKI, legal debt help, telecom). Tie each to a pattern visible in the payload.
+D. epc_drops — find days where EPC dropped ≥20% vs previous day (use daily_recent + offers_daily_epc); for each drop give evidence_based_reasons and a recommended_replacement offer drawn from historical periods. If none — detected=false, drops=[].
+E. forecast — period_7d and period_30d numeric forecasts based on weekly_trend / monthly_trend; degrade confidence if data is sparse.
+F. platforms_breakdown — only top_platforms (~99% of revenue, ≤10). Skip the long tail.
+G. growth_points — 3-6 items with numeric current_metric and target_metric and a concrete action_plan (use traffic_sources_breakdown numbers).
+H. underperforming_segments — 2-5 items with segment ∈ {showcase, sms, offline, app, web}, issue with payload numbers, solution.
+
+[OUTPUT SCHEMA]
+Return ONLY a single JSON object exactly matching this schema (keys and types):
 {$schemaJson}
 PROMPT;
 }
 
 function aiBuildUserPrompt($payload, $sig) {
+    // По новому ТЗ user prompt должен быть максимально коротким — вся логика
+    // и схема уже вшиты в system prompt. Здесь просто доставляем payload.
     $data = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
-    return "Входные данные за выбранный период (агрегированные):\n```json\n{$data}\n```\n\nВерни ответ строго по схеме. Никакого текста вне JSON.";
+    return "Analyze the following performance snapshot according to your system instructions. Execute the 4 phases in the reasoning_log and output the final JSON.\n\n### PAYLOAD JSON ###\n{$data}\n### END PAYLOAD ###";
 }
 
 function aiTrimPayload($p) {
@@ -788,26 +842,72 @@ function aiTrimPayload($p) {
         }
         unset($o);
     }
+    // traffic_sources_breakdown: гарантируем, что top_offers внутри каждого
+    // канала не более 5 — этого достаточно AI, чтобы сформировать
+    // reject_monetization_strategy без раздувания промпта.
+    if (isset($p['traffic_sources_breakdown']) && is_array($p['traffic_sources_breakdown'])) {
+        foreach ($p['traffic_sources_breakdown'] as &$ch) {
+            if (is_array($ch) && isset($ch['top_offers']) && is_array($ch['top_offers']) && count($ch['top_offers']) > 5) {
+                $ch['top_offers'] = array_slice($ch['top_offers'], 0, 5);
+            }
+        }
+        unset($ch);
+    }
     return $p;
 }
 
 function aiValidateOutput($obj, $sig) {
     if (!is_array($obj)) return 'Output is not a JSON object';
-    foreach (['summary', 'recommendations', 'forecast', 'platforms_breakdown', 'key_decisions'] as $req) {
+    // Жёстко валидируем ТОЛЬКО три ключа верхнего уровня (по новому ТЗ):
+    //   summary, reject_monetization_strategy, risks.
+    // Остальные блоки — мягкие: при отсутствии бэкфиллим безопасными
+    // значениями в aiBackfillOutput, чтобы фронт не падал.
+    foreach (['summary', 'reject_monetization_strategy', 'risks'] as $req) {
         if (!array_key_exists($req, $obj)) return "Missing required field: {$req}";
     }
-    if (!is_array($obj['recommendations']) || !count($obj['recommendations'])) return 'recommendations must be non-empty array';
-    if (!is_array($obj['forecast']) || !isset($obj['forecast']['period_7d'], $obj['forecast']['period_30d'])) return 'forecast.period_7d/period_30d required';
-    if (!is_array($obj['platforms_breakdown'])) return 'platforms_breakdown must be array';
-    if (!is_array($obj['key_decisions'])) return 'key_decisions must be array';
-    // Новые блоки — проверяем тип, если присутствуют (мягкая валидация: пустые
-    // блоки допустимы, чтобы не ронять весь анализ при дефиците данных).
-    foreach (['conversion_paths', 'offers_market_analysis', 'cross_sell', 'epc_drops'] as $opt) {
+    if (!is_array($obj['reject_monetization_strategy'])) {
+        return 'reject_monetization_strategy must be an object';
+    }
+    if (!is_array($obj['risks'])) {
+        return 'risks must be an array';
+    }
+    // Мягкая проверка типов прочих блоков (не роняем ответ, если просто отсутствуют).
+    foreach (['recommendations', 'platforms_breakdown', 'key_decisions', 'growth_points',
+             'underperforming_segments', 'reasoning_log'] as $opt) {
+        if (array_key_exists($opt, $obj) && !is_array($obj[$opt])) {
+            return "{$opt} must be an array";
+        }
+    }
+    foreach (['forecast', 'conversion_paths', 'offers_market_analysis', 'cross_sell', 'epc_drops'] as $opt) {
         if (array_key_exists($opt, $obj) && !is_array($obj[$opt])) {
             return "{$opt} must be an object";
         }
     }
     return null;
+}
+
+// Бэкфилл недостающих опциональных полей. Гарантирует, что фронтенд получит
+// предсказуемую структуру, даже если модель пропустила часть блоков (например,
+// забыла mobile_app_retention внутри reject_monetization_strategy).
+function aiBackfillOutput($obj) {
+    if (!is_array($obj)) return $obj;
+    // Опциональные массивы верхнего уровня.
+    foreach (['recommendations', 'platforms_breakdown', 'key_decisions',
+             'growth_points', 'underperforming_segments', 'reasoning_log'] as $k) {
+        if (!array_key_exists($k, $obj) || !is_array($obj[$k])) $obj[$k] = [];
+    }
+    // Опциональные объекты верхнего уровня.
+    foreach (['forecast', 'conversion_paths', 'offers_market_analysis', 'cross_sell', 'epc_drops'] as $k) {
+        if (!array_key_exists($k, $obj) || !is_array($obj[$k])) $obj[$k] = new stdClass();
+    }
+    // reject_monetization_strategy: гарантируем все 4 подмассива.
+    $rms = is_array($obj['reject_monetization_strategy'] ?? null) ? $obj['reject_monetization_strategy'] : [];
+    foreach (['showcase_optimization', 'sms_campaigns', 'offline_routing', 'mobile_app_retention'] as $k) {
+        if (!array_key_exists($k, $rms) || !is_array($rms[$k])) $rms[$k] = [];
+    }
+    if (!array_key_exists('summary', $rms) || !is_string($rms['summary'])) $rms['summary'] = '';
+    $obj['reject_monetization_strategy'] = $rms;
+    return $obj;
 }
 
 function aiCallProviderStructured($sysPrompt, $userPrompt, $sig) {
@@ -820,7 +920,7 @@ function aiCallProviderStructured($sysPrompt, $userPrompt, $sig) {
     }
     $obj = aiExtractJson($resp['content'] ?? '');
     $err = aiValidateOutput($obj, $sig);
-    if ($err === null) return $obj;
+    if ($err === null) return aiBackfillOutput($obj);
 
     // Шаг 2 (Refine) — один retry с явной коррекцией.
     $refineUser = $userPrompt . "\n\nПредыдущий ответ был невалиден: {$err}. Верни ИСПРАВЛЕННЫЙ JSON строго по схеме, без markdown.";
@@ -831,7 +931,7 @@ function aiCallProviderStructured($sysPrompt, $userPrompt, $sig) {
     }
     $obj2 = aiExtractJson($resp2['content'] ?? '');
     $err2 = aiValidateOutput($obj2, $sig);
-    if ($err2 === null) return $obj2;
+    if ($err2 === null) return aiBackfillOutput($obj2);
 
     return ['error' => 'Validation failed: ' . $err2];
 }
