@@ -15,6 +15,39 @@ header('Access-Control-Allow-Origin: *');
 header('Access-Control-Allow-Methods: GET, POST, OPTIONS');
 header('Access-Control-Allow-Headers: Content-Type');
 
+// ---- Глобальная страховка от HTML-ответов вместо JSON. ----
+// Любая fatal/parse ошибка PHP по умолчанию приводит к HTML-странице
+// (или вовсе пустому телу + 500 от веб-сервера) → фронт ловит
+// "Unexpected token '<'" в JSON.parse. Перехватываем shutdown и
+// нефатальные ошибки, чтобы клиент всегда получал валидный JSON.
+set_error_handler(function ($severity, $message, $file, $line) {
+    // Уважаем @-операторы и текущий error_reporting.
+    if (!(error_reporting() & $severity)) {
+        return false;
+    }
+    // Только фактические ошибки превращаем в исключения; warning/notice
+    // оставляем как есть, чтобы не ломать существующее поведение.
+    if ($severity === E_ERROR || $severity === E_USER_ERROR || $severity === E_RECOVERABLE_ERROR) {
+        throw new ErrorException($message, 0, $severity, $file, $line);
+    }
+    return false;
+});
+
+register_shutdown_function(function () {
+    $err = error_get_last();
+    if (!$err) return;
+    $fatalTypes = [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR, E_USER_ERROR];
+    if (!in_array($err['type'], $fatalTypes, true)) return;
+    // Если что-то уже было отдано — дописывать JSON поздно, просто логируем.
+    error_log(sprintf('Fatal in leads-proxy.php: %s in %s:%d', $err['message'], $err['file'], $err['line']));
+    if (headers_sent()) return;
+    // Сбросим возможные ранее выставленные коды/буферы, чтобы отдать чистый JSON.
+    while (ob_get_level() > 0) { @ob_end_clean(); }
+    http_response_code(500);
+    header('Content-Type: application/json; charset=utf-8');
+    echo json_encode(['status' => 'error', 'error' => 'internal']);
+});
+
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(200);
     exit;
@@ -44,7 +77,9 @@ $YM_CLICK_GOAL_ID     = 468033800; // Клики
 // Можно переопределить переменными окружения AI_API_KEY / AI_API_URL / AI_MODEL,
 // если потребуется ротация без правки кода.
 if (!defined('AI_API_KEY')) {
-    define('AI_API_KEY', getenv('AI_API_KEY') ?: 'sk-e3d9e424edf649858d901c2c97b91958');
+    // Ключ ДОЛЖЕН задаваться переменной окружения AI_API_KEY.
+    // Никаких дефолтных значений в исходниках — иначе ключ утекает в публичный git.
+    define('AI_API_KEY', getenv('AI_API_KEY') ?: '');
 }
 if (!defined('AI_API_URL')) {
     define('AI_API_URL', getenv('AI_API_URL') ?: 'https://api.deepseek.com/chat/completions');
@@ -911,10 +946,10 @@ function aiBackfillOutput($obj) {
 }
 
 function aiCallProviderStructured($sysPrompt, $userPrompt, $sig) {
-    // Шаг 1 — основной запрос.
+    // Шаг 1 — основной запрос на быстрой модели (deepseek-chat).
     $resp = aiCallProvider($sysPrompt, $userPrompt, AI_MODEL);
     if (isset($resp['error'])) {
-        // Один fallback на более лёгкую модель той же линейки.
+        // Один fallback на reasoner (он медленный, но иногда переживает 5xx).
         $resp = aiCallProvider($sysPrompt, $userPrompt, AI_FALLBACK_MODEL);
         if (isset($resp['error'])) return $resp;
     }
@@ -923,12 +958,13 @@ function aiCallProviderStructured($sysPrompt, $userPrompt, $sig) {
     if ($err === null) return aiBackfillOutput($obj);
 
     // Шаг 2 (Refine) — один retry с явной коррекцией.
+    // ВАЖНО: refine всегда идёт по быстрой модели (deepseek-chat), даже
+    // если основной ответ пришёл от reasoner. Иначе суммарное время
+    // запроса (chat ~60c + reasoner ~150c) легко уходит за proxy_read_timeout
+    // вышестоящего nginx/Cloudflare и клиент получает HTML 504 вместо JSON.
     $refineUser = $userPrompt . "\n\nПредыдущий ответ был невалиден: {$err}. Верни ИСПРАВЛЕННЫЙ JSON строго по схеме, без markdown.";
     $resp2 = aiCallProvider($sysPrompt, $refineUser, AI_MODEL);
-    if (isset($resp2['error'])) {
-        $resp2 = aiCallProvider($sysPrompt, $refineUser, AI_FALLBACK_MODEL);
-        if (isset($resp2['error'])) return $resp2;
-    }
+    if (isset($resp2['error'])) return $resp2;
     $obj2 = aiExtractJson($resp2['content'] ?? '');
     $err2 = aiValidateOutput($obj2, $sig);
     if ($err2 === null) return aiBackfillOutput($obj2);
@@ -969,7 +1005,8 @@ function aiCallProvider($sysPrompt, $userPrompt, $model) {
         CURLOPT_URL => AI_API_URL,
         CURLOPT_POST => true,
         CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT => $isReasoner ? 240 : 120,
+        CURLOPT_TIMEOUT => $isReasoner ? 150 : 90,
+        CURLOPT_CONNECTTIMEOUT => 15,
         CURLOPT_SSL_VERIFYPEER => true,
         CURLOPT_SSL_VERIFYHOST => 2,
         CURLOPT_HTTPHEADER => [
@@ -1719,10 +1756,30 @@ if ($action === 'tg_check_alerts') {
 // формирует структурированный (DSPy-style) промт и вызывает внешнего AI-провайдера
 // серверным запросом. Ключ/название модели никогда не возвращаются клиенту.
 if ($action === 'ai_analyze') {
+    // Поднимаем PHP-лимиты: AI-запрос может занять несколько минут,
+    // дефолтные max_execution_time/memory_limit на shared-хостинге часто
+    // ниже реальной длительности и приводят к фаталу → пустой/HTML ответ.
+    @set_time_limit(0);
+    @ini_set('memory_limit', '256M');
+    // Просим nginx/Cloudflare НЕ буферизовать ответ — иначе reverse-proxy
+    // может закрыть соединение по своему `proxy_read_timeout` раньше,
+    // чем PHP успеет дописать тело, и клиент получит HTML 504.
+    header('X-Accel-Buffering: no');
+    header('Cache-Control: no-cache');
+    // Сбрасываем уже накопленные хедеры в сокет до начала тяжёлого вызова.
+    @ob_flush();
+    @flush();
+
     $raw = file_get_contents('php://input');
     $payload = json_decode($raw, true);
     if (!is_array($payload)) {
         echo json_encode(['status' => 'error', 'error' => 'Invalid payload']);
+        exit;
+    }
+    if (AI_API_KEY === '') {
+        // Ключ не сконфигурирован на сервере — отдаём JSON, а не падаем в HTML.
+        error_log('AI: AI_API_KEY env is empty; refusing to call provider');
+        echo json_encode(['status' => 'error', 'error' => 'AI service is not configured.']);
         exit;
     }
     // Жёстко ограничиваем размер payload, чтобы не раздувать prompt и стоимость.

@@ -911,7 +911,28 @@ function updateNextRefreshTime() {
 async function loadOfferMarketData() {
   try {
     const res = await fetch(`${API_BASE}?action=get_offers_market`);
-    const json = await res.json();
+    const text = await res.text();
+    const ct = res.headers.get('content-type') || '';
+    if (!res.ok || !ct.toLowerCase().includes('application/json')) {
+      // Сервер вернул HTML/пустоту вместо JSON — не пытаемся парсить,
+      // логируем статус + первые ~300 символов тела для диагностики.
+      console.warn('loadOfferMarketData: non-JSON response',
+        res.status, ct, text.slice(0, 300));
+      const mEl = document.getElementById('offerMarketStatus');
+      if (mEl) {
+        mEl.textContent = `⚠️ Не удалось загрузить рыночные EPC (HTTP ${res.status}).`;
+        mEl.classList.remove('hidden');
+      }
+      return;
+    }
+    let json;
+    try {
+      json = JSON.parse(text);
+    } catch (parseErr) {
+      console.warn('loadOfferMarketData: JSON parse failed',
+        res.status, ct, text.slice(0, 300), parseErr);
+      return;
+    }
     if (json.status === 'success' && Array.isArray(json.data)) {
       offerMarketMap = {};
       offerMarketByName = {};
@@ -928,6 +949,8 @@ async function loadOfferMarketData() {
         if (o.offer_id) offerMarketMap[String(o.offer_id)] = rec;
         if (o.name) offerMarketByName[o.name] = rec;
       }
+    } else {
+      console.warn('loadOfferMarketData: unexpected payload', json);
     }
   } catch(e) { console.warn('loadOfferMarketData failed:', e); }
 }
@@ -2288,9 +2311,26 @@ async function runDeepAIAnalysis() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
-    const json = await res.json();
-    if (json.status !== 'success' || !json.data) {
-      throw new Error(json.error || 'Не удалось получить результат');
+    // Читаем тело как текст и сами решаем, парсить ли его как JSON.
+    // Так в консоли всегда видно, что реально пришло (504 Gateway Timeout,
+    // "Maximum execution time exceeded", страница Cloudflare и т.п.),
+    // и фронт не падает на JSON.parse шаблонной HTML-страницы.
+    const text = await res.text();
+    const ct = res.headers.get('content-type') || '';
+    let json = null;
+    let parseErr = null;
+    if (ct.toLowerCase().includes('application/json') || text.trim().startsWith('{')) {
+      try { json = JSON.parse(text); } catch (e) { parseErr = e; }
+    }
+    if (!json) {
+      console.warn('Deep AI analysis: non-JSON response',
+        res.status, ct, text.slice(0, 300), parseErr);
+      throw new Error(`HTTP ${res.status} (non-JSON response)`);
+    }
+    if (!res.ok || json.status !== 'success' || !json.data) {
+      const reason = json.error || `HTTP ${res.status}`;
+      console.warn('Deep AI analysis: error payload', res.status, json);
+      throw new Error(reason);
     }
     renderDeepAIResult(json.data);
     statusEl.innerHTML = `<span class="text-emerald-400">✅ Готово. Период: ${payload.period.from} — ${payload.period.to}, площадок в анализе: ${payload.top_platforms.length} (≈99% выручки).</span>`;
