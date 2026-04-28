@@ -165,9 +165,24 @@ function aiLog($event, array $context = []) {
         @rename(AI_LOG_FILE, AI_LOG_FILE . '.1');
     }
     @file_put_contents(AI_LOG_FILE, $json . "\n", FILE_APPEND | LOCK_EX);
-    // Дублируем критичные события в php_errors.log, чтобы они попали и
-    // в стандартный канал хостинга.
-    error_log('AI[' . $event . ']: ' . $json);
+    // Дублируем в php_errors.log только важные/ошибочные события, иначе
+    // успешные прогоны быстро забивают системный лог хостинга.
+    static $importantEvents = [
+        'config_loaded'                 => true, // первый запуск после деплоя — полезно видеть
+        'ai_diag_no_key'                => true,
+        'ai_analyze_no_key'             => true,
+        'ai_analyze_bad_payload'        => true,
+        'ai_analyze_error'              => true,
+        'provider_curl_error'           => true,
+        'provider_http_error'           => true,
+        'provider_invalid_json'         => true,
+        'provider_empty_content'        => true,
+        'structured_validation_failed'  => true,
+        'structured_fallback'           => true,
+    ];
+    if (isset($importantEvents[$event])) {
+        error_log('AI[' . $event . ']: ' . $json);
+    }
 }
 
 // Сразу зафиксируем итог загрузки конфигурации — это первая точка,
@@ -2071,7 +2086,7 @@ if ($action === 'ai_log') {
         $size = $stat['size'] ?? 0;
         $pos = $size;
         $leftover = '';
-        while ($pos > 0 && count($tail) <= $lines) {
+        while ($pos > 0 && count($tail) < $lines) {
             $read = ($pos >= $bufSize) ? $bufSize : $pos;
             $pos -= $read;
             fseek($fp, $pos);
