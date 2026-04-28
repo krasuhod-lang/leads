@@ -82,16 +82,30 @@ $YM_CLICK_GOAL_ID     = 468033800; // Клики
 // (типичный shared-хостинг), подхватываем локальный `ai_config.php` —
 // он добавлен в .gitignore и не утечёт в публичный репозиторий.
 $aiLocalConfig = __DIR__ . '/ai_config.php';
+$AI_CONFIG_LOAD_STATUS = 'absent'; // диагностика для ai_diag: absent|loaded|unreadable
 if (is_file($aiLocalConfig)) {
-    // Файл сам объявит нужные `define(...)`. Используем require_once,
-    // чтобы повторное подключение не привело к notice о редефайне.
-    require_once $aiLocalConfig;
+    if (is_readable($aiLocalConfig)) {
+        // Файл сам объявит нужные `define(...)`. Используем require_once,
+        // чтобы повторное подключение не привело к notice о редефайне.
+        require_once $aiLocalConfig;
+        $AI_CONFIG_LOAD_STATUS = 'loaded';
+    } else {
+        // Самая частая «тихая» проблема: файл лежит, но 0600 от другого
+        // пользователя — apache его не прочитает. Хорошо пишем в лог.
+        error_log('AI: ai_config.php exists but is NOT readable by web server. Check file permissions (chmod 644).');
+        $AI_CONFIG_LOAD_STATUS = 'unreadable';
+    }
 }
 if (!defined('AI_API_KEY')) {
     // Ключ ДОЛЖЕН задаваться переменной окружения AI_API_KEY либо
     // в локальном ai_config.php. Никаких дефолтных значений в исходниках —
     // иначе ключ утекает в публичный git.
     define('AI_API_KEY', getenv('AI_API_KEY') ?: '');
+}
+// Дополнительная диагностика: файл подключился, но define() вернул пустое
+// значение (например, забыли вписать ключ или вписали пустую строку).
+if ($AI_CONFIG_LOAD_STATUS === 'loaded' && AI_API_KEY === '') {
+    error_log('AI: ai_config.php was loaded but AI_API_KEY is empty. Check the define(\'AI_API_KEY\', \'sk-...\') line.');
 }
 if (!defined('AI_API_URL')) {
     define('AI_API_URL', getenv('AI_API_URL') ?: 'https://api.deepseek.com/chat/completions');
@@ -113,8 +127,32 @@ $dbFile = __DIR__ . '/stats.db';
 $db = null;
 try {
     $db = new SQLite3($dbFile);
-    $db->exec('PRAGMA journal_mode=WAL'); // улучшает производительность
-    $db->exec('PRAGMA synchronous=NORMAL');
+    // КРИТИЧНО: busy_timeout ДО любого exec/query. Без него параллельные
+    // запросы (cron + UI + AI) сразу падают с "database is locked" → fatal.
+    // 5 секунд достаточно, чтобы конкурирующая транзакция завершилась.
+    // Делаем это и через PHP API (надёжнее, не зависит от парсера PRAGMA),
+    // и через PRAGMA — на случай если версия PHP не поддерживает метод.
+    if (method_exists($db, 'busyTimeout')) {
+        @$db->busyTimeout(5000);
+    }
+    @$db->exec('PRAGMA busy_timeout=5000');
+    // Маленький helper: безопасный exec с одной повторной попыткой,
+    // чтобы PRAGMA/CREATE/ALTER не валили весь запрос из-за короткой блокировки.
+    $safeExec = function ($sql) use ($db) {
+        for ($i = 0; $i < 3; $i++) {
+            if (@$db->exec($sql)) return true;
+            $msg = $db->lastErrorMsg();
+            if (stripos($msg, 'locked') === false && stripos($msg, 'busy') === false) {
+                error_log("SQLite exec failed: {$msg} | SQL: " . substr($sql, 0, 120));
+                return false;
+            }
+            usleep(200000); // 200 ms
+        }
+        error_log("SQLite exec gave up after retries: " . substr($sql, 0, 120));
+        return false;
+    };
+    $safeExec('PRAGMA journal_mode=WAL'); // улучшает производительность
+    $safeExec('PRAGMA synchronous=NORMAL');
     
     // Таблица для статистики по площадкам и офферам.
     // UNIQUE-ключ — (date, source_id, offer_id, sub1). offer_name теперь —
@@ -122,7 +160,7 @@ try {
     // как «Offer #123», а второй — как «Микрозайм24», ключ строится по offer_id.
     // Когда реальный offer_id отсутствует в строке, мы синтезируем стабильный
     // суррогат `name:<md5(name)>` — см. syntheticOfferId().
-    $db->exec('CREATE TABLE IF NOT EXISTS daily_stats (
+    $safeExec('CREATE TABLE IF NOT EXISTS daily_stats (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         date TEXT NOT NULL,
         source_id TEXT NOT NULL DEFAULT \'all\',
@@ -139,18 +177,27 @@ try {
     )');
     
     // Миграция: добавляем недостающие колонки (offer_name, offer_id, sub1, raw_clicks).
-    $res = $db->query("PRAGMA table_info(daily_stats)");
+    // ВАЖНО: query() может вернуть false при кратковременной блокировке БД —
+    // тогда вызов fetchArray() на bool даст fatal. Защищаемся явной проверкой.
+    $res = @$db->query("PRAGMA table_info(daily_stats)");
     $hasOffer = false;
     $hasOfferId = false;
     $hasSub1 = false;
     $hasRawClicks = false;
     $existingCols = [];
-    while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
-        $existingCols[$row['name']] = true;
-        if ($row['name'] === 'offer_name') $hasOffer = true;
-        if ($row['name'] === 'offer_id') $hasOfferId = true;
-        if ($row['name'] === 'sub1') $hasSub1 = true;
-        if ($row['name'] === 'raw_clicks') $hasRawClicks = true;
+    if ($res instanceof SQLite3Result) {
+        while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
+            $existingCols[$row['name']] = true;
+            if ($row['name'] === 'offer_name') $hasOffer = true;
+            if ($row['name'] === 'offer_id') $hasOfferId = true;
+            if ($row['name'] === 'sub1') $hasSub1 = true;
+            if ($row['name'] === 'raw_clicks') $hasRawClicks = true;
+        }
+    } else {
+        // PRAGMA не выполнился — пропускаем миграцию, чтобы не делать ALTER
+        // вслепую. Колонки уже могут существовать; следующий запрос их создаст
+        // или найдёт. Логируем для отладки.
+        error_log('SQLite: PRAGMA table_info(daily_stats) failed (likely locked): ' . $db->lastErrorMsg());
     }
     if (!$hasOffer) {
         $db->exec('ALTER TABLE daily_stats ADD COLUMN offer_name TEXT');
@@ -176,9 +223,13 @@ try {
         updated_at TEXT
     )');
     // Миграция: добавляем колонки рыночной статистики, если их нет
-    $res = $db->query("PRAGMA table_info(offers_cache)");
+    $res = @$db->query("PRAGMA table_info(offers_cache)");
     $existing = [];
-    while ($row = $res->fetchArray(SQLITE3_ASSOC)) { $existing[$row['name']] = true; }
+    if ($res instanceof SQLite3Result) {
+        while ($row = $res->fetchArray(SQLITE3_ASSOC)) { $existing[$row['name']] = true; }
+    } else {
+        error_log('SQLite: PRAGMA table_info(offers_cache) failed (likely locked): ' . $db->lastErrorMsg());
+    }
     foreach (['market_epc','market_cr','market_ar','your_epc','your_cr'] as $col) {
         if (!isset($existing[$col])) $db->exec("ALTER TABLE offers_cache ADD COLUMN {$col} REAL DEFAULT 0");
     }
@@ -228,16 +279,22 @@ try {
         // и в SQLite приводит к "database table is locked" при попытке
         // DROP/ALTER в той же транзакции.
         $uniqueIndexCols = [];
-        $idxRes = $db->query("PRAGMA index_list(daily_stats)");
-        while ($idxRow = $idxRes->fetchArray(SQLITE3_ASSOC)) {
-            if ((int)$idxRow['unique'] !== 1) continue;
-            $uniqueIndexCols[$idxRow['name']] = [];
+        $idxRes = @$db->query("PRAGMA index_list(daily_stats)");
+        if ($idxRes instanceof SQLite3Result) {
+            while ($idxRow = $idxRes->fetchArray(SQLITE3_ASSOC)) {
+                if ((int)$idxRow['unique'] !== 1) continue;
+                $uniqueIndexCols[$idxRow['name']] = [];
+            }
+            $idxRes->finalize();
+        } else {
+            error_log('SQLite: PRAGMA index_list failed (likely locked): ' . $db->lastErrorMsg());
         }
-        $idxRes->finalize();
         foreach (array_keys($uniqueIndexCols) as $idxName) {
-            $colRes = $db->query("PRAGMA index_info(" . SQLite3::escapeString($idxName) . ")");
-            while ($c = $colRes->fetchArray(SQLITE3_ASSOC)) $uniqueIndexCols[$idxName][] = $c['name'];
-            $colRes->finalize();
+            $colRes = @$db->query("PRAGMA index_info(" . SQLite3::escapeString($idxName) . ")");
+            if ($colRes instanceof SQLite3Result) {
+                while ($c = $colRes->fetchArray(SQLITE3_ASSOC)) $uniqueIndexCols[$idxName][] = $c['name'];
+                $colRes->finalize();
+            }
         }
         $needsKeyMigration = false;
         foreach ($uniqueIndexCols as $cols) {
@@ -501,7 +558,11 @@ function fetchOffersListAll($token, $extended = false) {
         $url = "https://api.leads.su/webmaster/offers?token={$token}"
              . "&limit={$limit}&offset={$offset}"
              . ($extended ? '&extendedFields=1' : '');
-        $result = apiGet($url);
+        // Справочник офферов с extendedFields=1 на больших аккаунтах легко
+        // отвечает дольше дефолтных 30 с — поднимаем до 60 с, иначе пагинация
+        // обрывается на середине и в кэше остаются неполные данные
+        // (см. лог "fetchOffersListAll … timed out after 30001 ms").
+        $result = apiGet($url, 60);
         if (isset($result['error'])) {
             error_log('fetchOffersListAll error: ' . json_encode($result['error']));
             // Возвращаем то, что успели набрать (если первая страница упала — пустой массив).
@@ -1554,9 +1615,13 @@ if ($action === 'fetch_offers_market') {
 
 // 14. Получить кэш офферов с рыночными показателями (без обращения к Leads.su).
 if ($action === 'get_offers_market') {
-    $res = $db->query('SELECT offer_id, name, market_epc, market_cr, market_ar, your_epc, your_cr, updated_at FROM offers_cache ORDER BY market_epc DESC');
+    $res = @$db->query('SELECT offer_id, name, market_epc, market_cr, market_ar, your_epc, your_cr, updated_at FROM offers_cache ORDER BY market_epc DESC');
     $rows = [];
-    while ($row = $res->fetchArray(SQLITE3_ASSOC)) $rows[] = $row;
+    if ($res instanceof SQLite3Result) {
+        while ($row = $res->fetchArray(SQLITE3_ASSOC)) $rows[] = $row;
+    } else {
+        error_log('get_offers_market: query failed: ' . $db->lastErrorMsg());
+    }
     echo json_encode(['status' => 'success', 'data' => $rows]);
     exit;
 }
@@ -1630,9 +1695,13 @@ if ($action === 'get_notifications') {
 
 // ============ Настройки приложения (план выручки и пр.) ============
 if ($action === 'get_settings') {
-    $res = $db->query('SELECT key, value FROM app_settings');
+    $res = @$db->query('SELECT key, value FROM app_settings');
     $out = [];
-    while ($row = $res->fetchArray(SQLITE3_ASSOC)) $out[$row['key']] = $row['value'];
+    if ($res instanceof SQLite3Result) {
+        while ($row = $res->fetchArray(SQLITE3_ASSOC)) $out[$row['key']] = $row['value'];
+    } else {
+        error_log('get_settings: query failed: ' . $db->lastErrorMsg());
+    }
     // Маскируем чувствительные значения, оставляя признак "задано".
     $masked = $out;
     if (!empty($masked['tg_bot_token'])) $masked['tg_bot_token'] = '***SET***';
@@ -1852,10 +1921,12 @@ if ($action === 'ai_diag') {
     // unavailable" и непонятно, что именно сломалось: ключ, конфиг, сеть,
     // баланс или провайдер.
     @set_time_limit(30);
+    global $AI_CONFIG_LOAD_STATUS;
     $diag = [
         'status' => 'success',
         'config_file_present' => is_file(__DIR__ . '/ai_config.php'),
         'config_file_readable' => is_readable(__DIR__ . '/ai_config.php'),
+        'config_load_status' => $AI_CONFIG_LOAD_STATUS ?? 'unknown', // absent|loaded|unreadable
         'api_key_present' => (AI_API_KEY !== ''),
         'api_key_length_bucket' => AI_API_KEY === '' ? 'empty' : (strlen(AI_API_KEY) < 20 ? 'short' : 'ok'),
         'api_key_prefix' => AI_API_KEY === '' ? '' : substr(AI_API_KEY, 0, 4) . '…',
@@ -1866,10 +1937,19 @@ if ($action === 'ai_diag') {
         'sqlite_loaded' => extension_loaded('sqlite3'),
         'error_log_path' => __DIR__ . '/php_errors.log',
         'error_log_writable' => is_writable(__DIR__) || is_writable(__DIR__ . '/php_errors.log'),
+        'expected_config_path' => __DIR__ . '/ai_config.php',
     ];
 
     if (!$diag['api_key_present']) {
-        $diag['hint'] = 'AI_API_KEY пустой. Проверьте, что ai_config.php лежит рядом с leads-proxy.php и define(\'AI_API_KEY\', \'sk-...\') действительно выполняется.';
+        // Подскажем точную причину пустого ключа:
+        if ($diag['config_load_status'] === 'absent') {
+            $diag['hint'] = 'Файл ai_config.php НЕ найден по пути ' . $diag['expected_config_path']
+                . '. Загрузите его рядом с leads-proxy.php (а не в корень сайта).';
+        } elseif ($diag['config_load_status'] === 'unreadable') {
+            $diag['hint'] = 'Файл ai_config.php найден, но веб-сервер не может его прочитать. Сделайте chmod 644.';
+        } else {
+            $diag['hint'] = 'Файл ai_config.php подключился, но AI_API_KEY пуст. Проверьте, что внутри есть строка define(\'AI_API_KEY\', \'sk-...\'); без пробелов и переводов строк.';
+        }
         echo json_encode($diag);
         exit;
     }
