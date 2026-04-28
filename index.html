@@ -2315,7 +2315,7 @@ function formatAITimestamp(ts) {
 }
 
 // Собирает текст статуса с периодом анализа и (если применимо) пометкой кэша.
-function buildAIStatusText(period, topPlatformsCount, createdAt, fromCache) {
+function buildAIStatusText(period, topPlatformsCount, createdAt, fromCache, meta) {
   const from = (period && period.from) || '—';
   const to   = (period && period.to)   || '—';
   const platformsPart = (typeof topPlatformsCount === 'number' && topPlatformsCount > 0)
@@ -2324,7 +2324,30 @@ function buildAIStatusText(period, topPlatformsCount, createdAt, fromCache) {
   const cachedPart = fromCache && ts
     ? ` <span class="text-slate-400">(сохранённый ответ от ${ts}; нажмите «🔄 Обновить» для нового)</span>`
     : (ts ? ` <span class="text-slate-400">(${ts})</span>` : '');
-  return `<span class="text-emerald-400">✅ Готово. Период: ${from} — ${to}${platformsPart}.</span>${cachedPart}`;
+  // Если есть meta от свежего запуска — покажем, сколько токенов и времени
+  // потратил AI-провайдер: пользователь сразу видит «стоимость» анализа,
+  // не открывая ai.log. Для кэш-хитов meta нет (см. бэкенд).
+  let metaPart = '';
+  if (meta && !fromCache) {
+    const usage = meta.usage_total || null;
+    const totalMs = (typeof meta.total_elapsed_ms === 'number') ? meta.total_elapsed_ms : null;
+    const calls = (typeof meta.calls_count === 'number') ? meta.calls_count : null;
+    const bits = [];
+    if (usage) {
+      const promptTokens = (typeof usage.prompt_tokens === 'number') ? usage.prompt_tokens : 0;
+      const completionTokens = (typeof usage.completion_tokens === 'number') ? usage.completion_tokens : 0;
+      const totalTokens = (typeof usage.total_tokens === 'number' && usage.total_tokens > 0)
+        ? usage.total_tokens
+        : (promptTokens + completionTokens);
+      bits.push(`токены: ${totalTokens} (prompt ${promptTokens} + completion ${completionTokens})`);
+    }
+    if (totalMs !== null) bits.push(`время: ${(totalMs / 1000).toFixed(1)} с`);
+    if (calls !== null && calls > 1) bits.push(`вызовов AI: ${calls}`);
+    if (bits.length) {
+      metaPart = ` <span class="text-slate-400">[${bits.join(', ')}]</span>`;
+    }
+  }
+  return `<span class="text-emerald-400">✅ Готово. Период: ${from} — ${to}${platformsPart}.</span>${cachedPart}${metaPart}`;
 }
 
 async function runDeepAIAnalysis(force = false) {
@@ -2392,7 +2415,11 @@ async function runDeepAIAnalysis(force = false) {
     renderDeepAIResult(json.data);
     const period = (json.period && json.period.from) ? json.period : payload.period;
     statusEl.innerHTML = buildAIStatusText(
-      period, payload.top_platforms.length, json.created_at, !!json.cached);
+      period, payload.top_platforms.length, json.created_at, !!json.cached, json.meta);
+    // Дублируем meta в консоль — удобно для отладки без открытия ai.log.
+    if (json.meta) {
+      console.info('Deep AI analysis meta:', json.meta);
+    }
   } catch (e) {
     console.warn('Deep AI analysis failed:', e);
     // Если сервер прислал предметную причину (`uiReason`/`uiCode`) — покажем её,

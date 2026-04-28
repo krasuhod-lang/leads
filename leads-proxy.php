@@ -179,6 +179,7 @@ function aiLog($event, array $context = []) {
         'provider_empty_content'        => true,
         'structured_validation_failed'  => true,
         'structured_fallback'           => true,
+        'structured_summary'            => true, // итоговая сводка по токенам/времени — полезно держать рядом с ошибками
     ];
     if (isset($importantEvents[$event])) {
         error_log('AI[' . $event . ']: ' . $json);
@@ -1114,19 +1115,88 @@ function aiBackfillOutput($obj) {
 }
 
 function aiCallProviderStructured($sysPrompt, $userPrompt, $sig) {
+    // Накапливаем по-стадийную статистику (модель, длительность, токены, finish_reason),
+    // чтобы в конце залогировать суммарную картину пайплайна (`structured_summary`)
+    // и отдать её в ответ для UI. Без этого было видно только токены отдельных
+    // вызовов в provider_ok, но не суммарную «стоимость» одного ai_analyze.
+    $calls       = [];
+    $tStartTotal = microtime(true);
+
+    $recordCall = function ($stage, $resp) use (&$calls) {
+        if (!is_array($resp)) return;
+        $usage = is_array($resp['usage'] ?? null) ? $resp['usage'] : [];
+        $calls[] = [
+            'stage'             => $stage,
+            'model'             => (string)($resp['model'] ?? ''),
+            'elapsed_ms'        => isset($resp['elapsed_ms']) ? (int)$resp['elapsed_ms'] : null,
+            'prompt_tokens'     => isset($usage['prompt_tokens'])     ? (int)$usage['prompt_tokens']     : null,
+            'completion_tokens' => isset($usage['completion_tokens']) ? (int)$usage['completion_tokens'] : null,
+            'total_tokens'      => isset($usage['total_tokens'])      ? (int)$usage['total_tokens']      : null,
+            'finish_reason'     => $resp['finish_reason'] ?? null,
+            'partial'           => !empty($resp['partial']),
+            'error'             => isset($resp['error']) ? (string)$resp['error'] : null,
+        ];
+    };
+
+    $buildMeta = function ($status, $validationError = null) use (&$calls, $tStartTotal, $sig, $sysPrompt, $userPrompt) {
+        $sumPromptTokens     = 0;
+        $sumCompletionTokens = 0;
+        $sumTotalTokens      = 0;
+        $sumElapsedMs        = 0;
+        $hasTokens = false;
+        foreach ($calls as $c) {
+            if ($c['prompt_tokens']     !== null) { $sumPromptTokens     += $c['prompt_tokens'];     $hasTokens = true; }
+            if ($c['completion_tokens'] !== null) { $sumCompletionTokens += $c['completion_tokens']; $hasTokens = true; }
+            if ($c['total_tokens']      !== null) { $sumTotalTokens      += $c['total_tokens'];      $hasTokens = true; }
+            if ($c['elapsed_ms']        !== null) { $sumElapsedMs        += $c['elapsed_ms']; }
+        }
+        return [
+            'status'           => $status,                              // ok | refine | error
+            'validation_error' => $validationError,
+            'signature'        => $sig,
+            'sys_prompt_len'   => strlen((string)$sysPrompt),
+            'user_prompt_len'  => strlen((string)$userPrompt),
+            'total_elapsed_ms' => (int)round((microtime(true) - $tStartTotal) * 1000),
+            'provider_ms_sum'  => $sumElapsedMs,
+            'calls_count'      => count($calls),
+            'usage_total'      => $hasTokens ? [
+                'prompt_tokens'     => $sumPromptTokens,
+                'completion_tokens' => $sumCompletionTokens,
+                'total_tokens'      => $sumTotalTokens ?: ($sumPromptTokens + $sumCompletionTokens),
+            ] : null,
+            'calls'            => $calls,
+        ];
+    };
+
+    aiLog('structured_start', [
+        'signature'       => $sig,
+        'sys_prompt_len'  => strlen((string)$sysPrompt),
+        'user_prompt_len' => strlen((string)$userPrompt),
+        'primary_model'   => AI_MODEL,
+        'fallback_model'  => AI_FALLBACK_MODEL,
+    ]);
+
     // Шаг 1 — основной запрос на быстрой модели (deepseek-chat).
     $resp = aiCallProvider($sysPrompt, $userPrompt, AI_MODEL);
+    $recordCall('primary', $resp);
     if (isset($resp['error'])) {
         // Один fallback на reasoner (он медленный, но иногда переживает 5xx).
         aiLog('structured_fallback', ['primary_error' => $resp['error']]);
         $resp = aiCallProvider($sysPrompt, $userPrompt, AI_FALLBACK_MODEL);
-        if (isset($resp['error'])) return $resp;
+        $recordCall('fallback', $resp);
+        if (isset($resp['error'])) {
+            $meta = $buildMeta('error');
+            aiLog('structured_summary', $meta);
+            return ['error' => $resp['error'], 'meta' => $meta];
+        }
     }
     $obj = aiExtractJson($resp['content'] ?? '');
     $err = aiValidateOutput($obj, $sig);
     if ($err === null) {
         aiLog('structured_ok', ['stage' => 'primary']);
-        return aiBackfillOutput($obj);
+        $meta = $buildMeta('ok');
+        aiLog('structured_summary', $meta);
+        return ['data' => aiBackfillOutput($obj), 'meta' => $meta];
     }
     aiLog('structured_validation_failed', [
         'stage'           => 'primary',
@@ -1141,12 +1211,19 @@ function aiCallProviderStructured($sysPrompt, $userPrompt, $sig) {
     // вышестоящего nginx/Cloudflare и клиент получает HTML 504 вместо JSON.
     $refineUser = $userPrompt . "\n\nПредыдущий ответ был невалиден: {$err}. Верни ИСПРАВЛЕННЫЙ JSON строго по схеме, без markdown.";
     $resp2 = aiCallProvider($sysPrompt, $refineUser, AI_MODEL);
-    if (isset($resp2['error'])) return $resp2;
+    $recordCall('refine', $resp2);
+    if (isset($resp2['error'])) {
+        $meta = $buildMeta('error', $err);
+        aiLog('structured_summary', $meta);
+        return ['error' => $resp2['error'], 'meta' => $meta];
+    }
     $obj2 = aiExtractJson($resp2['content'] ?? '');
     $err2 = aiValidateOutput($obj2, $sig);
     if ($err2 === null) {
         aiLog('structured_ok', ['stage' => 'refine']);
-        return aiBackfillOutput($obj2);
+        $meta = $buildMeta('refine');
+        aiLog('structured_summary', $meta);
+        return ['data' => aiBackfillOutput($obj2), 'meta' => $meta];
     }
     aiLog('structured_validation_failed', [
         'stage'           => 'refine',
@@ -1154,7 +1231,9 @@ function aiCallProviderStructured($sysPrompt, $userPrompt, $sig) {
         'content_preview' => substr((string)($resp2['content'] ?? ''), 0, 300),
     ]);
 
-    return ['error' => 'Validation failed: ' . $err2];
+    $meta = $buildMeta('error', $err2);
+    aiLog('structured_summary', $meta);
+    return ['error' => 'Validation failed: ' . $err2, 'meta' => $meta];
 }
 
 function aiCallProvider($sysPrompt, $userPrompt, $model) {
@@ -1320,7 +1399,16 @@ function aiCallProvider($sysPrompt, $userPrompt, $model) {
                 'content_len'   => strlen((string)$contentBuf),
                 'finish_reason' => $finishReason,
             ]);
-            return ['content' => $contentBuf];
+            // Возвращаем то, что успели набрать, плюс метаданные — структурированный
+            // слой залогирует это как partial и аккуратно учтёт в суммарных токенах.
+            return [
+                'content'       => $contentBuf,
+                'usage'         => $usage,
+                'elapsed_ms'    => $elapsedMs,
+                'model'         => $model,
+                'finish_reason' => $finishReason,
+                'partial'       => true,
+            ];
         }
         error_log('AI provider CURL error: ' . $cerr);
         aiLog('provider_curl_error', [
@@ -1363,7 +1451,16 @@ function aiCallProvider($sysPrompt, $userPrompt, $model) {
         'finish_reason' => $finishReason,
         'usage'         => $usage,
     ]);
-    return ['content' => $contentBuf];
+    // Возвращаем не только content, но и метаданные (usage/elapsed/model/finish_reason),
+    // чтобы вышестоящий слой (aiCallProviderStructured) мог агрегировать токены и
+    // время по всем попыткам (primary + fallback + refine) и отдать их в логи и UI.
+    return [
+        'content'       => $contentBuf,
+        'usage'         => $usage,
+        'elapsed_ms'    => $elapsedMs,
+        'model'         => $model,
+        'finish_reason' => $finishReason,
+    ];
 }
 
 function aiExtractJson($text) {
@@ -2487,13 +2584,28 @@ if ($action === 'ai_analyze') {
         exit;
     }
     // Жёстко ограничиваем размер payload, чтобы не раздувать prompt и стоимость.
+    $payloadBeforeBytes = strlen((string)$raw);
     $payload = aiTrimPayload($payload);
+    aiLog('ai_analyze_payload_trimmed', [
+        'raw_bytes'        => $payloadBeforeBytes,
+        'trimmed_keys'     => array_keys($payload),
+        'top_platforms'    => is_array($payload['top_platforms'] ?? null) ? count($payload['top_platforms']) : 0,
+        'offers'           => is_array($payload['offers'] ?? null) ? count($payload['offers']) : 0,
+    ]);
 
     $signature = aiBuildSignature();
     $sysPrompt = aiBuildSystemPrompt($signature);
     $userPrompt = aiBuildUserPrompt($payload, $signature);
+    aiLog('ai_analyze_prompts_built', [
+        'sys_prompt_len'  => strlen((string)$sysPrompt),
+        'user_prompt_len' => strlen((string)$userPrompt),
+        'signature'       => $signature,
+    ]);
 
     $result = aiCallProviderStructured($sysPrompt, $userPrompt, $signature);
+    // Метаданные (токены, длительности, стадии) приходят и при успехе, и при ошибке —
+    // их мы прокидываем в логи и в ответ, чтобы было видно «что и сколько» стоило.
+    $meta = is_array($result['meta'] ?? null) ? $result['meta'] : null;
     if (isset($result['error'])) {
         // Никогда не возвращаем сырое имя провайдера/модели в текстах ошибок,
         // но отдаём короткий машинный код (`transport`, `http_401`, `http_402`,
@@ -2518,31 +2630,43 @@ if ($action === 'ai_analyze') {
         } elseif (strpos($code, 'Validation failed') === 0) {
             $hint = 'AI вернул JSON не по схеме. Нажмите «Обновить» ещё раз.';
         }
-        aiLog('ai_analyze_error', ['error_code' => $code, 'hint' => $hint]);
+        aiLog('ai_analyze_error', [
+            'error_code' => $code,
+            'hint'       => $hint,
+            'meta'       => $meta,
+        ]);
         echo json_encode([
             'status'     => 'error',
             'error'      => $hint,
             'error_code' => $code,
+            'meta'       => $meta,
         ]);
         exit;
     }
 
-    // Успех — пишем в кэш (если знаем период).
+    // Достаём данные из обёртки {data, meta} (новый формат aiCallProviderStructured).
+    $data = is_array($result['data'] ?? null) ? $result['data'] : $result;
+
+    // Успех — пишем в кэш (если знаем период). В кэше хранится ТОЛЬКО data,
+    // без meta: токены/длительности относятся к конкретному вызову провайдера
+    // и не имеют смысла для последующих кэш-хитов.
     $createdAt = time();
     if ($periodFrom !== '' && $periodTo !== '') {
-        aiCachePut($db, $periodFrom, $periodTo, $result, $createdAt);
+        aiCachePut($db, $periodFrom, $periodTo, $data, $createdAt);
     }
     aiLog('ai_analyze_success', [
         'period_from' => $periodFrom,
         'period_to'   => $periodTo,
         'created_at'  => $createdAt,
+        'meta'        => $meta,
     ]);
     echo json_encode([
         'status'     => 'success',
-        'data'       => $result,
+        'data'       => $data,
         'cached'     => false,
         'period'     => ['from' => $periodFrom, 'to' => $periodTo],
         'created_at' => $createdAt,
+        'meta'       => $meta,
     ]);
     exit;
 }
