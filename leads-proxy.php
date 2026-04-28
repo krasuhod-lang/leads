@@ -1163,6 +1163,14 @@ function aiCallProvider($sysPrompt, $userPrompt, $model) {
     // Передача любого из этих полей даёт HTTP 400 → "AI service unavailable".
     $isReasoner = (stripos((string)$model, 'reasoner') !== false);
 
+    // ВАЖНО: ходим в провайдера ВСЕГДА в режиме SSE (stream=true).
+    // Без стриминга deepseek шлёт тело ответа одним куском только после
+    // полной генерации, а на длинных prompt-ах (~60К chars + 8K max_tokens)
+    // это занимает >90с → curl возвращает "Operation timed out ... 1 bytes
+    // received" даже при исправной сети. Со стримингом chunks приходят
+    // непрерывно, соединение не считается idle, и мы можем дать большой
+    // суммарный CURLOPT_TIMEOUT как страховку, опираясь на детектор стола
+    // (CURLOPT_LOW_SPEED_*) для реального обрыва.
     $body = [
         'model' => $model,
         'messages' => [
@@ -1179,7 +1187,9 @@ function aiCallProvider($sysPrompt, $userPrompt, $model) {
         // JSON object". Поднято до 8000 (deepseek-chat capы 8192) и до 12000
         // для reasoner с учётом скрытого reasoning_content.
         'max_tokens' => $isReasoner ? 12000 : 8000,
-        'stream' => false,
+        'stream' => true,
+        // Просим usage в финальном чанке — нужен для логов.
+        'stream_options' => ['include_usage' => true],
     ];
     if (!$isReasoner) {
         $body['temperature'] = 0.2;
@@ -1187,21 +1197,97 @@ function aiCallProvider($sysPrompt, $userPrompt, $model) {
         $body['response_format'] = ['type' => 'json_object'];
     }
 
+    // Аккумуляторы для парсинга SSE.
+    $contentBuf   = '';   // итоговый assistant content (без reasoning_content)
+    $rawBody      = '';   // полное «сырое» тело ответа — нужно для error-логов
+                          // в случае HTTP != 200 (там тело — обычный JSON, а не SSE)
+    $sseBuf       = '';   // незавершённое SSE-сообщение между chunks
+    $finishReason = null;
+    $usage        = null;
+    $sawAnyDelta  = false;
+
+    $writeFn = function ($ch, $chunk) use (
+        &$contentBuf, &$rawBody, &$sseBuf,
+        &$finishReason, &$usage, &$sawAnyDelta
+    ) {
+        $rawBody .= $chunk;
+        $sseBuf  .= $chunk;
+        // Нормализуем CRLF → LF на ВСЁМ буфере (а не только на $chunk),
+        // чтобы корректно склеить случай, когда "\r\n" разрезано на границе
+        // двух chunk-ов (curl может отдавать SSE короткими байтовыми порциями).
+        // Реальные стримы используют и "\r\n\r\n", и "\n\n" — нам нужно
+        // унифицированно искать только "\n\n".
+        if (strpos($sseBuf, "\r") !== false) {
+            $sseBuf = str_replace("\r\n", "\n", $sseBuf);
+        }
+        // SSE-события разделяются пустой строкой ("\n\n"). Обрабатываем все
+        // полностью пришедшие события, остаток оставляем в буфере до следующего
+        // chunk-а.
+        while (($pos = strpos($sseBuf, "\n\n")) !== false) {
+            $event  = substr($sseBuf, 0, $pos);
+            $sseBuf = substr($sseBuf, $pos + 2);
+            // Внутри события может быть несколько строк: data:, event:, id:, ...
+            // Конкатенируем все data:-строки (по спецификации SSE).
+            $dataLines = [];
+            foreach (explode("\n", $event) as $line) {
+                if (strncmp($line, 'data:', 5) !== 0) continue;
+                $dataLines[] = ltrim(substr($line, 5));
+            }
+            if (!$dataLines) continue;
+            $data = implode("\n", $dataLines);
+            if ($data === '' || $data === '[DONE]') continue;
+            $j = json_decode($data, true);
+            if (!is_array($j)) continue;
+            // usage может прийти отдельным финальным чанком (choices=[]).
+            if (isset($j['usage']) && is_array($j['usage'])) {
+                $usage = $j['usage'];
+            }
+            $choice = $j['choices'][0] ?? null;
+            if (!is_array($choice)) continue;
+            $delta = $choice['delta'] ?? null;
+            if (is_array($delta) && isset($delta['content']) && is_string($delta['content'])) {
+                $contentBuf .= $delta['content'];
+                $sawAnyDelta = true;
+            }
+            // reasoning_content (chain-of-thought reasoner-а) НЕ кладём
+            // в итоговый ответ — это служебный текст.
+            if (isset($choice['finish_reason']) && $choice['finish_reason'] !== null) {
+                $finishReason = $choice['finish_reason'];
+            }
+        }
+        return strlen($chunk);
+    };
+
+    // Общий тайм-аут — страховка на самый худший случай. С учётом стриминга
+    // нормальный ответ deepseek-chat укладывается в 30-60с; reasoner — до
+    // ~2-3 минут. Реальный обрыв «висящего» соединения детектится через
+    // CURLOPT_LOW_SPEED_TIME (нет байт N секунд → curl сам разорвёт).
+    $totalTimeout = $isReasoner ? 240 : 180;
+    $stallSeconds = 60;
+
     $ch = curl_init();
     curl_setopt_array($ch, [
         CURLOPT_URL => AI_API_URL,
         CURLOPT_POST => true,
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT => $isReasoner ? 150 : 90,
+        // RETURNTRANSFER не нужен — данные обрабатываем через WRITEFUNCTION.
+        CURLOPT_RETURNTRANSFER => false,
+        CURLOPT_TIMEOUT => $totalTimeout,
         CURLOPT_CONNECTTIMEOUT => 15,
         CURLOPT_SSL_VERIFYPEER => true,
         CURLOPT_SSL_VERIFYHOST => 2,
         CURLOPT_HTTPHEADER => [
             'Content-Type: application/json',
-            'Accept: application/json',
+            'Accept: text/event-stream',
             'Authorization: Bearer ' . AI_API_KEY,
         ],
-        CURLOPT_POSTFIELDS => json_encode($body, JSON_UNESCAPED_UNICODE),
+        CURLOPT_POSTFIELDS    => json_encode($body, JSON_UNESCAPED_UNICODE),
+        CURLOPT_WRITEFUNCTION => $writeFn,
+        // Стол-детект: если за $stallSeconds к нам не приходит даже 1 байт —
+        // считаем что провайдер «завис», и обрываем (curl вернёт ошибку 28).
+        CURLOPT_LOW_SPEED_TIME  => $stallSeconds,
+        CURLOPT_LOW_SPEED_LIMIT => 1,
+        // Полностью убиваем любую буферизацию на стороне curl/прокси.
+        CURLOPT_TCP_NODELAY => true,
     ]);
     aiLog('provider_request', [
         'model'           => $model,
@@ -1209,17 +1295,33 @@ function aiCallProvider($sysPrompt, $userPrompt, $model) {
         'sys_prompt_len'  => strlen((string)$sysPrompt),
         'user_prompt_len' => strlen((string)$userPrompt),
         'max_tokens'      => $body['max_tokens'],
-        'timeout_s'       => $isReasoner ? 150 : 90,
+        'timeout_s'       => $totalTimeout,
+        'stream'          => true,
+        'stall_s'         => $stallSeconds,
     ]);
-    $tStart = microtime(true);
-    $raw = curl_exec($ch);
-    $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    $cerr = curl_error($ch);
-    $cerrno = curl_errno($ch);
+    $tStart    = microtime(true);
+    $execOk    = curl_exec($ch);
+    $code      = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $cerr      = curl_error($ch);
+    $cerrno    = curl_errno($ch);
     curl_close($ch);
     $elapsedMs = (int)round((microtime(true) - $tStart) * 1000);
 
     if ($cerr) {
+        // Если успели набрать контент до обрыва — попытаемся отдать его наверх,
+        // дальше aiExtractJson / aiRepairTruncatedJson вытянут валидный JSON
+        // из обрезанного потока. Это лучше, чем уронить весь анализ.
+        if ($sawAnyDelta && $contentBuf !== '') {
+            aiLog('provider_stream_partial', [
+                'model'         => $model,
+                'curl_errno'    => $cerrno,
+                'curl_error'    => $cerr,
+                'elapsed_ms'    => $elapsedMs,
+                'content_len'   => strlen((string)$contentBuf),
+                'finish_reason' => $finishReason,
+            ]);
+            return ['content' => $contentBuf];
+        }
         error_log('AI provider CURL error: ' . $cerr);
         aiLog('provider_curl_error', [
             'model'      => $model,
@@ -1230,35 +1332,26 @@ function aiCallProvider($sysPrompt, $userPrompt, $model) {
         return ['error' => 'transport'];
     }
     if ($code < 200 || $code >= 300) {
-        error_log("AI provider HTTP {$code}: " . substr((string)$raw, 0, 500));
+        // Для не-2xx тело — обычный JSON с ошибкой провайдера, его собрали
+        // в $rawBody (наш writer молча принимал байты). Логируем сниппет.
+        $snippet = substr((string)$rawBody, 0, 500);
+        error_log("AI provider HTTP {$code}: " . $snippet);
         aiLog('provider_http_error', [
             'model'        => $model,
             'http_code'    => (int)$code,
             'elapsed_ms'   => $elapsedMs,
-            'body_snippet' => is_string($raw) ? substr($raw, 0, 500) : null,
+            'body_snippet' => $snippet,
         ]);
         return ['error' => "http_{$code}"];
     }
-    $data = json_decode($raw, true);
-    if (!is_array($data)) {
-        aiLog('provider_invalid_json', [
-            'model'        => $model,
-            'http_code'    => (int)$code,
-            'elapsed_ms'   => $elapsedMs,
-            'body_snippet' => is_string($raw) ? substr($raw, 0, 500) : null,
-        ]);
-        return ['error' => 'invalid_json'];
-    }
-    // Для reasoner итоговый ответ — в content; reasoning_content игнорируем
-    // (это служебная цепочка размышлений, не должна попадать в UI).
-    $content = $data['choices'][0]['message']['content'] ?? '';
-    if ($content === '') {
+    if ($contentBuf === '') {
         aiLog('provider_empty_content', [
-            'model'      => $model,
-            'http_code'  => (int)$code,
-            'elapsed_ms' => $elapsedMs,
-            'finish_reason' => $data['choices'][0]['finish_reason'] ?? null,
-            'usage'      => $data['usage'] ?? null,
+            'model'         => $model,
+            'http_code'     => (int)$code,
+            'elapsed_ms'    => $elapsedMs,
+            'finish_reason' => $finishReason,
+            'usage'         => $usage,
+            'raw_snippet'   => substr((string)$rawBody, 0, 300),
         ]);
         return ['error' => 'empty_content'];
     }
@@ -1266,11 +1359,11 @@ function aiCallProvider($sysPrompt, $userPrompt, $model) {
         'model'         => $model,
         'http_code'     => (int)$code,
         'elapsed_ms'    => $elapsedMs,
-        'content_len'   => strlen((string)$content),
-        'finish_reason' => $data['choices'][0]['finish_reason'] ?? null,
-        'usage'         => $data['usage'] ?? null,
+        'content_len'   => strlen((string)$contentBuf),
+        'finish_reason' => $finishReason,
+        'usage'         => $usage,
     ]);
-    return ['content' => $content];
+    return ['content' => $contentBuf];
 }
 
 function aiExtractJson($text) {
@@ -2330,9 +2423,9 @@ if ($action === 'ai_analyze') {
     // Поднимаем PHP-лимиты: AI-запрос может занять несколько минут,
     // дефолтные max_execution_time/memory_limit на shared-хостинге часто
     // ниже реальной длительности и приводят к фаталу → пустой/HTML ответ.
-    // 300с достаточно с запасом (chat 90с + chat 90с в refine + накладные),
-    // и одновременно ограничивает риск «вечно живущих» PHP-процессов.
-    @set_time_limit(300);
+    // Со стримингом chat ≤180с, fallback reasoner ≤240с, refine chat ≤180с —
+    // в худшем случае суммарно до ~10 минут, поэтому даём 720с с запасом.
+    @set_time_limit(720);
     @ini_set('memory_limit', '256M');
     // Просим nginx/Cloudflare НЕ буферизовать ответ — иначе reverse-proxy
     // может закрыть соединение по своему `proxy_read_timeout` раньше,
