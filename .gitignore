@@ -5,3 +5,4 @@ stats.db-shm
 php_errors.log
 cron.log
 .DS_Store
+ai_config.php

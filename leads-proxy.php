@@ -78,10 +78,19 @@ $YM_CLICK_GOAL_ID     = 468033800; // Клики
 // ---- AI-аналитика (внутренняя конфигурация). ----
 // Ключ и название провайдера никогда не отдаются клиенту и не пишутся в UI.
 // Можно переопределить переменными окружения AI_API_KEY / AI_API_URL / AI_MODEL,
-// если потребуется ротация без правки кода.
+// если потребуется ротация без правки кода. Если переменных окружения нет
+// (типичный shared-хостинг), подхватываем локальный `ai_config.php` —
+// он добавлен в .gitignore и не утечёт в публичный репозиторий.
+$aiLocalConfig = __DIR__ . '/ai_config.php';
+if (is_file($aiLocalConfig)) {
+    // Файл сам объявит нужные `define(...)`. Используем require_once,
+    // чтобы повторное подключение не привело к notice о редефайне.
+    require_once $aiLocalConfig;
+}
 if (!defined('AI_API_KEY')) {
-    // Ключ ДОЛЖЕН задаваться переменной окружения AI_API_KEY.
-    // Никаких дефолтных значений в исходниках — иначе ключ утекает в публичный git.
+    // Ключ ДОЛЖЕН задаваться переменной окружения AI_API_KEY либо
+    // в локальном ai_config.php. Никаких дефолтных значений в исходниках —
+    // иначе ключ утекает в публичный git.
     define('AI_API_KEY', getenv('AI_API_KEY') ?: '');
 }
 if (!defined('AI_API_URL')) {
@@ -347,6 +356,18 @@ try {
     $db->exec('CREATE TABLE IF NOT EXISTS app_settings (
         key TEXT PRIMARY KEY,
         value TEXT
+    )');
+
+    // Кэш результатов глубокого AI-анализа. Ключ — диапазон дат `from|to`,
+    // чтобы при перезагрузке страницы пользователь видел тот же отчёт без
+    // повторного дорогого запроса к провайдеру. Принудительный пересчёт —
+    // через action=ai_analyze&force=1 (кнопка «Обновить» в UI).
+    $db->exec('CREATE TABLE IF NOT EXISTS ai_analysis_cache (
+        period_key TEXT PRIMARY KEY,
+        period_from TEXT NOT NULL,
+        period_to TEXT NOT NULL,
+        result_json TEXT NOT NULL,
+        created_at INTEGER NOT NULL
     )');
     
 } catch (Exception $e) {
@@ -1057,6 +1078,44 @@ function aiExtractJson($text) {
     return null;
 }
 
+/** Достаёт кэшированный AI-результат за период [from..to] или null. */
+function aiCacheGet($db, $from, $to) {
+    $key = $from . '|' . $to;
+    $stmt = $db->prepare('SELECT period_from, period_to, result_json, created_at
+        FROM ai_analysis_cache WHERE period_key = :k LIMIT 1');
+    $stmt->bindValue(':k', $key, SQLITE3_TEXT);
+    $res = $stmt->execute();
+    $row = $res->fetchArray(SQLITE3_ASSOC);
+    if (!$row) return null;
+    $data = json_decode((string)$row['result_json'], true);
+    if (!is_array($data)) return null;
+    return [
+        'period_from' => (string)$row['period_from'],
+        'period_to'   => (string)$row['period_to'],
+        'created_at'  => (int)$row['created_at'],
+        'data'        => $data,
+    ];
+}
+
+/** Сохраняет (UPSERT) результат AI-анализа за период. */
+function aiCachePut($db, $from, $to, $data, $createdAt) {
+    $key = $from . '|' . $to;
+    $stmt = $db->prepare('INSERT INTO ai_analysis_cache
+        (period_key, period_from, period_to, result_json, created_at)
+        VALUES (:k, :f, :t, :j, :c)
+        ON CONFLICT(period_key) DO UPDATE SET
+            period_from = excluded.period_from,
+            period_to   = excluded.period_to,
+            result_json = excluded.result_json,
+            created_at  = excluded.created_at');
+    $stmt->bindValue(':k', $key, SQLITE3_TEXT);
+    $stmt->bindValue(':f', $from, SQLITE3_TEXT);
+    $stmt->bindValue(':t', $to, SQLITE3_TEXT);
+    $stmt->bindValue(':j', json_encode($data, JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
+    $stmt->bindValue(':c', (int)$createdAt, SQLITE3_INTEGER);
+    $stmt->execute();
+}
+
 // ========== ОБРАБОТЧИКИ ЗАПРОСОВ ==========
 
 // 1. Получение сохранённых данных из БД (для дашборда).
@@ -1758,6 +1817,34 @@ if ($action === 'tg_check_alerts') {
 // 16. AI-аналитика. Принимает агрегированный payload по POST,
 // формирует структурированный (DSPy-style) промт и вызывает внешнего AI-провайдера
 // серверным запросом. Ключ/название модели никогда не возвращаются клиенту.
+//
+// Кэширование: успешные результаты сохраняются в `ai_analysis_cache` по ключу
+// `period_from|period_to`. По умолчанию `ai_analyze` сначала отдаёт кэш, если
+// тот существует. Для принудительного пересчёта (кнопка «Обновить») передаём
+// query-параметр `force=1`.
+if ($action === 'ai_get_cached') {
+    // Лёгкий GET-эндпоинт, чтобы фронт мог восстановить ранее сохранённый
+    // отчёт после перезагрузки страницы без затрат на провайдера.
+    $from = (string)($_GET['from'] ?? '');
+    $to   = (string)($_GET['to'] ?? '');
+    if ($from === '' || $to === '') {
+        echo json_encode(['status' => 'error', 'error' => 'from and to required']);
+        exit;
+    }
+    $row = aiCacheGet($db, $from, $to);
+    if (!$row) {
+        echo json_encode(['status' => 'success', 'cached' => false]);
+        exit;
+    }
+    echo json_encode([
+        'status'     => 'success',
+        'cached'     => true,
+        'data'       => $row['data'],
+        'period'     => ['from' => $row['period_from'], 'to' => $row['period_to']],
+        'created_at' => $row['created_at'],
+    ]);
+    exit;
+}
 if ($action === 'ai_analyze') {
     // Поднимаем PHP-лимиты: AI-запрос может занять несколько минут,
     // дефолтные max_execution_time/memory_limit на shared-хостинге часто
@@ -1781,6 +1868,31 @@ if ($action === 'ai_analyze') {
         echo json_encode(['status' => 'error', 'error' => 'Invalid payload']);
         exit;
     }
+
+    // Достаём период из payload — по нему ключуется кэш.
+    $periodFrom = '';
+    $periodTo   = '';
+    if (isset($payload['period']) && is_array($payload['period'])) {
+        $periodFrom = (string)($payload['period']['from'] ?? '');
+        $periodTo   = (string)($payload['period']['to']   ?? '');
+    }
+    $force = !empty($_GET['force']);
+
+    // Если не запрошен принудительный пересчёт и есть кэш — отдаём его.
+    if (!$force && $periodFrom !== '' && $periodTo !== '') {
+        $cached = aiCacheGet($db, $periodFrom, $periodTo);
+        if ($cached) {
+            echo json_encode([
+                'status'     => 'success',
+                'data'       => $cached['data'],
+                'cached'     => true,
+                'period'     => ['from' => $cached['period_from'], 'to' => $cached['period_to']],
+                'created_at' => $cached['created_at'],
+            ]);
+            exit;
+        }
+    }
+
     if (AI_API_KEY === '') {
         // Ключ не сконфигурирован на сервере — отдаём JSON, а не падаем в HTML.
         error_log('AI: AI_API_KEY env is empty; refusing to call provider');
@@ -1800,7 +1912,19 @@ if ($action === 'ai_analyze') {
         echo json_encode(['status' => 'error', 'error' => 'AI service is temporarily unavailable. Try again later.']);
         exit;
     }
-    echo json_encode(['status' => 'success', 'data' => $result]);
+
+    // Успех — пишем в кэш (если знаем период).
+    $createdAt = time();
+    if ($periodFrom !== '' && $periodTo !== '') {
+        aiCachePut($db, $periodFrom, $periodTo, $result, $createdAt);
+    }
+    echo json_encode([
+        'status'     => 'success',
+        'data'       => $result,
+        'cached'     => false,
+        'period'     => ['from' => $periodFrom, 'to' => $periodTo],
+        'created_at' => $createdAt,
+    ]);
     exit;
 }
 

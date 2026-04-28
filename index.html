@@ -30,6 +30,9 @@
     .sort-th:hover { color: #e2e8f0; }
     .auto-refresh-indicator { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: #10b981; }
     .auto-refresh-indicator .dot { width: 8px; height: 8px; background: #10b981; border-radius: 50%; animation: pulse 2s infinite; }
+    .quick-range-btn { background: #1e293b; color: #94a3b8; border: 1px solid #334155; padding: 6px 12px; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer; transition: background 0.15s, color 0.15s, border-color 0.15s; }
+    .quick-range-btn:hover { background: #334155; color: #e2e8f0; }
+    .quick-range-btn.active { background: #2563eb; border-color: #2563eb; color: #fff; }
     @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
   </style>
 </head>
@@ -50,6 +53,15 @@
           <span class="dot"></span>
           <span>Автообновление: <span id="nextRefreshTime">--:--</span></span>
         </div>
+      </div>
+      <div id="quickRangeBar" class="flex flex-wrap gap-2 mt-3" role="group" aria-label="Быстрый выбор периода">
+        <button type="button" class="quick-range-btn" data-range="today"      onclick="setQuickRange('today')">Сегодня</button>
+        <button type="button" class="quick-range-btn" data-range="yesterday"  onclick="setQuickRange('yesterday')">Вчера</button>
+        <button type="button" class="quick-range-btn" data-range="last7"      onclick="setQuickRange('last7')">7 дней</button>
+        <button type="button" class="quick-range-btn" data-range="last14"     onclick="setQuickRange('last14')">14 дней</button>
+        <button type="button" class="quick-range-btn" data-range="thisMonth"  onclick="setQuickRange('thisMonth')">Текущий месяц</button>
+        <button type="button" class="quick-range-btn" data-range="prevMonth"  onclick="setQuickRange('prevMonth')">Предыдущий месяц</button>
+        <button type="button" class="quick-range-btn" data-range="thisYear"   onclick="setQuickRange('thisYear')">Этот год</button>
       </div>
       <div id="loadStatusWrap" class="hidden mt-3">
         <div class="flex items-center justify-between text-xs text-slate-400 mb-1">
@@ -405,7 +417,10 @@
     <div class="card">
       <div class="flex flex-wrap gap-3 justify-between items-center mb-2">
         <h2 class="text-white font-bold text-lg">🚀 Глубокий AI-анализ</h2>
-        <button id="aiDeepBtn" class="btn" onclick="runDeepAIAnalysis()">⚡ Запустить анализ</button>
+        <div class="flex flex-wrap gap-2">
+          <button id="aiDeepBtn" class="btn" onclick="runDeepAIAnalysis()">⚡ Запустить анализ</button>
+          <button id="aiDeepRefreshBtn" class="btn" style="background:#475569" onclick="runDeepAIAnalysis(true)" title="Принудительно пересчитать (игнорирует кэш)">🔄 Обновить</button>
+        </div>
       </div>
       <p class="text-sm text-slate-400 mb-4">Анализирует выбранный период и площадки, дающие суммарно ~99% выручки (мелкие игнорируются), и сегментирует отказной трафик МФО по 4 каналам домонетизации (витрина в ЛК, SMS, оффлайн-коллцентр, мобильное приложение). Возвращает результат в виде 4 вкладок: «Сводка и Риски» (резюме, статус здоровья, прогноз 7/30 дней, риски), «Маршрутизация отказников» (рекомендации офферов под каждый канал с обоснованием), «Точки роста» (что и насколько нарастить + проседающие сегменты), «Офферы и площадки» (vs рынок, разбор top-площадок, дневные просадки EPC). Работает по текущему диапазону дат.</p>
       <div id="aiDeepStatus" class="text-sm text-slate-400 mb-3"></div>
@@ -1165,6 +1180,9 @@ async function applyGlobalFilters() {
   renderArMatrix();
   renderCompareTab();
   renderAIInsights();
+  // Тихо восстанавливаем сохранённый ранее AI-отчёт для текущего диапазона.
+  // Не ждём результат — UI не должен блокироваться вспомогательным запросом.
+  loadCachedAIAnalysis();
 }
 
 function renderUI() {
@@ -2284,8 +2302,34 @@ function buildAIPayload() {
   };
 }
 
-async function runDeepAIAnalysis() {
+// Форматирует timestamp (секунды) в локальную строку «дата + время».
+function formatAITimestamp(ts) {
+  const n = Number(ts);
+  if (!n || !isFinite(n)) return '';
+  try {
+    return new Date(n * 1000).toLocaleString('ru-RU', {
+      day: '2-digit', month: '2-digit', year: 'numeric',
+      hour: '2-digit', minute: '2-digit',
+    });
+  } catch (e) { return ''; }
+}
+
+// Собирает текст статуса с периодом анализа и (если применимо) пометкой кэша.
+function buildAIStatusText(period, topPlatformsCount, createdAt, fromCache) {
+  const from = (period && period.from) || '—';
+  const to   = (period && period.to)   || '—';
+  const platformsPart = (typeof topPlatformsCount === 'number' && topPlatformsCount > 0)
+    ? `, площадок в анализе: ${topPlatformsCount} (≈99% выручки)` : '';
+  const ts = formatAITimestamp(createdAt);
+  const cachedPart = fromCache && ts
+    ? ` <span class="text-slate-400">(сохранённый ответ от ${ts}; нажмите «🔄 Обновить» для нового)</span>`
+    : (ts ? ` <span class="text-slate-400">(${ts})</span>` : '');
+  return `<span class="text-emerald-400">✅ Готово. Период: ${from} — ${to}${platformsPart}.</span>${cachedPart}`;
+}
+
+async function runDeepAIAnalysis(force = false) {
   const btn = document.getElementById('aiDeepBtn');
+  const refreshBtn = document.getElementById('aiDeepRefreshBtn');
   const statusEl = document.getElementById('aiDeepStatus');
   const resEl = document.getElementById('aiDeepResult');
   if (!statusEl || !resEl) return;
@@ -2302,11 +2346,16 @@ async function runDeepAIAnalysis() {
   }
 
   if (btn) { btn.disabled = true; btn.textContent = '⏳ Анализирую...'; }
-  statusEl.innerHTML = '<span class="text-slate-400">Идёт глубокий анализ — это может занять до минуты...</span>';
+  if (refreshBtn) { refreshBtn.disabled = true; }
+  statusEl.innerHTML = force
+    ? '<span class="text-slate-400">Принудительно пересчитываю — это может занять до минуты...</span>'
+    : '<span class="text-slate-400">Идёт глубокий анализ — это может занять до минуты...</span>';
   resEl.classList.add('hidden');
 
   try {
-    const res = await fetch(`${API_BASE}?action=ai_analyze`, {
+    // `force=1` обходит серверный кэш и заставляет провайдера пересчитать.
+    const url = `${API_BASE}?action=ai_analyze${force ? '&force=1' : ''}`;
+    const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -2337,12 +2386,47 @@ async function runDeepAIAnalysis() {
       throw new Error(reason);
     }
     renderDeepAIResult(json.data);
-    statusEl.innerHTML = `<span class="text-emerald-400">✅ Готово. Период: ${payload.period.from} — ${payload.period.to}, площадок в анализе: ${payload.top_platforms.length} (≈99% выручки).</span>`;
+    const period = (json.period && json.period.from) ? json.period : payload.period;
+    statusEl.innerHTML = buildAIStatusText(
+      period, payload.top_platforms.length, json.created_at, !!json.cached);
   } catch (e) {
     console.warn('Deep AI analysis failed:', e);
     statusEl.innerHTML = '<span class="text-red-400">⚠️ Анализ временно недоступен. Попробуйте ещё раз через минуту.</span>';
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = '⚡ Запустить анализ'; }
+    if (refreshBtn) { refreshBtn.disabled = false; }
+  }
+}
+
+// При загрузке страницы / смене периода тихо подтягиваем сохранённый ранее
+// AI-анализ (если есть для этого диапазона) — чтобы пользователь не терял
+// результат после перезагрузки. Сетевая ошибка не считается фатальной.
+async function loadCachedAIAnalysis() {
+  const statusEl = document.getElementById('aiDeepStatus');
+  const resEl = document.getElementById('aiDeepResult');
+  if (!statusEl || !resEl) return;
+  const dFrom = document.getElementById('dateFrom').value;
+  const dTo   = document.getElementById('dateTo').value;
+  if (!dFrom || !dTo) return;
+  try {
+    const res = await fetch(`${API_BASE}?action=ai_get_cached&from=${encodeURIComponent(dFrom)}&to=${encodeURIComponent(dTo)}`);
+    const ct = res.headers.get('content-type') || '';
+    if (!ct.toLowerCase().includes('application/json')) return;
+    const json = await res.json();
+    if (!json || json.status !== 'success') return;
+    if (!json.cached || !json.data) {
+      // Нет кэша — очищаем результат, чтобы при смене периода не остался
+      // отчёт от прошлого диапазона.
+      resEl.classList.add('hidden');
+      resEl.innerHTML = '';
+      statusEl.innerHTML = '<span class="text-slate-400">Нажмите «⚡ Запустить анализ», чтобы получить отчёт за выбранный период.</span>';
+      return;
+    }
+    renderDeepAIResult(json.data);
+    statusEl.innerHTML = buildAIStatusText(json.period, 0, json.created_at, true);
+  } catch (e) {
+    // Тихо игнорируем — это вспомогательный вызов.
+    console.debug('loadCachedAIAnalysis: skipped', e);
   }
 }
 
@@ -3257,12 +3341,96 @@ async function checkTgAlertsNow() {
 }
 
 // ========================== ИНИЦИАЛИЗАЦИЯ ==========================
+
+// Возвращает локальную (без UTC-сдвига) ISO-дату вида YYYY-MM-DD.
+// Через toISOString браузер сместил бы дату по UTC, что в часовом поясе
+// «Москва» (UTC+3) вечером превращало бы «сегодня» во «вчера».
+function toLocalISODate(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+// Считает [from, to] для именованного быстрого диапазона.
+// Возвращает {from, to} в формате YYYY-MM-DD по локальному времени.
+function computeQuickRange(name) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const startOf = (d) => { const x = new Date(d); x.setHours(0,0,0,0); return x; };
+  switch (name) {
+    case 'today':
+      return { from: toLocalISODate(today), to: toLocalISODate(today) };
+    case 'yesterday': {
+      const y = new Date(today); y.setDate(y.getDate() - 1);
+      return { from: toLocalISODate(y), to: toLocalISODate(y) };
+    }
+    case 'last7': {
+      // Последние 7 дней включая сегодня (today − 6 .. today).
+      const f = new Date(today); f.setDate(f.getDate() - 6);
+      return { from: toLocalISODate(f), to: toLocalISODate(today) };
+    }
+    case 'last14': {
+      const f = new Date(today); f.setDate(f.getDate() - 13);
+      return { from: toLocalISODate(f), to: toLocalISODate(today) };
+    }
+    case 'thisMonth': {
+      const f = startOf(new Date(today.getFullYear(), today.getMonth(), 1));
+      return { from: toLocalISODate(f), to: toLocalISODate(today) };
+    }
+    case 'prevMonth': {
+      const f = startOf(new Date(today.getFullYear(), today.getMonth() - 1, 1));
+      const t = startOf(new Date(today.getFullYear(), today.getMonth(), 0)); // последний день предыдущего месяца
+      return { from: toLocalISODate(f), to: toLocalISODate(t) };
+    }
+    case 'thisYear': {
+      const f = startOf(new Date(today.getFullYear(), 0, 1));
+      return { from: toLocalISODate(f), to: toLocalISODate(today) };
+    }
+    default:
+      return null;
+  }
+}
+
+// Подсвечивает активную кнопку быстрого периода, если текущий выбор
+// совпадает с одним из пресетов. Иначе — снимает подсветку со всех.
+function updateQuickRangeActive() {
+  const dFrom = document.getElementById('dateFrom').value;
+  const dTo   = document.getElementById('dateTo').value;
+  const buttons = document.querySelectorAll('#quickRangeBar .quick-range-btn');
+  let matched = null;
+  buttons.forEach(b => {
+    const r = computeQuickRange(b.dataset.range);
+    if (r && r.from === dFrom && r.to === dTo) matched = b.dataset.range;
+  });
+  buttons.forEach(b => {
+    b.classList.toggle('active', b.dataset.range === matched);
+  });
+}
+
+// Применяет именованный быстрый диапазон к input'ам и подгружает данные.
+function setQuickRange(name) {
+  const r = computeQuickRange(name);
+  if (!r) return;
+  const fromEl = document.getElementById('dateFrom');
+  const toEl   = document.getElementById('dateTo');
+  if (!fromEl || !toEl) return;
+  // Пишем сразу оба значения и только потом запускаем перезагрузку,
+  // чтобы не получить промежуточный недопустимый диапазон (from > to)
+  // во время change-обработчиков.
+  fromEl.value = r.from;
+  toEl.value   = r.to;
+  updateQuickRangeActive();
+  autoLoadSavedStats();
+}
+
 window.addEventListener('DOMContentLoaded', () => {
   const to = new Date(); const from = new Date(); from.setDate(to.getDate() - 30);
-  document.getElementById('dateTo').value = to.toISOString().split('T')[0];
-  document.getElementById('dateFrom').value = from.toISOString().split('T')[0];
-  document.getElementById('dateFrom').addEventListener('change', () => autoLoadSavedStats());
-  document.getElementById('dateTo').addEventListener('change', () => autoLoadSavedStats());
+  document.getElementById('dateTo').value = toLocalISODate(to);
+  document.getElementById('dateFrom').value = toLocalISODate(from);
+  document.getElementById('dateFrom').addEventListener('change', () => { updateQuickRangeActive(); autoLoadSavedStats(); });
+  document.getElementById('dateTo').addEventListener('change', () => { updateQuickRangeActive(); autoLoadSavedStats(); });
+  updateQuickRangeActive();
   // Yandex Metrika OAuth
   (async () => {
     try {
