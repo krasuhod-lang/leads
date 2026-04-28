@@ -2382,8 +2382,12 @@ async function runDeepAIAnalysis(force = false) {
     }
     if (!res.ok || json.status !== 'success' || !json.data) {
       const reason = json.error || `HTTP ${res.status}`;
+      const code = json.error_code ? ` [${json.error_code}]` : '';
       console.warn('Deep AI analysis: error payload', res.status, json);
-      throw new Error(reason);
+      const err = new Error(reason + code);
+      err.uiReason = reason;
+      err.uiCode = json.error_code || '';
+      throw err;
     }
     renderDeepAIResult(json.data);
     const period = (json.period && json.period.from) ? json.period : payload.period;
@@ -2391,7 +2395,17 @@ async function runDeepAIAnalysis(force = false) {
       period, payload.top_platforms.length, json.created_at, !!json.cached);
   } catch (e) {
     console.warn('Deep AI analysis failed:', e);
-    statusEl.innerHTML = '<span class="text-red-400">⚠️ Анализ временно недоступен. Попробуйте ещё раз через минуту.</span>';
+    // Если сервер прислал предметную причину (`uiReason`/`uiCode`) — покажем её,
+    // чтобы было понятно, что чинить (ключ, баланс, сеть, схема). Иначе общий fallback.
+    const rawReason = (e && e.uiReason) ? e.uiReason : 'Анализ временно недоступен. Попробуйте ещё раз через минуту.';
+    const rawCode   = (e && e.uiCode)   ? e.uiCode   : '';
+    // Безопасное HTML-экранирование — `error`/`error_code` приходят с нашего же
+    // PHP, но защищаемся на случай отражённого содержимого ответа провайдера.
+    const esc = (s) => String(s).replace(/[&<>"']/g, (c) => (
+      { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+    ));
+    const codeHtml = rawCode ? ` <span class="text-red-300/70 text-xs">(${esc(rawCode)})</span>` : '';
+    statusEl.innerHTML = `<span class="text-red-400">⚠️ ${esc(rawReason)}</span>${codeHtml}`;
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = '⚡ Запустить анализ'; }
     if (refreshBtn) { refreshBtn.disabled = false; }

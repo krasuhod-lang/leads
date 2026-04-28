@@ -1845,6 +1845,97 @@ if ($action === 'ai_get_cached') {
     ]);
     exit;
 }
+if ($action === 'ai_diag') {
+    // Безопасная диагностика AI-интеграции. НЕ раскрывает имя провайдера,
+    // полный ключ и URL клиенту — только факт наличия и санитарные данные.
+    // Полезно, когда фронт получает обезличенное "AI service is temporarily
+    // unavailable" и непонятно, что именно сломалось: ключ, конфиг, сеть,
+    // баланс или провайдер.
+    @set_time_limit(30);
+    $diag = [
+        'status' => 'success',
+        'config_file_present' => is_file(__DIR__ . '/ai_config.php'),
+        'config_file_readable' => is_readable(__DIR__ . '/ai_config.php'),
+        'api_key_present' => (AI_API_KEY !== ''),
+        'api_key_length_bucket' => AI_API_KEY === '' ? 'empty' : (strlen(AI_API_KEY) < 20 ? 'short' : 'ok'),
+        'api_key_prefix' => AI_API_KEY === '' ? '' : substr(AI_API_KEY, 0, 4) . '…',
+        'env_key_set' => (getenv('AI_API_KEY') !== false && getenv('AI_API_KEY') !== ''),
+        'php_version' => PHP_VERSION,
+        'curl_loaded' => function_exists('curl_init'),
+        'openssl_loaded' => extension_loaded('openssl'),
+        'sqlite_loaded' => extension_loaded('sqlite3'),
+        'error_log_path' => __DIR__ . '/php_errors.log',
+        'error_log_writable' => is_writable(__DIR__) || is_writable(__DIR__ . '/php_errors.log'),
+    ];
+
+    if (!$diag['api_key_present']) {
+        $diag['hint'] = 'AI_API_KEY пустой. Проверьте, что ai_config.php лежит рядом с leads-proxy.php и define(\'AI_API_KEY\', \'sk-...\') действительно выполняется.';
+        echo json_encode($diag);
+        exit;
+    }
+
+    // Минимальный пробный запрос к провайдеру: 1 токен ответа, дешёвая модель.
+    // Возвращаем HTTP-код и КОРОТКИЙ фрагмент ответа без чувствительных данных.
+    $probeBody = [
+        'model' => AI_MODEL,
+        'messages' => [
+            ['role' => 'user', 'content' => 'ping'],
+        ],
+        'max_tokens' => 1,
+        'stream' => false,
+    ];
+    $ch = curl_init();
+    curl_setopt_array($ch, [
+        CURLOPT_URL => AI_API_URL,
+        CURLOPT_POST => true,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 20,
+        CURLOPT_CONNECTTIMEOUT => 10,
+        CURLOPT_SSL_VERIFYPEER => true,
+        CURLOPT_SSL_VERIFYHOST => 2,
+        CURLOPT_HTTPHEADER => [
+            'Content-Type: application/json',
+            'Accept: application/json',
+            'Authorization: Bearer ' . AI_API_KEY,
+        ],
+        CURLOPT_POSTFIELDS => json_encode($probeBody, JSON_UNESCAPED_UNICODE),
+    ]);
+    $t0 = microtime(true);
+    $raw = curl_exec($ch);
+    $diag['probe'] = [
+        'http_code'    => (int)curl_getinfo($ch, CURLINFO_HTTP_CODE),
+        'curl_error'   => curl_error($ch) ?: null,
+        'curl_errno'   => curl_errno($ch),
+        'elapsed_ms'   => (int)round((microtime(true) - $t0) * 1000),
+        // Короткий безопасный фрагмент тела (provider может вернуть текст
+        // ошибки вида "Insufficient Balance" / "Authentication Fails").
+        'body_snippet' => is_string($raw) ? substr($raw, 0, 300) : null,
+    ];
+    curl_close($ch);
+
+    // Подсказки по типичным кодам — чтобы пользователю не нужно было лезть в логи.
+    $code = $diag['probe']['http_code'];
+    if ($diag['probe']['curl_error']) {
+        $diag['hint'] = 'CURL ошибка — вероятно, хостинг блокирует исходящие соединения к API провайдера или нет DNS/SSL. Проверьте, открыт ли исходящий 443 порт.';
+    } elseif ($code === 401) {
+        $diag['hint'] = 'HTTP 401 — ключ невалиден/отозван/опечатка. Проверьте AI_API_KEY (без пробелов и переводов строк).';
+    } elseif ($code === 402) {
+        $diag['hint'] = 'HTTP 402 — недостаточный баланс у провайдера. Пополните счёт.';
+    } elseif ($code === 429) {
+        $diag['hint'] = 'HTTP 429 — rate limit. Подождите и повторите.';
+    } elseif ($code === 400) {
+        $diag['hint'] = 'HTTP 400 — провайдер отклонил запрос (часто неверная модель). Проверьте AI_MODEL в ai_config.php.';
+    } elseif ($code >= 500) {
+        $diag['hint'] = 'HTTP ' . $code . ' — временный сбой провайдера, попробуйте позже.';
+    } elseif ($code >= 200 && $code < 300) {
+        $diag['hint'] = 'OK — провайдер отвечает. Если генерация всё равно падает, причина в валидации JSON-схемы ответа: смотрите php_errors.log.';
+    } else {
+        $diag['hint'] = 'Неожиданный HTTP-код ' . $code . '. Смотрите body_snippet и php_errors.log.';
+    }
+
+    echo json_encode($diag);
+    exit;
+}
 if ($action === 'ai_analyze') {
     // Поднимаем PHP-лимиты: AI-запрос может занять несколько минут,
     // дефолтные max_execution_time/memory_limit на shared-хостинге часто
@@ -1908,8 +1999,34 @@ if ($action === 'ai_analyze') {
 
     $result = aiCallProviderStructured($sysPrompt, $userPrompt, $signature);
     if (isset($result['error'])) {
-        // Никогда не возвращаем сырое имя провайдера/модели в текстах ошибок.
-        echo json_encode(['status' => 'error', 'error' => 'AI service is temporarily unavailable. Try again later.']);
+        // Никогда не возвращаем сырое имя провайдера/модели в текстах ошибок,
+        // но отдаём короткий машинный код (`transport`, `http_401`, `http_402`,
+        // `http_429`, `empty_content`, `invalid_json`, `Validation failed: ...`)
+        // — это позволяет UI показать предметную причину вместо общей фразы и
+        // экономит время на хождение в php_errors.log.
+        $code = (string)$result['error'];
+        // Грубая категоризация для человекочитаемой подсказки в UI.
+        $hint = 'AI service is temporarily unavailable. Try again later.';
+        if ($code === 'transport') {
+            $hint = 'Не удаётся достучаться до AI-сервиса (исходящие соединения от хостинга?).';
+        } elseif (strpos($code, 'http_401') === 0) {
+            $hint = 'AI ключ отклонён (401). Проверьте AI_API_KEY.';
+        } elseif (strpos($code, 'http_402') === 0) {
+            $hint = 'У AI-провайдера недостаточный баланс (402).';
+        } elseif (strpos($code, 'http_429') === 0) {
+            $hint = 'AI-провайдер отвечает 429 (rate limit). Повторите позже.';
+        } elseif (strpos($code, 'http_5') === 0) {
+            $hint = 'Временный сбой AI-провайдера (' . $code . '). Повторите позже.';
+        } elseif ($code === 'empty_content' || $code === 'invalid_json') {
+            $hint = 'AI вернул пустой/некорректный ответ. Повторите запрос.';
+        } elseif (strpos($code, 'Validation failed') === 0) {
+            $hint = 'AI вернул JSON не по схеме. Нажмите «Обновить» ещё раз.';
+        }
+        echo json_encode([
+            'status'     => 'error',
+            'error'      => $hint,
+            'error_code' => $code,
+        ]);
         exit;
     }
 
