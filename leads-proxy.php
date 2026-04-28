@@ -905,8 +905,10 @@ function aiBuildSignature() {
             'Указать точки роста и проседающие сегменты с числовыми метриками и планом действий.',
         ],
         // Схема выходного JSON. Используем её одновременно как часть промта и для валидации.
+        // ВАЖНО: reasoning_log намеренно вынесен в КОНЕЦ схемы. Если модель упрётся в
+        // max_tokens (deepseek-chat: 8192), обязательные поля (summary,
+        // reject_monetization_strategy, risks) уже будут сериализованы ДО обрыва.
         'output_schema' => [
-            'reasoning_log' => 'array<string> — Chain-of-Thought на английском, 4-6 пунктов: PHASE 1 DATA SANITY → PHASE 2 FRAUD DETECTION → PHASE 3 MARKET & DROPS → PHASE 4 ROUTING. В каждом пункте — конкретные числа из payload и микро-вычисления.',
             'reasoning' => 'string — краткое резюме CoT для аналитика (опционально).',
             'summary' => 'string — деловое резюме периода (2-4 предложения), без воды.',
             'recommendations' => 'array<{title:string, action:string, expected_impact:string, priority:"high"|"medium"|"low", evidence:string}> — 3-7 конкретных рекомендаций, каждая с действием и ожидаемым эффектом, привязкой к цифрам в evidence',
@@ -923,6 +925,9 @@ function aiBuildSignature() {
             'reject_monetization_strategy' => '{showcase_optimization:array<{offer_name:string, action:"add"|"promote"|"remove", reasoning:string}>, sms_campaigns:array<{offer_name:string, trigger_message_idea:string, expected_epc_uplift:number}>, offline_routing:array<{offer_name:string, reasoning:string}>, mobile_app_retention:array<{offer_name:string, placement_strategy:string}>, summary:string} — стратегия домонетизации отказного трафика по 4 каналам. По 2-5 офферов в каждом подмассиве. Все offer_name ОБЯЗАНЫ быть из offers_top / traffic_sources_breakdown.*.top_offers. Подбор: showcase = высокий CR + высокий Approve + средний/низкий EPC (горячий трафик после отказа); sms = высокий EPC + высокий CR + триггер 0%/одобрение всем; offline = высокая выплата за лид + низкий CR (сложные офферы для дожима оператором); mobile_app = долгосрочные/LTV-офферы (карты, рассрочка, длинные займы).',
             'growth_points' => 'array<{dimension:string, current_metric:string, target_metric:string, action_plan:string}> — 3-6 точек роста с числовыми текущими и целевыми метриками. dimension — например «Увеличение CR в SMS», «Рост EPC на витрине ЛК», «Снижение CPL в оффлайне».',
             'underperforming_segments' => 'array<{segment:"showcase"|"sms"|"offline"|"app"|"web", issue:string, solution:string}> — 2-5 проседающих сегментов отказного трафика. issue должен содержать конкретные числа из traffic_sources_breakdown.',
+            // reasoning_log вынесен в самый конец схемы (см. комментарий выше).
+            // Описание укорочено: одна короткая строка на фазу, без раздувания.
+            'reasoning_log' => 'array<string> — РОВНО 4 коротких пункта (≤200 символов каждый), английский: "PHASE 1 DATA SANITY: ...", "PHASE 2 FRAUD DETECTION: ...", "PHASE 3 MARKET & DROPS: ...", "PHASE 4 ROUTING: ...". По одной ключевой цифре на пункт, без длинных рассуждений.',
         ],
     ];
 }
@@ -983,7 +988,7 @@ Classify and route candidate offers from the payload into FOUR reject monetizati
    • placement_strategy: where exactly inside the app (home screen / push / re-loan widget / post-repayment offer).
 
 [ANALYSIS PHASES - CHAIN OF THOUGHT]
-Before producing the final blocks, document your analytical work in the reasoning_log array (English, with numbers). Execute these phases in order:
+Mentally execute these phases BEFORE you start writing JSON. Then write the JSON in schema order, putting the reasoning_log array LAST (it is the final key of the JSON object). Keep each reasoning_log entry to ≤200 chars (one sentence with ONE key number). Phases:
 - PHASE 1 — DATA SANITY: Check for logical impossibilities (e.g. conversions > clicks, approved > conversions, negative revenue). Note any payload defects.
 - PHASE 2 — FRAUD DETECTION: Scan sub1_anomalies for clicks > 300 with AR < 2% or CR < 1%. Flag suspicious sub1 values with their numbers.
 - PHASE 3 — MARKET & DROPS: Walk market_compare and epc_drops_signals. Compute lost-revenue potential = sum(clicks * |delta|) for negative deltas.
@@ -1009,7 +1014,7 @@ function aiBuildUserPrompt($payload, $sig) {
     // По новому ТЗ user prompt должен быть максимально коротким — вся логика
     // и схема уже вшиты в system prompt. Здесь просто доставляем payload.
     $data = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
-    return "Analyze the following performance snapshot according to your system instructions. Execute the 4 phases in the reasoning_log and output the final JSON.\n\n### PAYLOAD JSON ###\n{$data}\n### END PAYLOAD ###";
+    return "Analyze the following performance snapshot according to your system instructions. Mentally walk the 4 phases, then output the final JSON. Place the reasoning_log array LAST in the JSON (it is the final key) with ≤200 chars per phase entry.\n\n### PAYLOAD JSON ###\n{$data}\n### END PAYLOAD ###";
 }
 
 function aiTrimPayload($p) {
@@ -1169,9 +1174,11 @@ function aiCallProvider($sysPrompt, $userPrompt, $model) {
         // в max_tokens. На 3000 итоговый JSON часто обрывается → JSON-парс
         // падает → fallback тоже валится. С добавлением 4 структурированных
         // блоков (conversion_paths, offers_market_analysis, cross_sell, epc_drops)
-        // объём ответа вырос, поэтому базовый лимит подняли до 5000,
-        // а для reasoner — до 12000 с учётом скрытого reasoning_content.
-        'max_tokens' => $isReasoner ? 12000 : 5000,
+        // объём ответа вырос; на 5000 deepseek-chat стабильно ловил
+        // finish_reason=length и отдавал обрезанный JSON → "Output is not a
+        // JSON object". Поднято до 8000 (deepseek-chat capы 8192) и до 12000
+        // для reasoner с учётом скрытого reasoning_content.
+        'max_tokens' => $isReasoner ? 12000 : 8000,
         'stream' => false,
     ];
     if (!$isReasoner) {
@@ -1279,7 +1286,82 @@ function aiExtractJson($text) {
         $obj = json_decode($m[0], true);
         if (is_array($obj)) return $obj;
     }
+    // Попытка восстановить ОБРЕЗАННЫЙ JSON (finish_reason=length).
+    // Идея: проходим строку посимвольно, отслеживая глубину {}/[] и состояние
+    // строки/escape. На каждом моменте, когда мы не внутри строки и текущий
+    // символ — допустимое окончание значения (}, ], число/литерал), запоминаем
+    // позицию. По окончании прохода обрезаем по последней безопасной позиции и
+    // дозакрываем оставшиеся открытые контейнеры. Лучше получить частичный, но
+    // валидный JSON с обязательными полями, чем уронить весь ответ.
+    $repaired = aiRepairTruncatedJson($t);
+    if ($repaired !== null) {
+        $obj = json_decode($repaired, true);
+        if (is_array($obj)) return $obj;
+    }
     return null;
+}
+
+/**
+ * Пытается восстановить валидный JSON из обрезанного по max_tokens ответа.
+ * Возвращает строку с восстановленным JSON или null, если восстановить нельзя.
+ *
+ * Алгоритм:
+ *   1. Находим начало JSON-объекта ('{').
+ *   2. Идём по символам, отслеживая стек открытых '{'/'[' и состояние строки.
+ *   3. Запоминаем позицию последней безопасной "точки разреза" — индекс ПОСЛЕ
+ *      символа, на котором текущая пара ключ:значение была корректно закрыта
+ *      (запятая или закрывающая скобка вне строки).
+ *   4. Обрезаем строку до этой точки, удаляем висящую запятую и дозакрываем
+ *      оставшиеся открытые '{'/'[' в обратном порядке.
+ */
+function aiRepairTruncatedJson($text) {
+    $start = strpos($text, '{');
+    if ($start === false) return null;
+    $s = substr($text, $start);
+    $len = strlen($s);
+    $stack = [];           // стек открытых контейнеров: '{' или '['
+    $inString = false;
+    $escape = false;
+    $safeCut = -1;         // индекс ПОСЛЕ безопасного символа (запятая/закр. скобка верхнего уровня значения)
+    $safeStack = [];       // снапшот стека на момент safeCut
+    for ($i = 0; $i < $len; $i++) {
+        $ch = $s[$i];
+        if ($inString) {
+            if ($escape) { $escape = false; continue; }
+            if ($ch === '\\') { $escape = true; continue; }
+            if ($ch === '"') { $inString = false; }
+            continue;
+        }
+        if ($ch === '"') { $inString = true; continue; }
+        if ($ch === '{' || $ch === '[') { $stack[] = $ch; continue; }
+        if ($ch === '}' || $ch === ']') {
+            if (empty($stack)) break;
+            array_pop($stack);
+            $safeCut   = $i + 1;
+            $safeStack = $stack;
+            continue;
+        }
+        if ($ch === ',') {
+            $safeCut   = $i; // отрежем ДО запятой, потом сами дозакроем контейнеры
+            $safeStack = $stack;
+            continue;
+        }
+    }
+    if ($safeCut <= 0) return null;
+    $head = substr($s, 0, $safeCut);
+    // Уберём возможный висящий "ключ": часть после последней запятой/двоеточия,
+    // если она не выглядит как завершённое значение (страховка от обрыва внутри
+    // числа/литерала true/false/null).
+    $head = rtrim($head);
+    if ($head === '' || $head === '{') return null;
+    // Снимем висящую запятую в конце.
+    $head = rtrim($head, ", \t\n\r");
+    // Закрываем оставшиеся контейнеры в обратном порядке.
+    $tail = '';
+    for ($i = count($safeStack) - 1; $i >= 0; $i--) {
+        $tail .= ($safeStack[$i] === '{') ? '}' : ']';
+    }
+    return $head . $tail;
 }
 
 /** Достаёт кэшированный AI-результат за период [from..to] или null. */
