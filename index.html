@@ -325,11 +325,35 @@
     <div class="card">
       <div class="flex flex-wrap gap-3 justify-between items-center mb-2">
         <h2 class="text-white font-bold text-lg">🆚 Сравнение периодов</h2>
-        <select id="compareMode" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm focus:outline-none" onchange="renderCompareTab()">
+        <select id="compareMode" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm focus:outline-none" onchange="onCompareModeChange()">
           <option value="prev_period">Текущий vs предыдущий той же длины</option>
           <option value="prev_week">Эта неделя vs прошлая</option>
           <option value="prev_month">Этот месяц vs прошлый (то же количество дней)</option>
+          <option value="custom">Свои диапазоны (выбрать вручную)</option>
         </select>
+      </div>
+      <!-- Ручной выбор диапазонов. Видны всегда: для пресетов поля заполняются
+           автоматически (только для отображения), для режима «custom» — это
+           источник истины. Любая правка переключает режим в custom. -->
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+        <div class="bg-slate-900/50 border border-slate-700 rounded p-3">
+          <div class="text-xs text-slate-400 uppercase mb-2">Текущий период</div>
+          <div class="flex flex-wrap gap-2 items-center">
+            <label class="text-xs text-slate-500">с</label>
+            <input type="date" id="compareCurFrom" class="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm focus:outline-none" onchange="onCompareDateInputChange()">
+            <label class="text-xs text-slate-500">по</label>
+            <input type="date" id="compareCurTo" class="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm focus:outline-none" onchange="onCompareDateInputChange()">
+          </div>
+        </div>
+        <div class="bg-slate-900/50 border border-slate-700 rounded p-3">
+          <div class="text-xs text-slate-400 uppercase mb-2">Предыдущий период</div>
+          <div class="flex flex-wrap gap-2 items-center">
+            <label class="text-xs text-slate-500">с</label>
+            <input type="date" id="comparePrevFrom" class="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm focus:outline-none" onchange="onCompareDateInputChange()">
+            <label class="text-xs text-slate-500">по</label>
+            <input type="date" id="comparePrevTo" class="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm focus:outline-none" onchange="onCompareDateInputChange()">
+          </div>
+        </div>
       </div>
       <p class="text-sm text-slate-400 mb-4" id="comparePeriodLabel"></p>
       <div id="compareKpiGrid" class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-4"></div>
@@ -3175,14 +3199,19 @@ function renderArMatrix() {
 }
 
 // ========================== СРАВНЕНИЕ ПЕРИОДОВ ==========================
-// Считаем KPI по двум диапазонам: текущий (из originalData в [dateFrom, dateTo])
-// и предыдущий (по выбранному режиму). Берём данные из originalData, но если
-// предыдущий период вне фильтра — догружаем из get_stats напрямую.
-async function renderCompareTab() {
+// Считаем KPI по двум диапазонам. По умолчанию текущий = выбранный на дашборде
+// диапазон, а предыдущий вычисляется из режима (`prev_period` / `prev_week` /
+// `prev_month`). В режиме `custom` оба диапазона задаются вручную через
+// 4 date-инпута на самой вкладке. Любая правка инпутов автоматически
+// переводит селектор в `custom` и пересчитывает сравнение.
+
+// Вычисляет «предыдущий» диапазон по выбранному режиму на основе текущего
+// диапазона дашборда. Возвращает { curFrom, curTo, prevFrom, prevTo } либо
+// null, если на дашборде ещё нет дат.
+function computeComparePresetRanges(mode) {
   const dFrom = document.getElementById('dateFrom').value;
   const dTo = document.getElementById('dateTo').value;
-  if (!dFrom || !dTo) return;
-  const mode = (document.getElementById('compareMode') || {}).value || 'prev_period';
+  if (!dFrom || !dTo) return null;
   const lenDays = Math.max(1, Math.round((new Date(dTo) - new Date(dFrom)) / 86400000) + 1);
   let prevFrom, prevTo;
   if (mode === 'prev_week') {
@@ -3195,22 +3224,102 @@ async function renderCompareTab() {
     prevTo = isoShift(dFrom, -1);
     prevFrom = isoShift(prevTo, -(lenDays - 1));
   }
+  return { curFrom: dFrom, curTo: dTo, prevFrom, prevTo };
+}
+
+// Обработчик смены режима в селекторе. Для пресетов пересчитываем диапазоны
+// и заполняем 4 date-инпута, чтобы пользователь видел, что именно сравнивается;
+// для `custom` инпуты не трогаем (используем то, что юзер уже ввёл).
+function onCompareModeChange() {
+  const sel = document.getElementById('compareMode');
+  const mode = sel ? sel.value : 'prev_period';
+  if (mode !== 'custom') {
+    const r = computeComparePresetRanges(mode);
+    if (r) {
+      document.getElementById('compareCurFrom').value  = r.curFrom;
+      document.getElementById('compareCurTo').value    = r.curTo;
+      document.getElementById('comparePrevFrom').value = r.prevFrom;
+      document.getElementById('comparePrevTo').value   = r.prevTo;
+    }
+  }
+  renderCompareTab();
+}
+
+// Любая правка date-инпутов на вкладке означает «я хочу свои диапазоны» —
+// переводим селектор в custom и перерисовываем.
+function onCompareDateInputChange() {
+  const sel = document.getElementById('compareMode');
+  if (sel && sel.value !== 'custom') sel.value = 'custom';
+  renderCompareTab();
+}
+
+async function renderCompareTab() {
+  const sel = document.getElementById('compareMode');
+  const mode = sel ? sel.value : 'prev_period';
+
+  const elCurFrom  = document.getElementById('compareCurFrom');
+  const elCurTo    = document.getElementById('compareCurTo');
+  const elPrevFrom = document.getElementById('comparePrevFrom');
+  const elPrevTo   = document.getElementById('comparePrevTo');
+
+  // Для пресетов всегда синхронизируем 4 date-инпута с актуальным диапазоном
+  // дашборда — иначе при смене дат на главном дашборде пользователь увидит
+  // KPI по новым датам, но в инпутах останутся старые. В custom инпуты —
+  // источник истины, не трогаем.
+  if (mode !== 'custom' && elCurFrom) {
+    const r = computeComparePresetRanges(mode);
+    if (r) {
+      elCurFrom.value  = r.curFrom;
+      elCurTo.value    = r.curTo;
+      elPrevFrom.value = r.prevFrom;
+      elPrevTo.value   = r.prevTo;
+    }
+  }
+
+  // Читаем итоговые диапазоны из инпутов (они — единый источник истины и для
+  // custom, и для пресетов после onCompareModeChange).
+  const dFrom    = elCurFrom  ? elCurFrom.value  : '';
+  const dTo      = elCurTo    ? elCurTo.value    : '';
+  const prevFrom = elPrevFrom ? elPrevFrom.value : '';
+  const prevTo   = elPrevTo   ? elPrevTo.value   : '';
+
   const lbl = document.getElementById('comparePeriodLabel');
+  if (!dFrom || !dTo || !prevFrom || !prevTo) {
+    if (lbl) lbl.textContent = 'Укажите оба диапазона дат, чтобы увидеть сравнение.';
+    return;
+  }
+  // Защита от инверсии: если «по» < «с», просто сообщаем об этом.
+  // Сравнение строк корректно работает для ISO-формата YYYY-MM-DD,
+  // который гарантированно даёт <input type="date">.
+  if (dFrom > dTo || prevFrom > prevTo) {
+    if (lbl) lbl.innerHTML = '<span class="text-yellow-400">Дата «по» должна быть не раньше даты «с» в обоих диапазонах.</span>';
+    return;
+  }
   if (lbl) lbl.textContent = `Текущий: ${dFrom} → ${dTo} · Предыдущий: ${prevFrom} → ${prevTo}`;
-  // Текущий период — из памяти; предыдущий — отдельным запросом в БД
-  // (чтобы не зависеть от фильтра дат на основном дашборде).
-  const cur = originalData.filter(r => r.date >= dFrom && r.date <= dTo);
-  let prev = [];
-  try {
-    const res = await fetch(`${API_BASE}?action=get_stats&start_date=${prevFrom}&end_date=${prevTo}`);
-    const json = await res.json();
-    if (json.status === 'success') {
-      prev = json.data.map(row => ({
+  // Текущий период берём из памяти, ТОЛЬКО если он попадает в активный
+  // фильтр дашборда; иначе — догружаем из БД, как и предыдущий. Это нужно,
+  // потому что в режиме custom пользователь может выбрать диапазон,
+  // выходящий за пределы originalData.
+  const dashFrom = document.getElementById('dateFrom').value;
+  const dashTo   = document.getElementById('dateTo').value;
+  const curInDashboard = dashFrom && dashTo && dFrom >= dashFrom && dTo <= dashTo;
+
+  const fetchRange = async (from, to) => {
+    try {
+      const res = await fetch(`${API_BASE}?action=get_stats&start_date=${from}&end_date=${to}`);
+      const json = await res.json();
+      if (json.status !== 'success') return [];
+      return json.data.map(row => ({
         date: row.date, offer: row.offer_name || 'Unknown', offer_id: row.offer_id || '',
         clicks: row.clicks, conversions: row.conversions, approved: row.approved, revenue: row.revenue
       }));
-    }
-  } catch(e) { console.warn('Compare prev fetch error:', e); }
+    } catch(e) { console.warn('Compare fetch error:', e); return []; }
+  };
+
+  const cur = curInDashboard
+    ? originalData.filter(r => r.date >= dFrom && r.date <= dTo)
+    : await fetchRange(dFrom, dTo);
+  const prev = await fetchRange(prevFrom, prevTo);
   
   const sumKpi = arr => arr.reduce((a, r) => {
     a.clicks += r.clicks; a.conversions += r.conversions; a.approved += r.approved; a.revenue += r.revenue; return a;
