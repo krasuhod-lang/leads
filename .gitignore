@@ -3,6 +3,7 @@ stats.db-journal
 stats.db-wal
 stats.db-shm
 php_errors.log
+ai.log
 cron.log
 .DS_Store
 ai_config.php

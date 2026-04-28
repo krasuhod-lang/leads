@@ -120,6 +120,84 @@ if (!defined('AI_FALLBACK_MODEL')) {
     // Резерв — reasoner той же линейки (без JSON-mode и без temperature).
     define('AI_FALLBACK_MODEL', getenv('AI_FALLBACK_MODEL') ?: 'deepseek-reasoner');
 }
+
+// ---- Файловый лог AI-пайплайна. ----
+// Отдельный от php_errors.log файл, чтобы было видно, на каком шаге
+// (конфиг, сеть, HTTP-код провайдера, валидация JSON) падает генерация
+// «дипсика». Формат — JSON-line на каждое событие, чтобы можно было читать
+// и глазами, и парсить. API-ключ и сырые промпты в лог НЕ попадают
+// (только длины/превью), чтобы файл не разрастался и не утекал секрет.
+if (!defined('AI_LOG_FILE')) {
+    define('AI_LOG_FILE', __DIR__ . '/ai.log');
+}
+if (!defined('AI_LOG_MAX_BYTES')) {
+    // Авто-ротация: при достижении лимита переименовываем в ai.log.1
+    // и начинаем новый файл. 2 МБ хватает на сотни прогонов и не раздувает диск.
+    define('AI_LOG_MAX_BYTES', 2 * 1024 * 1024);
+}
+
+/**
+ * Пишет одну запись в ai.log (JSON-line) и дублирует в системный error_log.
+ * $event — короткое имя события (config_loaded, ai_diag_start, provider_http, ...).
+ * $context — произвольный массив с деталями (без секретов).
+ */
+function aiLog($event, array $context = []) {
+    $line = [
+        'ts'    => date('c'),
+        'event' => (string)$event,
+        'pid'   => getmypid(),
+    ];
+    // Никогда не пишем ключ целиком — только префикс и длину, если он вдруг
+    // попал в $context (защита от случайного логирования).
+    if (isset($context['api_key'])) {
+        $k = (string)$context['api_key'];
+        $context['api_key'] = ($k === '') ? '' : substr($k, 0, 4) . '…(' . strlen($k) . ')';
+    }
+    foreach ($context as $k => $v) {
+        $line[$k] = $v;
+    }
+    $json = json_encode($line, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($json === false) {
+        $json = json_encode(['ts' => date('c'), 'event' => $event, 'json_error' => json_last_error_msg()]);
+    }
+    // Простейшая ротация по размеру.
+    if (is_file(AI_LOG_FILE) && @filesize(AI_LOG_FILE) > AI_LOG_MAX_BYTES) {
+        @rename(AI_LOG_FILE, AI_LOG_FILE . '.1');
+    }
+    @file_put_contents(AI_LOG_FILE, $json . "\n", FILE_APPEND | LOCK_EX);
+    // Дублируем в php_errors.log только важные/ошибочные события, иначе
+    // успешные прогоны быстро забивают системный лог хостинга.
+    static $importantEvents = [
+        'config_loaded'                 => true, // первый запуск после деплоя — полезно видеть
+        'ai_diag_no_key'                => true,
+        'ai_analyze_no_key'             => true,
+        'ai_analyze_bad_payload'        => true,
+        'ai_analyze_error'              => true,
+        'provider_curl_error'           => true,
+        'provider_http_error'           => true,
+        'provider_invalid_json'         => true,
+        'provider_empty_content'        => true,
+        'structured_validation_failed'  => true,
+        'structured_fallback'           => true,
+    ];
+    if (isset($importantEvents[$event])) {
+        error_log('AI[' . $event . ']: ' . $json);
+    }
+}
+
+// Сразу зафиксируем итог загрузки конфигурации — это первая точка,
+// на которой может «тихо» сломаться весь AI-пайплайн.
+aiLog('config_loaded', [
+    'config_load_status'   => $AI_CONFIG_LOAD_STATUS,
+    'config_file_present'  => is_file($aiLocalConfig),
+    'config_file_readable' => is_readable($aiLocalConfig),
+    'api_key_present'      => (AI_API_KEY !== ''),
+    'api_key_length'       => strlen(AI_API_KEY),
+    'env_key_set'          => (getenv('AI_API_KEY') !== false && getenv('AI_API_KEY') !== ''),
+    'model'                => AI_MODEL,
+    'fallback_model'       => AI_FALLBACK_MODEL,
+    'api_url'              => AI_API_URL,
+]);
 // =======================================================
 
 // ---- Подключение к SQLite (один файл stats.db) ----
@@ -1035,12 +1113,21 @@ function aiCallProviderStructured($sysPrompt, $userPrompt, $sig) {
     $resp = aiCallProvider($sysPrompt, $userPrompt, AI_MODEL);
     if (isset($resp['error'])) {
         // Один fallback на reasoner (он медленный, но иногда переживает 5xx).
+        aiLog('structured_fallback', ['primary_error' => $resp['error']]);
         $resp = aiCallProvider($sysPrompt, $userPrompt, AI_FALLBACK_MODEL);
         if (isset($resp['error'])) return $resp;
     }
     $obj = aiExtractJson($resp['content'] ?? '');
     $err = aiValidateOutput($obj, $sig);
-    if ($err === null) return aiBackfillOutput($obj);
+    if ($err === null) {
+        aiLog('structured_ok', ['stage' => 'primary']);
+        return aiBackfillOutput($obj);
+    }
+    aiLog('structured_validation_failed', [
+        'stage'           => 'primary',
+        'validation_err'  => $err,
+        'content_preview' => substr((string)($resp['content'] ?? ''), 0, 300),
+    ]);
 
     // Шаг 2 (Refine) — один retry с явной коррекцией.
     // ВАЖНО: refine всегда идёт по быстрой модели (deepseek-chat), даже
@@ -1052,7 +1139,15 @@ function aiCallProviderStructured($sysPrompt, $userPrompt, $sig) {
     if (isset($resp2['error'])) return $resp2;
     $obj2 = aiExtractJson($resp2['content'] ?? '');
     $err2 = aiValidateOutput($obj2, $sig);
-    if ($err2 === null) return aiBackfillOutput($obj2);
+    if ($err2 === null) {
+        aiLog('structured_ok', ['stage' => 'refine']);
+        return aiBackfillOutput($obj2);
+    }
+    aiLog('structured_validation_failed', [
+        'stage'           => 'refine',
+        'validation_err'  => $err2,
+        'content_preview' => substr((string)($resp2['content'] ?? ''), 0, 300),
+    ]);
 
     return ['error' => 'Validation failed: ' . $err2];
 }
@@ -1101,25 +1196,73 @@ function aiCallProvider($sysPrompt, $userPrompt, $model) {
         ],
         CURLOPT_POSTFIELDS => json_encode($body, JSON_UNESCAPED_UNICODE),
     ]);
+    aiLog('provider_request', [
+        'model'           => $model,
+        'is_reasoner'     => $isReasoner,
+        'sys_prompt_len'  => strlen((string)$sysPrompt),
+        'user_prompt_len' => strlen((string)$userPrompt),
+        'max_tokens'      => $body['max_tokens'],
+        'timeout_s'       => $isReasoner ? 150 : 90,
+    ]);
+    $tStart = microtime(true);
     $raw = curl_exec($ch);
     $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
     $cerr = curl_error($ch);
+    $cerrno = curl_errno($ch);
     curl_close($ch);
+    $elapsedMs = (int)round((microtime(true) - $tStart) * 1000);
 
     if ($cerr) {
         error_log('AI provider CURL error: ' . $cerr);
+        aiLog('provider_curl_error', [
+            'model'      => $model,
+            'curl_errno' => $cerrno,
+            'curl_error' => $cerr,
+            'elapsed_ms' => $elapsedMs,
+        ]);
         return ['error' => 'transport'];
     }
     if ($code < 200 || $code >= 300) {
         error_log("AI provider HTTP {$code}: " . substr((string)$raw, 0, 500));
+        aiLog('provider_http_error', [
+            'model'        => $model,
+            'http_code'    => (int)$code,
+            'elapsed_ms'   => $elapsedMs,
+            'body_snippet' => is_string($raw) ? substr($raw, 0, 500) : null,
+        ]);
         return ['error' => "http_{$code}"];
     }
     $data = json_decode($raw, true);
-    if (!is_array($data)) return ['error' => 'invalid_json'];
+    if (!is_array($data)) {
+        aiLog('provider_invalid_json', [
+            'model'        => $model,
+            'http_code'    => (int)$code,
+            'elapsed_ms'   => $elapsedMs,
+            'body_snippet' => is_string($raw) ? substr($raw, 0, 500) : null,
+        ]);
+        return ['error' => 'invalid_json'];
+    }
     // Для reasoner итоговый ответ — в content; reasoning_content игнорируем
     // (это служебная цепочка размышлений, не должна попадать в UI).
     $content = $data['choices'][0]['message']['content'] ?? '';
-    if ($content === '') return ['error' => 'empty_content'];
+    if ($content === '') {
+        aiLog('provider_empty_content', [
+            'model'      => $model,
+            'http_code'  => (int)$code,
+            'elapsed_ms' => $elapsedMs,
+            'finish_reason' => $data['choices'][0]['finish_reason'] ?? null,
+            'usage'      => $data['usage'] ?? null,
+        ]);
+        return ['error' => 'empty_content'];
+    }
+    aiLog('provider_ok', [
+        'model'         => $model,
+        'http_code'     => (int)$code,
+        'elapsed_ms'    => $elapsedMs,
+        'content_len'   => strlen((string)$content),
+        'finish_reason' => $data['choices'][0]['finish_reason'] ?? null,
+        'usage'         => $data['usage'] ?? null,
+    ]);
     return ['content' => $content];
 }
 
@@ -1914,6 +2057,72 @@ if ($action === 'ai_get_cached') {
     ]);
     exit;
 }
+if ($action === 'ai_log') {
+    // Безопасный просмотр последних N строк AI-лога. Файловый лог содержит
+    // только метаданные (HTTP-коды, длительности, превью), без API-ключа и
+    // полных промптов — поэтому отдавать его наружу безопасно. Лимит
+    // нужен, чтобы один запрос не вернул весь многомегабайтный файл.
+    $lines = (int)($_GET['lines'] ?? 200);
+    if ($lines < 1) $lines = 1;
+    if ($lines > 2000) $lines = 2000;
+
+    if (!is_file(AI_LOG_FILE)) {
+        echo json_encode([
+            'status'    => 'success',
+            'path'      => AI_LOG_FILE,
+            'exists'    => false,
+            'size_bytes'=> 0,
+            'lines'     => [],
+            'hint'      => 'Лог пуст. Сделайте запрос ai_diag или ai_analyze, чтобы появились записи.',
+        ]);
+        exit;
+    }
+    // Читаем построчно с конца, чтобы не грузить весь файл в память.
+    $tail = [];
+    $fp = @fopen(AI_LOG_FILE, 'rb');
+    if ($fp) {
+        $bufSize = 8192;
+        $stat = fstat($fp);
+        $size = $stat['size'] ?? 0;
+        $pos = $size;
+        $leftover = '';
+        while ($pos > 0 && count($tail) < $lines) {
+            $read = ($pos >= $bufSize) ? $bufSize : $pos;
+            $pos -= $read;
+            fseek($fp, $pos);
+            $chunk = fread($fp, $read) . $leftover;
+            $parts = explode("\n", $chunk);
+            $leftover = array_shift($parts); // может быть неполной строкой
+            // Добавляем с конца, в обратном порядке.
+            for ($i = count($parts) - 1; $i >= 0; $i--) {
+                if ($parts[$i] === '') continue;
+                $tail[] = $parts[$i];
+                if (count($tail) >= $lines) break;
+            }
+        }
+        if ($pos === 0 && $leftover !== '' && count($tail) < $lines) {
+            $tail[] = $leftover;
+        }
+        fclose($fp);
+        $tail = array_reverse($tail);
+    }
+    echo json_encode([
+        'status'     => 'success',
+        'path'       => AI_LOG_FILE,
+        'exists'     => true,
+        'size_bytes' => (int)@filesize(AI_LOG_FILE),
+        'lines'      => $tail,
+    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    exit;
+}
+if ($action === 'ai_log_clear') {
+    // Сброс файлового AI-лога. Не трогаем php_errors.log.
+    $existed = is_file(AI_LOG_FILE);
+    if ($existed) @unlink(AI_LOG_FILE);
+    aiLog('ai_log_cleared', ['existed' => $existed]);
+    echo json_encode(['status' => 'success', 'cleared' => $existed]);
+    exit;
+}
 if ($action === 'ai_diag') {
     // Безопасная диагностика AI-интеграции. НЕ раскрывает имя провайдера,
     // полный ключ и URL клиенту — только факт наличия и санитарные данные.
@@ -1921,6 +2130,7 @@ if ($action === 'ai_diag') {
     // unavailable" и непонятно, что именно сломалось: ключ, конфиг, сеть,
     // баланс или провайдер.
     @set_time_limit(30);
+    aiLog('ai_diag_start', []);
     global $AI_CONFIG_LOAD_STATUS;
     $diag = [
         'status' => 'success',
@@ -1938,6 +2148,12 @@ if ($action === 'ai_diag') {
         'error_log_path' => __DIR__ . '/php_errors.log',
         'error_log_writable' => is_writable(__DIR__) || is_writable(__DIR__ . '/php_errors.log'),
         'expected_config_path' => __DIR__ . '/ai_config.php',
+        // Информация про файловый AI-лог (см. action=ai_log).
+        'ai_log_path'      => AI_LOG_FILE,
+        'ai_log_exists'    => is_file(AI_LOG_FILE),
+        'ai_log_writable'  => is_writable(AI_LOG_FILE) || is_writable(__DIR__),
+        'ai_log_size_bytes'=> is_file(AI_LOG_FILE) ? (int)@filesize(AI_LOG_FILE) : 0,
+        'ai_log_view_url'  => '?action=ai_log&lines=200',
     ];
 
     if (!$diag['api_key_present']) {
@@ -1950,6 +2166,10 @@ if ($action === 'ai_diag') {
         } else {
             $diag['hint'] = 'Файл ai_config.php подключился, но AI_API_KEY пуст. Проверьте, что внутри есть строка define(\'AI_API_KEY\', \'sk-...\'); без пробелов и переводов строк.';
         }
+        aiLog('ai_diag_no_key', [
+            'config_load_status' => $diag['config_load_status'],
+            'hint'               => $diag['hint'],
+        ]);
         echo json_encode($diag);
         exit;
     }
@@ -2013,6 +2233,14 @@ if ($action === 'ai_diag') {
         $diag['hint'] = 'Неожиданный HTTP-код ' . $code . '. Смотрите body_snippet и php_errors.log.';
     }
 
+    aiLog('ai_diag_result', [
+        'http_code'   => $diag['probe']['http_code'],
+        'curl_errno'  => $diag['probe']['curl_errno'],
+        'curl_error'  => $diag['probe']['curl_error'],
+        'elapsed_ms'  => $diag['probe']['elapsed_ms'],
+        'hint'        => $diag['hint'],
+    ]);
+
     echo json_encode($diag);
     exit;
 }
@@ -2036,6 +2264,7 @@ if ($action === 'ai_analyze') {
     $raw = file_get_contents('php://input');
     $payload = json_decode($raw, true);
     if (!is_array($payload)) {
+        aiLog('ai_analyze_bad_payload', ['raw_len' => is_string($raw) ? strlen($raw) : 0]);
         echo json_encode(['status' => 'error', 'error' => 'Invalid payload']);
         exit;
     }
@@ -2048,11 +2277,22 @@ if ($action === 'ai_analyze') {
         $periodTo   = (string)($payload['period']['to']   ?? '');
     }
     $force = !empty($_GET['force']);
+    aiLog('ai_analyze_start', [
+        'period_from' => $periodFrom,
+        'period_to'   => $periodTo,
+        'force'       => $force,
+        'payload_keys'=> array_keys($payload),
+    ]);
 
     // Если не запрошен принудительный пересчёт и есть кэш — отдаём его.
     if (!$force && $periodFrom !== '' && $periodTo !== '') {
         $cached = aiCacheGet($db, $periodFrom, $periodTo);
         if ($cached) {
+            aiLog('ai_analyze_cache_hit', [
+                'period_from' => $cached['period_from'],
+                'period_to'   => $cached['period_to'],
+                'created_at'  => $cached['created_at'],
+            ]);
             echo json_encode([
                 'status'     => 'success',
                 'data'       => $cached['data'],
@@ -2067,6 +2307,7 @@ if ($action === 'ai_analyze') {
     if (AI_API_KEY === '') {
         // Ключ не сконфигурирован на сервере — отдаём JSON, а не падаем в HTML.
         error_log('AI: AI_API_KEY env is empty; refusing to call provider');
+        aiLog('ai_analyze_no_key', []);
         echo json_encode(['status' => 'error', 'error' => 'AI service is not configured.']);
         exit;
     }
@@ -2102,6 +2343,7 @@ if ($action === 'ai_analyze') {
         } elseif (strpos($code, 'Validation failed') === 0) {
             $hint = 'AI вернул JSON не по схеме. Нажмите «Обновить» ещё раз.';
         }
+        aiLog('ai_analyze_error', ['error_code' => $code, 'hint' => $hint]);
         echo json_encode([
             'status'     => 'error',
             'error'      => $hint,
@@ -2115,6 +2357,11 @@ if ($action === 'ai_analyze') {
     if ($periodFrom !== '' && $periodTo !== '') {
         aiCachePut($db, $periodFrom, $periodTo, $result, $createdAt);
     }
+    aiLog('ai_analyze_success', [
+        'period_from' => $periodFrom,
+        'period_to'   => $periodTo,
+        'created_at'  => $createdAt,
+    ]);
     echo json_encode([
         'status'     => 'success',
         'data'       => $result,
