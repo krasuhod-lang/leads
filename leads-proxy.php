@@ -1347,7 +1347,7 @@ function aiRepairTruncatedJson($text) {
             continue;
         }
     }
-    if ($safeCut <= 0) return null;
+    if ($safeCut === -1) return null;
     $head = substr($s, 0, $safeCut);
     // Уберём возможный висящий "ключ": часть после последней запятой/двоеточия,
     // если она не выглядит как завершённое значение (страховка от обрыва внутри
