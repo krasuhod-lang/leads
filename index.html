@@ -2319,7 +2319,11 @@ async function runDeepAIAnalysis() {
     const ct = res.headers.get('content-type') || '';
     let json = null;
     let parseErr = null;
-    if (ct.toLowerCase().includes('application/json') || text.trim().startsWith('{')) {
+    // Пытаемся распарсить, если сервер прямо заявил JSON, иначе пробуем
+    // как fallback (но не падаем — ошибки парса ловим сами).
+    if (ct.toLowerCase().includes('application/json')) {
+      try { json = JSON.parse(text); } catch (e) { parseErr = e; }
+    } else {
       try { json = JSON.parse(text); } catch (e) { parseErr = e; }
     }
     if (!json) {

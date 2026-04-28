@@ -27,7 +27,10 @@ set_error_handler(function ($severity, $message, $file, $line) {
     }
     // Только фактические ошибки превращаем в исключения; warning/notice
     // оставляем как есть, чтобы не ломать существующее поведение.
-    if ($severity === E_ERROR || $severity === E_USER_ERROR || $severity === E_RECOVERABLE_ERROR) {
+    // Примечание: настоящие E_ERROR сюда не попадают (фаталы перехватывает
+    // register_shutdown_function ниже), но E_USER_ERROR и E_RECOVERABLE_ERROR
+    // обработчик увидит — для них генерируем исключение.
+    if ($severity === E_USER_ERROR || $severity === E_RECOVERABLE_ERROR) {
         throw new ErrorException($message, 0, $severity, $file, $line);
     }
     return false;
@@ -1759,7 +1762,9 @@ if ($action === 'ai_analyze') {
     // Поднимаем PHP-лимиты: AI-запрос может занять несколько минут,
     // дефолтные max_execution_time/memory_limit на shared-хостинге часто
     // ниже реальной длительности и приводят к фаталу → пустой/HTML ответ.
-    @set_time_limit(0);
+    // 300с достаточно с запасом (chat 90с + chat 90с в refine + накладные),
+    // и одновременно ограничивает риск «вечно живущих» PHP-процессов.
+    @set_time_limit(300);
     @ini_set('memory_limit', '256M');
     // Просим nginx/Cloudflare НЕ буферизовать ответ — иначе reverse-proxy
     // может закрыть соединение по своему `proxy_read_timeout` раньше,
