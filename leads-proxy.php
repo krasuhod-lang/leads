@@ -1258,7 +1258,8 @@ function aiFindHallucinations($obj, $allowed) {
         if (!is_string($name)) return;
         $trim = trim($name);
         if ($trim === '') return;
-        if (!in_array(mb_strtolower($trim), $allowedOffersLc, true)) {
+        $lc = mb_strtolower($trim);
+        if (!in_array($lc, $allowedOffersLc, true)) {
             $issues[] = ['path' => $path, 'kind' => 'offer', 'name' => $trim];
         }
     };
@@ -1266,7 +1267,8 @@ function aiFindHallucinations($obj, $allowed) {
         if (!is_string($name)) return;
         $trim = trim($name);
         if ($trim === '') return;
-        if (!in_array(mb_strtolower($trim), $allowedPlatformsLc, true)) {
+        $lc = mb_strtolower($trim);
+        if (!in_array($lc, $allowedPlatformsLc, true)) {
             $issues[] = ['path' => $path, 'kind' => 'platform', 'name' => $trim];
         }
     };
@@ -2019,18 +2021,26 @@ function aiBacktestRun($db) {
             $targetTo   = date('Y-m-d', strtotime($baselineDate . ' +' . $days . ' day'));
             // Если горизонт ещё не истёк — пропускаем.
             if ($targetTo >= $today) { $report['skipped_no_fact']++; continue; }
-            // Уже посчитано?
-            $exists = @$db->querySingle('SELECT 1 FROM ai_forecast_accuracy
-                WHERE baseline_date = "' . SQLite3::escapeString($baselineDate) . '"
-                  AND horizon = "' . SQLite3::escapeString($horizon) . '"');
+            // Уже посчитано? — prepared statement для согласованности с
+            // остальным кодом (хотя оба значения берём из row базы, не от юзера).
+            $stmtCheck = $db->prepare('SELECT 1 FROM ai_forecast_accuracy
+                WHERE baseline_date = :bd AND horizon = :h');
+            $stmtCheck->bindValue(':bd', $baselineDate, SQLITE3_TEXT);
+            $stmtCheck->bindValue(':h',  $horizon,      SQLITE3_TEXT);
+            $exists = $stmtCheck->execute()->fetchArray(SQLITE3_NUM);
+            $stmtCheck->close();
             if ($exists) { $report['skipped_done']++; continue; }
-            // Считаем факт.
-            $fact = @$db->querySingle('SELECT
+            // Считаем факт за горизонт прогноза — тоже через prepared statement.
+            $stmtFact = $db->prepare('SELECT
                     COALESCE(SUM(revenue),0)     AS rev,
                     COALESCE(SUM(raw_clicks),0)  AS clk
                 FROM daily_stats
-                WHERE date >= "' . SQLite3::escapeString($targetFrom) . '"
-                  AND date <= "' . SQLite3::escapeString($targetTo) . '"', true);
+                WHERE date >= :tf AND date <= :tt');
+            $stmtFact->bindValue(':tf', $targetFrom, SQLITE3_TEXT);
+            $stmtFact->bindValue(':tt', $targetTo,   SQLITE3_TEXT);
+            $factRes = $stmtFact->execute();
+            $fact = $factRes ? $factRes->fetchArray(SQLITE3_ASSOC) : null;
+            $stmtFact->close();
             if (!is_array($fact) || (float)$fact['rev'] <= 0) {
                 $report['skipped_no_fact']++;
                 continue;
