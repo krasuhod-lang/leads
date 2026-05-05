@@ -96,6 +96,21 @@ if (php_sapi_name() === 'cli') {
         date('Y-m-d H:i:s') . " [CLI] TG alerts: {$alertsResponse}\n", FILE_APPEND);
     echo "TG alerts: {$alertsResponse}\n";
 
+    // 6. Бэктест точности AI-прогнозов. Идемпотентен — для каждой пары
+    // (baseline_date, horizon) считается ровно один раз. Безопасно
+    // запускать каждый час: если горизонт ещё не истёк, строка не
+    // создаётся; после истечения мы получаем MAPE по revenue/clicks/EPC.
+    $_GET = [];
+    $_GET['action'] = 'ai_backtest_run';
+
+    ob_start();
+    include __DIR__ . '/leads-proxy.php';
+    $backtestResponse = ob_get_clean();
+
+    file_put_contents(__DIR__ . '/cron.log',
+        date('Y-m-d H:i:s') . " [CLI] AI backtest: {$backtestResponse}\n", FILE_APPEND);
+    echo "AI backtest: {$backtestResponse}\n";
+
     exit;
 }
 
