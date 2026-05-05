@@ -120,6 +120,13 @@ if (!defined('AI_FALLBACK_MODEL')) {
     // Резерв — reasoner той же линейки (без JSON-mode и без temperature).
     define('AI_FALLBACK_MODEL', getenv('AI_FALLBACK_MODEL') ?: 'deepseek-reasoner');
 }
+// Версия промпта/схемы. Меняется ВРУЧНУЮ при изменении aiBuildSignature() /
+// aiBuildSystemPrompt(). Включается в hash payload и сохраняется в
+// `ai_analysis_cache.prompt_version` — позволяет различать кэш разных
+// версий схемы и при необходимости инвалидировать его.
+if (!defined('AI_PROMPT_VERSION')) {
+    define('AI_PROMPT_VERSION', '2026-05-05.v2-baseline-anomalies-noHallu');
+}
 
 // ---- Файловый лог AI-пайплайна. ----
 // Отдельный от php_errors.log файл, чтобы было видно, на каком шаге
@@ -497,13 +504,67 @@ try {
     // чтобы при перезагрузке страницы пользователь видел тот же отчёт без
     // повторного дорогого запроса к провайдеру. Принудительный пересчёт —
     // через action=ai_analyze&force=1 (кнопка «Обновить» в UI).
-    $db->exec('CREATE TABLE IF NOT EXISTS ai_analysis_cache (
+    //
+    // Дополнительно храним:
+    //   payload_hash      — sha1 канонического payload-а; при изменении
+    //                       исходных данных (после cron_update.php) старый
+    //                       ответ помечается как stale (но всё ещё показывается).
+    //   model_used / latency_ms / *_tokens / prompt_version — телеметрия
+    //                       для блока ai_diag (стоимость, скорость, версия).
+    $safeExec('CREATE TABLE IF NOT EXISTS ai_analysis_cache (
         period_key TEXT PRIMARY KEY,
         period_from TEXT NOT NULL,
         period_to TEXT NOT NULL,
         result_json TEXT NOT NULL,
         created_at INTEGER NOT NULL
     )');
+    // Бэкфилл колонок (если таблица существовала до миграции).
+    $aiCacheCols = [];
+    $resCols = @$db->query("PRAGMA table_info(ai_analysis_cache)");
+    if ($resCols) {
+        while ($row = $resCols->fetchArray(SQLITE3_ASSOC)) {
+            if (!empty($row['name'])) $aiCacheCols[] = $row['name'];
+        }
+    }
+    foreach ([
+        'payload_hash'      => 'TEXT',
+        'prompt_version'    => 'TEXT',
+        'model_used'        => 'TEXT',
+        'latency_ms'        => 'INTEGER',
+        'prompt_tokens'     => 'INTEGER',
+        'completion_tokens' => 'INTEGER',
+        'total_tokens'      => 'INTEGER',
+    ] as $colName => $colType) {
+        if (!in_array($colName, $aiCacheCols, true)) {
+            @$db->exec("ALTER TABLE ai_analysis_cache ADD COLUMN {$colName} {$colType}");
+        }
+    }
+
+    // Таблица backtest-аккуратности AI-прогнозов (точка роста №5c).
+    // На каждую успешную AI-сессию мы знаем forecast.period_7d и period_30d.
+    // Когда соответствующий период истёк, сравниваем прогноз с фактом из
+    // daily_stats и считаем MAPE. Триггер — action=ai_backtest_run из cron.
+    $safeExec('CREATE TABLE IF NOT EXISTS ai_forecast_accuracy (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        baseline_date TEXT NOT NULL,         -- дата, на которую был построен прогноз (period_to AI-сессии)
+        horizon TEXT NOT NULL,               -- "7d" | "30d"
+        target_from TEXT NOT NULL,           -- начало периода прогноза (baseline_date+1)
+        target_to TEXT NOT NULL,             -- конец периода прогноза
+        forecast_revenue REAL,
+        forecast_clicks REAL,
+        forecast_epc REAL,
+        actual_revenue REAL,
+        actual_clicks REAL,
+        actual_epc REAL,
+        mape_revenue REAL,                   -- |forecast - actual| / actual * 100
+        mape_clicks REAL,
+        mape_epc REAL,
+        prompt_version TEXT,
+        model_used TEXT,
+        created_at INTEGER NOT NULL,
+        UNIQUE(baseline_date, horizon)
+    )');
+    $safeExec('CREATE INDEX IF NOT EXISTS idx_ai_forecast_baseline ON ai_forecast_accuracy(baseline_date)');
     
 } catch (Exception $e) {
     http_response_code(500);
@@ -998,11 +1059,14 @@ Mentally execute these phases BEFORE you start writing JSON. Then write the JSON
 A. conversion_paths — full funnel (clicks → conversions → approved → revenue) from kpi + 2-6 weak_points (stage / where / metric / value / benchmark / severity / root_cause / fix / expected_uplift).
 B. offers_market_analysis — for each offer in market_compare set verdict (scale/hold/replace/test) using Market Delta, give recommendation, forecast_epc, forecast_revenue_uplift; build watchlist of high-volume offers with positive delta.
 C. cross_sell — pick audience (PDL / installment / microloans) and propose 3-6 adjacent products (insurance, debit/credit cards, refinance, BKI, legal debt help, telecom). Tie each to a pattern visible in the payload.
-D. epc_drops — find days where EPC dropped ≥20% vs previous day (use daily_recent + offers_daily_epc); for each drop give evidence_based_reasons and a recommended_replacement offer drawn from historical periods. If none — detected=false, drops=[].
-E. forecast — period_7d and period_30d numeric forecasts based on weekly_trend / monthly_trend; degrade confidence if data is sparse.
+D. epc_drops — find days where EPC dropped ≥20% vs previous day (use daily_recent + offers_daily_epc); for each drop give evidence_based_reasons and a recommended_replacement offer drawn from historical periods. If none — detected=false, drops=[]. PRIORITIZE drops already pre-detected in input field anomalies_detected (kind="epc_drop" / "platform_epc_drop" / "offer_epc_drop") — they are the deterministic ground truth, do NOT skip them.
+E. forecast — period_7d and period_30d numeric forecasts.
+   IF input contains forecast_baseline.period_7d / period_30d (deterministic EMA + DOW-seasonality projection): USE IT AS THE STARTING POINT. You may adjust UP or DOWN by at most ±20% per metric, and ONLY with an explicit numeric reason (e.g. "drop on platform X − 15% revenue", "new offer Y added"). Put your final adjusted numbers in forecast.period_*.{revenue,clicks,epc} and put the baseline values in forecast.period_*.baseline.{revenue,clicks,epc}. Set forecast.period_*.adjustment_reason (string).
+   IF baseline is absent — derive forecast from weekly_trend / monthly_trend yourself; degrade confidence if data is sparse.
 F. platforms_breakdown — only top_platforms (~99% of revenue, ≤10). Skip the long tail.
 G. growth_points — 3-6 items with numeric current_metric and target_metric and a concrete action_plan (use traffic_sources_breakdown numbers).
 H. underperforming_segments — 2-5 items with segment ∈ {showcase, sms, offline, app, web}, issue with payload numbers, solution.
+I. anomalies_detected (input field, NOT output) — массив заранее посчитанных аномалий: fraud_suspect (sub1 с подозрительно низким AR/CR при больших кликах), epc_drop (день-к-дню), offer_epc_drop / platform_epc_drop (просадки конкретного оффера или площадки vs trailing-7d-median), quality_anomaly (offer×platform пары с аномально низким AR). Используй их как АВТОРИТЕТНЫЕ диагнозы — не пропускай и не пересчитывай. Включи их в risks (kind=fraud_suspect → severity=high) и в epc_drops (kind=*epc_drop*). Для quality_anomaly выводи в reject_monetization_strategy с предложением routing-а.
 
 [OUTPUT SCHEMA]
 Return ONLY a single JSON object exactly matching this schema (keys and types):
@@ -1030,6 +1094,7 @@ function aiTrimPayload($p) {
         'daily_recent' => 30,
         'offers_daily_epc' => 12,     // топ-12 офферов по выручке с дневным EPC
         'epc_drops_signals' => 15,    // подсказки о просадках EPC день-к-дню
+        'anomalies_detected' => 30,   // pre-detected аномалии (fraud/epc_drop/quality)
     ];
     foreach ($caps as $k => $n) {
         if (isset($p[$k]) && is_array($p[$k]) && count($p[$k]) > $n) {
@@ -1113,20 +1178,207 @@ function aiBackfillOutput($obj) {
     return $obj;
 }
 
-function aiCallProviderStructured($sysPrompt, $userPrompt, $sig) {
+/**
+ * Собирает белый список имён офферов и площадок из payload-а.
+ * Имена нормализуются (lowercase + trim) для устойчивого сравнения.
+ * Используется в no-hallucination валидаторе ниже.
+ */
+function aiCollectAllowedNames($payload) {
+    $offers    = [];
+    $platforms = [];
+    $sub1s     = [];
+    $pushOffer = function ($name) use (&$offers) {
+        $n = is_string($name) ? trim($name) : '';
+        if ($n !== '') $offers[mb_strtolower($n)] = $n;
+    };
+    $pushPlat = function ($name) use (&$platforms) {
+        $n = is_string($name) ? trim($name) : '';
+        if ($n !== '') $platforms[mb_strtolower($n)] = $n;
+    };
+    $pushSub = function ($name) use (&$sub1s) {
+        $n = is_string($name) ? trim($name) : '';
+        if ($n !== '') $sub1s[mb_strtolower($n)] = $n;
+    };
+    foreach (['offers_top', 'offers_underperforming', 'market_compare', 'offers_daily_epc'] as $k) {
+        if (!isset($payload[$k]) || !is_array($payload[$k])) continue;
+        foreach ($payload[$k] as $row) {
+            if (is_array($row) && isset($row['name'])) $pushOffer($row['name']);
+        }
+    }
+    if (isset($payload['top_platforms']) && is_array($payload['top_platforms'])) {
+        foreach ($payload['top_platforms'] as $row) {
+            if (is_array($row) && isset($row['name'])) $pushPlat($row['name']);
+        }
+    }
+    if (isset($payload['sub1_anomalies']) && is_array($payload['sub1_anomalies'])) {
+        foreach ($payload['sub1_anomalies'] as $row) {
+            if (is_array($row) && isset($row['name'])) $pushSub($row['name']);
+        }
+    }
+    if (isset($payload['traffic_sources_breakdown']) && is_array($payload['traffic_sources_breakdown'])) {
+        foreach ($payload['traffic_sources_breakdown'] as $ch) {
+            if (is_array($ch) && isset($ch['top_offers']) && is_array($ch['top_offers'])) {
+                foreach ($ch['top_offers'] as $o) {
+                    if (is_array($o) && isset($o['name'])) $pushOffer($o['name']);
+                }
+            }
+        }
+    }
+    // anomalies_detected (новый блок из buildAIPayload) тоже содержит имена.
+    if (isset($payload['anomalies_detected']) && is_array($payload['anomalies_detected'])) {
+        foreach ($payload['anomalies_detected'] as $a) {
+            if (!is_array($a)) continue;
+            if (isset($a['offer']))    $pushOffer($a['offer']);
+            if (isset($a['platform'])) $pushPlat($a['platform']);
+            if (isset($a['sub1']))     $pushSub($a['sub1']);
+        }
+    }
+    return [
+        'offers'    => array_values($offers),
+        'platforms' => array_values($platforms),
+        'sub1s'     => array_values($sub1s),
+    ];
+}
+
+/**
+ * Возвращает массив выдуманных имён, которые модель упомянула в ответе,
+ * но которых нет в payload. Это самая частая причина «красивых, но
+ * бесполезных» советов: AI любит подкидывать «Webbankir», «MoneyMan»
+ * и т.п. из общего знания, даже если их нет в данных площадки.
+ *
+ * Возвращаемая структура: array<{path:string, kind:"offer"|"platform", name:string}>.
+ */
+function aiFindHallucinations($obj, $allowed) {
+    if (!is_array($obj)) return [];
+    $allowedOffersLc    = array_map('mb_strtolower', $allowed['offers']);
+    $allowedPlatformsLc = array_map('mb_strtolower', $allowed['platforms']);
+    $issues = [];
+
+    $checkOffer = function ($name, $path) use (&$issues, $allowedOffersLc) {
+        if (!is_string($name)) return;
+        $trim = trim($name);
+        if ($trim === '') return;
+        $lc = mb_strtolower($trim);
+        if (!in_array($lc, $allowedOffersLc, true)) {
+            $issues[] = ['path' => $path, 'kind' => 'offer', 'name' => $trim];
+        }
+    };
+    $checkPlat = function ($name, $path) use (&$issues, $allowedPlatformsLc) {
+        if (!is_string($name)) return;
+        $trim = trim($name);
+        if ($trim === '') return;
+        $lc = mb_strtolower($trim);
+        if (!in_array($lc, $allowedPlatformsLc, true)) {
+            $issues[] = ['path' => $path, 'kind' => 'platform', 'name' => $trim];
+        }
+    };
+
+    // reject_monetization_strategy.*[].offer_name
+    $rms = $obj['reject_monetization_strategy'] ?? null;
+    if (is_array($rms)) {
+        foreach (['showcase_optimization', 'sms_campaigns', 'offline_routing', 'mobile_app_retention'] as $sub) {
+            if (!isset($rms[$sub]) || !is_array($rms[$sub])) continue;
+            foreach ($rms[$sub] as $i => $row) {
+                if (is_array($row) && isset($row['offer_name'])) {
+                    $checkOffer($row['offer_name'], "reject_monetization_strategy.{$sub}[{$i}].offer_name");
+                }
+            }
+        }
+    }
+    // offers_market_analysis.offers[].name + watchlist[].name
+    $oma = $obj['offers_market_analysis'] ?? null;
+    if (is_array($oma)) {
+        if (isset($oma['offers']) && is_array($oma['offers'])) {
+            foreach ($oma['offers'] as $i => $row) {
+                if (is_array($row) && isset($row['name'])) {
+                    $checkOffer($row['name'], "offers_market_analysis.offers[$i].name");
+                }
+            }
+        }
+        if (isset($oma['watchlist']) && is_array($oma['watchlist'])) {
+            foreach ($oma['watchlist'] as $i => $row) {
+                if (is_array($row) && isset($row['name'])) {
+                    $checkOffer($row['name'], "offers_market_analysis.watchlist[$i].name");
+                }
+            }
+        }
+    }
+    // epc_drops.drops[].affected_offers + recommended_replacement.offer + affected_platforms
+    $drops = $obj['epc_drops']['drops'] ?? null;
+    if (is_array($drops)) {
+        foreach ($drops as $i => $d) {
+            if (!is_array($d)) continue;
+            if (isset($d['affected_offers']) && is_array($d['affected_offers'])) {
+                foreach ($d['affected_offers'] as $j => $n) {
+                    $checkOffer($n, "epc_drops.drops[$i].affected_offers[$j]");
+                }
+            }
+            if (isset($d['affected_platforms']) && is_array($d['affected_platforms'])) {
+                foreach ($d['affected_platforms'] as $j => $n) {
+                    $checkPlat($n, "epc_drops.drops[$i].affected_platforms[$j]");
+                }
+            }
+            if (isset($d['recommended_replacement']) && is_array($d['recommended_replacement'])
+                && isset($d['recommended_replacement']['offer'])) {
+                $checkOffer($d['recommended_replacement']['offer'],
+                    "epc_drops.drops[$i].recommended_replacement.offer");
+            }
+        }
+    }
+    // platforms_breakdown[].name
+    if (isset($obj['platforms_breakdown']) && is_array($obj['platforms_breakdown'])) {
+        foreach ($obj['platforms_breakdown'] as $i => $p) {
+            if (is_array($p) && isset($p['name'])) {
+                $checkPlat($p['name'], "platforms_breakdown[$i].name");
+            }
+        }
+    }
+    return $issues;
+}
+
+function aiCallProviderStructured($sysPrompt, $userPrompt, $sig, $payload = null) {
+    // Аккумулятор телеметрии по всем вызовам провайдера в рамках одной
+    // структурированной сессии (primary → fallback → refine → no-hallu refine).
+    // Возвращается наверх вместе с распарсенным/валидным JSON.
+    $meta = [
+        'latency_ms'        => 0,
+        'prompt_tokens'     => 0,
+        'completion_tokens' => 0,
+        'total_tokens'      => 0,
+        'model_used'        => '',
+        'calls'             => 0,
+        'stages'            => [], // human-readable: ['primary','refine','hallu_refine']
+    ];
+    $accMeta = function (&$meta, $resp, $stage) {
+        $meta['calls']++;
+        $meta['stages'][] = $stage;
+        if (isset($resp['latency_ms']))  $meta['latency_ms']        += (int)$resp['latency_ms'];
+        if (isset($resp['model']))       $meta['model_used']         = (string)$resp['model'];
+        if (isset($resp['usage']) && is_array($resp['usage'])) {
+            $u = $resp['usage'];
+            $meta['prompt_tokens']     += (int)($u['prompt_tokens']     ?? 0);
+            $meta['completion_tokens'] += (int)($u['completion_tokens'] ?? 0);
+            $meta['total_tokens']      += (int)($u['total_tokens']      ?? 0);
+        }
+    };
+
     // Шаг 1 — основной запрос на быстрой модели (deepseek-chat).
     $resp = aiCallProvider($sysPrompt, $userPrompt, AI_MODEL);
+    $accMeta($meta, $resp, 'primary');
     if (isset($resp['error'])) {
         // Один fallback на reasoner (он медленный, но иногда переживает 5xx).
         aiLog('structured_fallback', ['primary_error' => $resp['error']]);
         $resp = aiCallProvider($sysPrompt, $userPrompt, AI_FALLBACK_MODEL);
-        if (isset($resp['error'])) return $resp;
+        $accMeta($meta, $resp, 'fallback');
+        if (isset($resp['error'])) { $resp['meta'] = $meta; return $resp; }
     }
     $obj = aiExtractJson($resp['content'] ?? '');
     $err = aiValidateOutput($obj, $sig);
     if ($err === null) {
         aiLog('structured_ok', ['stage' => 'primary']);
-        return aiBackfillOutput($obj);
+        // No-hallucination проверка ПОСЛЕ schema validation.
+        $obj = aiNoHalluRefineIfNeeded($obj, $sysPrompt, $userPrompt, $sig, $payload, $meta);
+        return ['data' => aiBackfillOutput($obj), 'meta' => $meta];
     }
     aiLog('structured_validation_failed', [
         'stage'           => 'primary',
@@ -1141,12 +1393,14 @@ function aiCallProviderStructured($sysPrompt, $userPrompt, $sig) {
     // вышестоящего nginx/Cloudflare и клиент получает HTML 504 вместо JSON.
     $refineUser = $userPrompt . "\n\nПредыдущий ответ был невалиден: {$err}. Верни ИСПРАВЛЕННЫЙ JSON строго по схеме, без markdown.";
     $resp2 = aiCallProvider($sysPrompt, $refineUser, AI_MODEL);
-    if (isset($resp2['error'])) return $resp2;
+    $accMeta($meta, $resp2, 'refine_schema');
+    if (isset($resp2['error'])) { $resp2['meta'] = $meta; return $resp2; }
     $obj2 = aiExtractJson($resp2['content'] ?? '');
     $err2 = aiValidateOutput($obj2, $sig);
     if ($err2 === null) {
         aiLog('structured_ok', ['stage' => 'refine']);
-        return aiBackfillOutput($obj2);
+        $obj2 = aiNoHalluRefineIfNeeded($obj2, $sysPrompt, $userPrompt, $sig, $payload, $meta);
+        return ['data' => aiBackfillOutput($obj2), 'meta' => $meta];
     }
     aiLog('structured_validation_failed', [
         'stage'           => 'refine',
@@ -1154,7 +1408,81 @@ function aiCallProviderStructured($sysPrompt, $userPrompt, $sig) {
         'content_preview' => substr((string)($resp2['content'] ?? ''), 0, 300),
     ]);
 
-    return ['error' => 'Validation failed: ' . $err2];
+    return ['error' => 'Validation failed: ' . $err2, 'meta' => $meta];
+}
+
+/**
+ * Если в ответе модели обнаружены имена офферов/площадок, которых нет в
+ * payload, делаем один точечный Refine с явным списком разрешённых имён и
+ * списком запрещённых. Если и после этого галлюцинации остались — оставляем
+ * лучший из двух ответов (с меньшим числом галлюцинаций) и логируем.
+ *
+ * Это самая дешёвая и эффективная защита от «красивых, но выдуманных»
+ * рекомендаций (типа упоминания популярных МФО, которых нет в кабинете
+ * пользователя).
+ */
+function aiNoHalluRefineIfNeeded($obj, $sysPrompt, $userPrompt, $sig, $payload, &$meta) {
+    if (!is_array($payload)) return $obj;
+    $allowed = aiCollectAllowedNames($payload);
+    $issues  = aiFindHallucinations($obj, $allowed);
+    if (empty($issues)) return $obj;
+    aiLog('hallucination_detected', [
+        'count'    => count($issues),
+        'examples' => array_slice($issues, 0, 5),
+    ]);
+
+    // Готовим компактный allowed-list для модели. Жёстко ограничиваем размер,
+    // чтобы не раздуть refine-промт.
+    $offersList    = array_slice($allowed['offers'], 0, 60);
+    $platformsList = array_slice($allowed['platforms'], 0, 30);
+    $forbidden     = array_values(array_unique(array_map(fn($i) => $i['name'], $issues)));
+    $forbiddenList = array_slice($forbidden, 0, 30);
+
+    $instr  = "ВАЖНО: предыдущий ответ содержит имена, которых НЕТ в payload (галлюцинации). ";
+    $instr .= "Используй ТОЛЬКО имена из allow-list. Запрещённые имена ниже — удали их и замени реальными из allow-list или оставь массивы пустыми.\n\n";
+    $instr .= "ALLOWED OFFERS (используй ТОЛЬКО их):\n- " . implode("\n- ", $offersList) . "\n\n";
+    $instr .= "ALLOWED PLATFORMS:\n- " . implode("\n- ", $platformsList) . "\n\n";
+    $instr .= "FORBIDDEN NAMES (выдуманные, удалить):\n- " . implode("\n- ", $forbiddenList) . "\n\n";
+    $instr .= "Верни ИСПРАВЛЕННЫЙ JSON строго по схеме, без markdown. Все offer_name / name в reject_monetization_strategy, offers_market_analysis, epc_drops, platforms_breakdown ОБЯЗАНЫ совпадать со строками из allow-list побайтно.";
+
+    $refineUser = $userPrompt . "\n\n" . $instr;
+    $resp = aiCallProvider($sysPrompt, $refineUser, AI_MODEL);
+    if (isset($meta) && is_array($meta)) {
+        $meta['calls']    = ($meta['calls']    ?? 0) + 1;
+        $meta['stages'][] = 'refine_no_hallu';
+        if (isset($resp['latency_ms']))  $meta['latency_ms']  = ($meta['latency_ms']  ?? 0) + (int)$resp['latency_ms'];
+        if (isset($resp['model']))       $meta['model_used']  = (string)$resp['model'];
+        if (isset($resp['usage']) && is_array($resp['usage'])) {
+            $u = $resp['usage'];
+            $meta['prompt_tokens']     = ($meta['prompt_tokens']     ?? 0) + (int)($u['prompt_tokens']     ?? 0);
+            $meta['completion_tokens'] = ($meta['completion_tokens'] ?? 0) + (int)($u['completion_tokens'] ?? 0);
+            $meta['total_tokens']      = ($meta['total_tokens']      ?? 0) + (int)($u['total_tokens']      ?? 0);
+        }
+    }
+    if (isset($resp['error'])) {
+        aiLog('hallucination_refine_failed', ['error' => $resp['error']]);
+        return $obj; // оставляем исходный — он хотя бы прошёл schema validation
+    }
+    $obj2 = aiExtractJson($resp['content'] ?? '');
+    $err  = aiValidateOutput($obj2, $sig);
+    if ($err !== null) {
+        aiLog('hallucination_refine_invalid', ['validation_err' => $err]);
+        return $obj;
+    }
+    $issues2 = aiFindHallucinations($obj2, $allowed);
+    if (count($issues2) <= count($issues)) {
+        aiLog('hallucination_refine_ok', [
+            'before' => count($issues),
+            'after'  => count($issues2),
+        ]);
+        return $obj2;
+    }
+    // Стало хуже — откатываемся.
+    aiLog('hallucination_refine_worse', [
+        'before' => count($issues),
+        'after'  => count($issues2),
+    ]);
+    return $obj;
 }
 
 function aiCallProvider($sysPrompt, $userPrompt, $model) {
@@ -1320,7 +1648,12 @@ function aiCallProvider($sysPrompt, $userPrompt, $model) {
                 'content_len'   => strlen((string)$contentBuf),
                 'finish_reason' => $finishReason,
             ]);
-            return ['content' => $contentBuf];
+            return [
+                'content'    => $contentBuf,
+                'model'      => $model,
+                'latency_ms' => $elapsedMs,
+                'usage'      => is_array($usage) ? $usage : null,
+            ];
         }
         error_log('AI provider CURL error: ' . $cerr);
         aiLog('provider_curl_error', [
@@ -1363,7 +1696,12 @@ function aiCallProvider($sysPrompt, $userPrompt, $model) {
         'finish_reason' => $finishReason,
         'usage'         => $usage,
     ]);
-    return ['content' => $contentBuf];
+    return [
+        'content'    => $contentBuf,
+        'model'      => $model,
+        'latency_ms' => $elapsedMs,
+        'usage'      => is_array($usage) ? $usage : null,
+    ];
 }
 
 function aiExtractJson($text) {
@@ -1460,7 +1798,9 @@ function aiRepairTruncatedJson($text) {
 /** Достаёт кэшированный AI-результат за период [from..to] или null. */
 function aiCacheGet($db, $from, $to) {
     $key = $from . '|' . $to;
-    $stmt = $db->prepare('SELECT period_from, period_to, result_json, created_at
+    $stmt = $db->prepare('SELECT period_from, period_to, result_json, created_at,
+        payload_hash, prompt_version, model_used, latency_ms,
+        prompt_tokens, completion_tokens, total_tokens
         FROM ai_analysis_cache WHERE period_key = :k LIMIT 1');
     $stmt->bindValue(':k', $key, SQLITE3_TEXT);
     $res = $stmt->execute();
@@ -1469,30 +1809,284 @@ function aiCacheGet($db, $from, $to) {
     $data = json_decode((string)$row['result_json'], true);
     if (!is_array($data)) return null;
     return [
-        'period_from' => (string)$row['period_from'],
-        'period_to'   => (string)$row['period_to'],
-        'created_at'  => (int)$row['created_at'],
-        'data'        => $data,
+        'period_from'       => (string)$row['period_from'],
+        'period_to'         => (string)$row['period_to'],
+        'created_at'        => (int)$row['created_at'],
+        'data'              => $data,
+        'payload_hash'      => isset($row['payload_hash']) ? (string)$row['payload_hash'] : '',
+        'prompt_version'    => isset($row['prompt_version']) ? (string)$row['prompt_version'] : '',
+        'model_used'        => isset($row['model_used']) ? (string)$row['model_used'] : '',
+        'latency_ms'        => isset($row['latency_ms']) ? (int)$row['latency_ms'] : 0,
+        'prompt_tokens'     => isset($row['prompt_tokens']) ? (int)$row['prompt_tokens'] : 0,
+        'completion_tokens' => isset($row['completion_tokens']) ? (int)$row['completion_tokens'] : 0,
+        'total_tokens'      => isset($row['total_tokens']) ? (int)$row['total_tokens'] : 0,
     ];
 }
 
-/** Сохраняет (UPSERT) результат AI-анализа за период. */
-function aiCachePut($db, $from, $to, $data, $createdAt) {
+/** Сохраняет (UPSERT) результат AI-анализа за период с телеметрией. */
+function aiCachePut($db, $from, $to, $data, $createdAt, $meta = []) {
     $key = $from . '|' . $to;
     $stmt = $db->prepare('INSERT INTO ai_analysis_cache
-        (period_key, period_from, period_to, result_json, created_at)
-        VALUES (:k, :f, :t, :j, :c)
+        (period_key, period_from, period_to, result_json, created_at,
+         payload_hash, prompt_version, model_used, latency_ms,
+         prompt_tokens, completion_tokens, total_tokens)
+        VALUES (:k, :f, :t, :j, :c, :ph, :pv, :mu, :lm, :pt, :ct, :tt)
         ON CONFLICT(period_key) DO UPDATE SET
-            period_from = excluded.period_from,
-            period_to   = excluded.period_to,
-            result_json = excluded.result_json,
-            created_at  = excluded.created_at');
-    $stmt->bindValue(':k', $key, SQLITE3_TEXT);
-    $stmt->bindValue(':f', $from, SQLITE3_TEXT);
-    $stmt->bindValue(':t', $to, SQLITE3_TEXT);
-    $stmt->bindValue(':j', json_encode($data, JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
-    $stmt->bindValue(':c', (int)$createdAt, SQLITE3_INTEGER);
+            period_from       = excluded.period_from,
+            period_to         = excluded.period_to,
+            result_json       = excluded.result_json,
+            created_at        = excluded.created_at,
+            payload_hash      = excluded.payload_hash,
+            prompt_version    = excluded.prompt_version,
+            model_used        = excluded.model_used,
+            latency_ms        = excluded.latency_ms,
+            prompt_tokens     = excluded.prompt_tokens,
+            completion_tokens = excluded.completion_tokens,
+            total_tokens      = excluded.total_tokens');
+    $stmt->bindValue(':k',  $key, SQLITE3_TEXT);
+    $stmt->bindValue(':f',  $from, SQLITE3_TEXT);
+    $stmt->bindValue(':t',  $to, SQLITE3_TEXT);
+    $stmt->bindValue(':j',  json_encode($data, JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
+    $stmt->bindValue(':c',  (int)$createdAt, SQLITE3_INTEGER);
+    $stmt->bindValue(':ph', (string)($meta['payload_hash']      ?? ''), SQLITE3_TEXT);
+    $stmt->bindValue(':pv', (string)($meta['prompt_version']    ?? ''), SQLITE3_TEXT);
+    $stmt->bindValue(':mu', (string)($meta['model_used']        ?? ''), SQLITE3_TEXT);
+    $stmt->bindValue(':lm', (int)   ($meta['latency_ms']        ?? 0),  SQLITE3_INTEGER);
+    $stmt->bindValue(':pt', (int)   ($meta['prompt_tokens']     ?? 0),  SQLITE3_INTEGER);
+    $stmt->bindValue(':ct', (int)   ($meta['completion_tokens'] ?? 0),  SQLITE3_INTEGER);
+    $stmt->bindValue(':tt', (int)   ($meta['total_tokens']      ?? 0),  SQLITE3_INTEGER);
     $stmt->execute();
+}
+
+/**
+ * Считает sha1 канонического (отсортированного) представления payload.
+ * Включает AI_PROMPT_VERSION, чтобы смена схемы автоматически инвалидировала
+ * совпадение хеша. Используется для детекции stale-кэша после обновления
+ * исходных данных через cron_update.php.
+ */
+function aiPayloadHash($payload) {
+    $canon = aiCanonicalize($payload);
+    $json = json_encode($canon, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    return sha1(AI_PROMPT_VERSION . '|' . $json);
+}
+
+/** Рекурсивно сортирует ключи объектов — нужно для воспроизводимого hash. */
+function aiCanonicalize($v) {
+    if (is_array($v)) {
+        // Если массив ассоциативный — сортируем по ключам.
+        $isAssoc = array_keys($v) !== range(0, count($v) - 1);
+        if ($isAssoc) {
+            ksort($v);
+            foreach ($v as $k => $vv) $v[$k] = aiCanonicalize($vv);
+        } else {
+            foreach ($v as $i => $vv) $v[$i] = aiCanonicalize($vv);
+        }
+    }
+    return $v;
+}
+
+/**
+ * Агрегирует ai.log за последние N секунд.
+ * Возвращает счётчики событий, success rate, среднюю latency успешных
+ * вызовов провайдера, средние/суммарные токены, число фоллбеков, refine-ов
+ * и срабатываний no-hallucination детектора.
+ *
+ * Файл читается ВЕСЬ построчно (он ограничен AI_LOG_MAX_BYTES = 2 МБ),
+ * это десятки тысяч строк максимум — для diag-а допустимо.
+ */
+function aiAggregateLogStats($windowSec = 86400) {
+    $stats = [
+        'window_sec'          => (int)$windowSec,
+        'events_total'        => 0,
+        'provider_ok'         => 0,
+        'provider_http_error' => 0,
+        'provider_curl_error' => 0,
+        'provider_empty'      => 0,
+        'analyze_success'     => 0,
+        'analyze_error'       => 0,
+        'cache_hit'           => 0,
+        'cache_stale'         => 0,
+        'fallback'            => 0,
+        'refine_schema'       => 0,
+        'hallucination'       => 0,
+        'hallu_refine_ok'     => 0,
+        'avg_latency_ms'      => 0,
+        'p95_latency_ms'      => 0,
+        'sum_prompt_tokens'   => 0,
+        'sum_completion_tokens'=> 0,
+        'sum_total_tokens'    => 0,
+    ];
+    if (!is_file(AI_LOG_FILE)) return $stats;
+    $fp = @fopen(AI_LOG_FILE, 'rb');
+    if (!$fp) return $stats;
+    $cutoff = time() - $windowSec;
+    $latencies = [];
+    while (($line = fgets($fp)) !== false) {
+        $line = trim($line);
+        if ($line === '') continue;
+        $j = json_decode($line, true);
+        if (!is_array($j)) continue;
+        // Поле ts может быть ISO-строкой ("2026-01-02T03:04:05Z") или числом.
+        $ts = 0;
+        if (isset($j['ts'])) {
+            if (is_numeric($j['ts'])) $ts = (int)$j['ts'];
+            else { $t = strtotime((string)$j['ts']); if ($t) $ts = $t; }
+        }
+        if ($ts && $ts < $cutoff) continue;
+        $stats['events_total']++;
+        $event = (string)($j['event'] ?? '');
+        $ctx   = is_array($j['context'] ?? null) ? $j['context'] : [];
+        switch ($event) {
+            case 'provider_ok':
+                $stats['provider_ok']++;
+                if (isset($ctx['elapsed_ms'])) $latencies[] = (int)$ctx['elapsed_ms'];
+                if (isset($ctx['usage']) && is_array($ctx['usage'])) {
+                    $stats['sum_prompt_tokens']     += (int)($ctx['usage']['prompt_tokens']     ?? 0);
+                    $stats['sum_completion_tokens'] += (int)($ctx['usage']['completion_tokens'] ?? 0);
+                    $stats['sum_total_tokens']      += (int)($ctx['usage']['total_tokens']      ?? 0);
+                }
+                break;
+            case 'provider_http_error':    $stats['provider_http_error']++; break;
+            case 'provider_curl_error':    $stats['provider_curl_error']++; break;
+            case 'provider_empty_content': $stats['provider_empty']++;      break;
+            case 'ai_analyze_success':     $stats['analyze_success']++;     break;
+            case 'ai_analyze_error':       $stats['analyze_error']++;       break;
+            case 'ai_analyze_cache_hit':   $stats['cache_hit']++;           break;
+            case 'ai_analyze_cache_stale': $stats['cache_stale']++;         break;
+            case 'structured_fallback':    $stats['fallback']++;            break;
+            case 'structured_validation_failed': $stats['refine_schema']++; break;
+            case 'hallucination_detected': $stats['hallucination']++;       break;
+            case 'hallucination_refine_ok':$stats['hallu_refine_ok']++;     break;
+        }
+    }
+    fclose($fp);
+    if (!empty($latencies)) {
+        sort($latencies);
+        $sum = array_sum($latencies);
+        $stats['avg_latency_ms'] = (int)round($sum / count($latencies));
+        $idx = (int)floor(0.95 * (count($latencies) - 1));
+        $stats['p95_latency_ms'] = (int)$latencies[$idx];
+    }
+    $okPlusErr = $stats['provider_ok'] + $stats['provider_http_error']
+                + $stats['provider_curl_error'] + $stats['provider_empty'];
+    $stats['provider_success_rate_pct'] = $okPlusErr > 0
+        ? round($stats['provider_ok'] / $okPlusErr * 100, 1)
+        : null;
+    return $stats;
+}
+
+/**
+ * Backtest точности AI-прогнозов (точка роста №5c).
+ *
+ * Идея: при каждом успешном ai_analyze в кэш записывается JSON с
+ * forecast.period_7d / period_30d. Этот хелпер проходит по всем кэш-записям,
+ * для тех, у кого 7-дневный/30-дневный горизонт уже истёк, считает фактические
+ * revenue/clicks/EPC из daily_stats и сохраняет MAPE в ai_forecast_accuracy.
+ *
+ * Возвращает счётчики: сколько строк проверено, сколько добавлено новых,
+ * сколько пропущено (нет факта / уже посчитано / нет прогноза).
+ */
+function aiBacktestRun($db) {
+    $today = date('Y-m-d');
+    $report = [
+        'evaluated'      => 0,
+        'inserted'       => 0,
+        'skipped_no_fact'=> 0,
+        'skipped_done'   => 0,
+        'skipped_no_fc'  => 0,
+        'errors'         => 0,
+    ];
+    $rows = [];
+    $res = @$db->query('SELECT period_to, result_json, prompt_version, model_used
+        FROM ai_analysis_cache
+        WHERE result_json IS NOT NULL AND result_json != ""
+        ORDER BY period_to DESC LIMIT 200');
+    if ($res) {
+        while ($r = $res->fetchArray(SQLITE3_ASSOC)) $rows[] = $r;
+    }
+    foreach ($rows as $row) {
+        $report['evaluated']++;
+        $baselineDate = (string)$row['period_to'];
+        if ($baselineDate === '') { $report['errors']++; continue; }
+        $data = json_decode((string)$row['result_json'], true);
+        if (!is_array($data) || !isset($data['forecast']) || !is_array($data['forecast'])) {
+            $report['skipped_no_fc']++;
+            continue;
+        }
+        foreach (['7d' => 7, '30d' => 30] as $horizon => $days) {
+            $key = 'period_' . $horizon;
+            if (!isset($data['forecast'][$key]) || !is_array($data['forecast'][$key])) continue;
+            $fc = $data['forecast'][$key];
+            $targetFrom = date('Y-m-d', strtotime($baselineDate . ' +1 day'));
+            $targetTo   = date('Y-m-d', strtotime($baselineDate . ' +' . $days . ' day'));
+            // Если горизонт ещё не истёк — пропускаем.
+            if ($targetTo >= $today) { $report['skipped_no_fact']++; continue; }
+            // Уже посчитано? — prepared statement для согласованности с
+            // остальным кодом (хотя оба значения берём из row базы, не от юзера).
+            $stmtCheck = $db->prepare('SELECT 1 FROM ai_forecast_accuracy
+                WHERE baseline_date = :bd AND horizon = :h');
+            $stmtCheck->bindValue(':bd', $baselineDate, SQLITE3_TEXT);
+            $stmtCheck->bindValue(':h',  $horizon,      SQLITE3_TEXT);
+            $exists = $stmtCheck->execute()->fetchArray(SQLITE3_NUM);
+            $stmtCheck->close();
+            if ($exists) { $report['skipped_done']++; continue; }
+            // Считаем факт за горизонт прогноза — тоже через prepared statement.
+            $stmtFact = $db->prepare('SELECT
+                    COALESCE(SUM(revenue),0)     AS rev,
+                    COALESCE(SUM(raw_clicks),0)  AS clk
+                FROM daily_stats
+                WHERE date >= :tf AND date <= :tt');
+            $stmtFact->bindValue(':tf', $targetFrom, SQLITE3_TEXT);
+            $stmtFact->bindValue(':tt', $targetTo,   SQLITE3_TEXT);
+            $factRes = $stmtFact->execute();
+            $fact = $factRes ? $factRes->fetchArray(SQLITE3_ASSOC) : null;
+            $stmtFact->close();
+            if (!is_array($fact) || (float)$fact['rev'] <= 0) {
+                $report['skipped_no_fact']++;
+                continue;
+            }
+            $actRev = (float)$fact['rev'];
+            $actClk = (float)$fact['clk'];
+            $actEpc = $actClk > 0 ? $actRev / $actClk : 0;
+            $fcRev  = isset($fc['revenue'])  ? (float)$fc['revenue']  : 0;
+            $fcClk  = isset($fc['clicks'])   ? (float)$fc['clicks']   : 0;
+            $fcEpc  = isset($fc['epc'])      ? (float)$fc['epc']      : 0;
+            $mape = function ($f, $a) {
+                if ($a == 0) return null;
+                return round(abs($f - $a) / abs($a) * 100, 1);
+            };
+            $stmt = $db->prepare('INSERT OR IGNORE INTO ai_forecast_accuracy
+                (baseline_date, horizon, target_from, target_to,
+                 forecast_revenue, forecast_clicks, forecast_epc,
+                 actual_revenue, actual_clicks, actual_epc,
+                 mape_revenue, mape_clicks, mape_epc,
+                 prompt_version, model_used, created_at)
+                VALUES (:bd, :h, :tf, :tt,
+                        :fr, :fc, :fe,
+                        :ar, :ac, :ae,
+                        :mr, :mc, :me,
+                        :pv, :mu, :ts)');
+            $stmt->bindValue(':bd', $baselineDate, SQLITE3_TEXT);
+            $stmt->bindValue(':h',  $horizon,      SQLITE3_TEXT);
+            $stmt->bindValue(':tf', $targetFrom,   SQLITE3_TEXT);
+            $stmt->bindValue(':tt', $targetTo,     SQLITE3_TEXT);
+            $stmt->bindValue(':fr', $fcRev,        SQLITE3_FLOAT);
+            $stmt->bindValue(':fc', $fcClk,        SQLITE3_FLOAT);
+            $stmt->bindValue(':fe', $fcEpc,        SQLITE3_FLOAT);
+            $stmt->bindValue(':ar', $actRev,       SQLITE3_FLOAT);
+            $stmt->bindValue(':ac', $actClk,       SQLITE3_FLOAT);
+            $stmt->bindValue(':ae', $actEpc,       SQLITE3_FLOAT);
+            $mr = $mape($fcRev, $actRev); $stmt->bindValue(':mr', $mr, $mr === null ? SQLITE3_NULL : SQLITE3_FLOAT);
+            $mc = $mape($fcClk, $actClk); $stmt->bindValue(':mc', $mc, $mc === null ? SQLITE3_NULL : SQLITE3_FLOAT);
+            $me = $mape($fcEpc, $actEpc); $stmt->bindValue(':me', $me, $me === null ? SQLITE3_NULL : SQLITE3_FLOAT);
+            $stmt->bindValue(':pv', (string)($row['prompt_version'] ?? ''), SQLITE3_TEXT);
+            $stmt->bindValue(':mu', (string)($row['model_used'] ?? ''),     SQLITE3_TEXT);
+            $stmt->bindValue(':ts', time(),       SQLITE3_INTEGER);
+            if ($stmt->execute()) $report['inserted']++;
+            $stmt->reset();
+        }
+    }
+    return $report;
 }
 
 // ========== ОБРАБОТЧИКИ ЗАПРОСОВ ==========
@@ -2212,8 +2806,13 @@ if ($action === 'tg_check_alerts') {
 if ($action === 'ai_get_cached') {
     // Лёгкий GET-эндпоинт, чтобы фронт мог восстановить ранее сохранённый
     // отчёт после перезагрузки страницы без затрат на провайдера.
+    // Опциональный параметр payload_hash — если передан, мы сравним его с
+    // хешем, который был в момент кэширования. При несовпадении вернём
+    // флаг stale=true, но сам отчёт всё равно отдадим — пользователь увидит
+    // последний доступный анализ + плашку «исходные данные могли обновиться».
     $from = (string)($_GET['from'] ?? '');
     $to   = (string)($_GET['to'] ?? '');
+    $reqHash = (string)($_GET['payload_hash'] ?? '');
     if ($from === '' || $to === '') {
         echo json_encode(['status' => 'error', 'error' => 'from and to required']);
         exit;
@@ -2223,13 +2822,80 @@ if ($action === 'ai_get_cached') {
         echo json_encode(['status' => 'success', 'cached' => false]);
         exit;
     }
+    $stale = ($reqHash !== '' && $row['payload_hash'] !== '' && $reqHash !== $row['payload_hash']);
+    echo json_encode([
+        'status'         => 'success',
+        'cached'         => true,
+        'data'           => $row['data'],
+        'period'         => ['from' => $row['period_from'], 'to' => $row['period_to']],
+        'created_at'     => $row['created_at'],
+        'payload_hash'   => $row['payload_hash'],
+        'prompt_version' => $row['prompt_version'],
+        'stale'          => $stale,
+        'meta' => [
+            'model_used'        => $row['model_used'],
+            'latency_ms'        => $row['latency_ms'],
+            'prompt_tokens'     => $row['prompt_tokens'],
+            'completion_tokens' => $row['completion_tokens'],
+            'total_tokens'      => $row['total_tokens'],
+        ],
+    ]);
+    exit;
+}
+if ($action === 'ai_backtest_run') {
+    // Запуск бэктеста точности AI-прогнозов. Идемпотентен: для каждой пары
+    // (baseline_date, horizon) считается ровно один раз. Безопасно дёргать
+    // по cron (вызывается из cron_update.php).
+    @set_time_limit(120);
+    $report = aiBacktestRun($db);
+    aiLog('ai_backtest_run', $report);
+    echo json_encode(['status' => 'success', 'report' => $report]);
+    exit;
+}
+if ($action === 'ai_forecast_accuracy') {
+    // Возвращает агрегированные метрики MAPE и последние 30 строк сравнения
+    // forecast vs actual — для админ-блока в UI.
+    $rows = [];
+    $res = @$db->query('SELECT baseline_date, horizon, target_from, target_to,
+            forecast_revenue, forecast_clicks, forecast_epc,
+            actual_revenue, actual_clicks, actual_epc,
+            mape_revenue, mape_clicks, mape_epc,
+            prompt_version, model_used, created_at
+        FROM ai_forecast_accuracy
+        ORDER BY created_at DESC LIMIT 30');
+    if ($res) {
+        while ($r = $res->fetchArray(SQLITE3_ASSOC)) $rows[] = $r;
+    }
+    $aggR = @$db->querySingle('SELECT COUNT(*) AS cnt,
+        AVG(mape_revenue) AS mr, AVG(mape_clicks) AS mc, AVG(mape_epc) AS me
+        FROM ai_forecast_accuracy', true);
+    $agg = is_array($aggR) ? [
+        'evaluated'    => (int)($aggR['cnt'] ?? 0),
+        'mape_revenue' => $aggR['mr'] !== null ? round((float)$aggR['mr'], 1) : null,
+        'mape_clicks'  => $aggR['mc'] !== null ? round((float)$aggR['mc'], 1) : null,
+        'mape_epc'     => $aggR['me'] !== null ? round((float)$aggR['me'], 1) : null,
+    ] : ['evaluated' => 0];
+    // Отдельно — по горизонтам.
+    $byHorizon = [];
+    $resH = @$db->query('SELECT horizon, COUNT(*) AS cnt,
+        AVG(mape_revenue) AS mr, AVG(mape_clicks) AS mc, AVG(mape_epc) AS me
+        FROM ai_forecast_accuracy GROUP BY horizon');
+    if ($resH) {
+        while ($r = $resH->fetchArray(SQLITE3_ASSOC)) {
+            $byHorizon[(string)$r['horizon']] = [
+                'evaluated'    => (int)$r['cnt'],
+                'mape_revenue' => $r['mr'] !== null ? round((float)$r['mr'], 1) : null,
+                'mape_clicks'  => $r['mc'] !== null ? round((float)$r['mc'], 1) : null,
+                'mape_epc'     => $r['me'] !== null ? round((float)$r['me'], 1) : null,
+            ];
+        }
+    }
     echo json_encode([
         'status'     => 'success',
-        'cached'     => true,
-        'data'       => $row['data'],
-        'period'     => ['from' => $row['period_from'], 'to' => $row['period_to']],
-        'created_at' => $row['created_at'],
-    ]);
+        'aggregate'  => $agg,
+        'by_horizon' => $byHorizon,
+        'recent'     => $rows,
+    ], JSON_UNESCAPED_UNICODE);
     exit;
 }
 if ($action === 'ai_log') {
@@ -2416,6 +3082,49 @@ if ($action === 'ai_diag') {
         'hint'        => $diag['hint'],
     ]);
 
+    // ---- Агрегаты по ai.log за последние 24ч (точка роста №5b). ----
+    // Проходимся хвостом по ai.log (JSON-line), считаем счётчики событий,
+    // среднюю latency успешных вызовов и среднее число токенов. Без этих
+    // метрик невозможно понять, окупается ли AI и не деградирует ли он.
+    $diag['usage_24h'] = aiAggregateLogStats(86400);
+    $diag['prompt_version'] = AI_PROMPT_VERSION;
+    // ---- Агрегаты по ai_analysis_cache (текущий размер кэша). ----
+    try {
+        $cacheRow = @$db->querySingle(
+            'SELECT COUNT(*) AS cnt,
+                    COALESCE(SUM(total_tokens),0) AS total_tokens,
+                    COALESCE(AVG(latency_ms),0)   AS avg_latency_ms
+             FROM ai_analysis_cache', true);
+        if (is_array($cacheRow)) {
+            $diag['cache_stats'] = [
+                'entries'        => (int)($cacheRow['cnt'] ?? 0),
+                'total_tokens'   => (int)($cacheRow['total_tokens'] ?? 0),
+                'avg_latency_ms' => (int)round((float)($cacheRow['avg_latency_ms'] ?? 0)),
+            ];
+        }
+    } catch (Throwable $e) {
+        $diag['cache_stats'] = ['error' => $e->getMessage()];
+    }
+    // ---- Агрегаты точности прогнозов (точка роста №5c). ----
+    try {
+        $accRow = @$db->querySingle(
+            'SELECT COUNT(*) AS cnt,
+                    AVG(mape_revenue) AS mape_rev,
+                    AVG(mape_clicks)  AS mape_clk,
+                    AVG(mape_epc)     AS mape_epc
+             FROM ai_forecast_accuracy', true);
+        if (is_array($accRow)) {
+            $diag['forecast_accuracy'] = [
+                'evaluated'    => (int)($accRow['cnt'] ?? 0),
+                'mape_revenue' => $accRow['mape_rev'] !== null ? round((float)$accRow['mape_rev'], 1) : null,
+                'mape_clicks'  => $accRow['mape_clk'] !== null ? round((float)$accRow['mape_clk'], 1) : null,
+                'mape_epc'     => $accRow['mape_epc'] !== null ? round((float)$accRow['mape_epc'], 1) : null,
+            ];
+        }
+    } catch (Throwable $e) {
+        $diag['forecast_accuracy'] = ['error' => $e->getMessage()];
+    }
+
     echo json_encode($diag);
     exit;
 }
@@ -2459,23 +3168,49 @@ if ($action === 'ai_analyze') {
         'payload_keys'=> array_keys($payload),
     ]);
 
-    // Если не запрошен принудительный пересчёт и есть кэш — отдаём его.
+    // Считаем хеш payload-а ДО тримминга — чтобы он был детерминирован
+    // относительно того, что пришло от фронта (фронт шлёт тот же hash для
+    // ai_get_cached). Хеш включает AI_PROMPT_VERSION, поэтому смена схемы
+    // автоматически инвалидирует совпадение.
+    $payloadHash = aiPayloadHash($payload);
+
+    // Если не запрошен принудительный пересчёт и есть кэш с таким же hash —
+    // отдаём его как fresh. Если hash отличается (данные обновились через
+    // cron_update.php) — НЕ отдаём кэш молча, а идём к провайдеру за новым
+    // ответом, чтобы пользователь не видел устаревший.
     if (!$force && $periodFrom !== '' && $periodTo !== '') {
         $cached = aiCacheGet($db, $periodFrom, $periodTo);
-        if ($cached) {
+        if ($cached && $cached['payload_hash'] === $payloadHash) {
             aiLog('ai_analyze_cache_hit', [
                 'period_from' => $cached['period_from'],
                 'period_to'   => $cached['period_to'],
                 'created_at'  => $cached['created_at'],
+                'hash_match'  => true,
             ]);
             echo json_encode([
-                'status'     => 'success',
-                'data'       => $cached['data'],
-                'cached'     => true,
-                'period'     => ['from' => $cached['period_from'], 'to' => $cached['period_to']],
-                'created_at' => $cached['created_at'],
+                'status'         => 'success',
+                'data'           => $cached['data'],
+                'cached'         => true,
+                'stale'          => false,
+                'period'         => ['from' => $cached['period_from'], 'to' => $cached['period_to']],
+                'created_at'     => $cached['created_at'],
+                'payload_hash'   => $cached['payload_hash'],
+                'prompt_version' => $cached['prompt_version'],
+                'meta' => [
+                    'model_used'        => $cached['model_used'],
+                    'latency_ms'        => $cached['latency_ms'],
+                    'prompt_tokens'     => $cached['prompt_tokens'],
+                    'completion_tokens' => $cached['completion_tokens'],
+                    'total_tokens'      => $cached['total_tokens'],
+                ],
             ]);
             exit;
+        }
+        if ($cached) {
+            aiLog('ai_analyze_cache_stale', [
+                'cached_hash'  => $cached['payload_hash'],
+                'request_hash' => $payloadHash,
+            ]);
         }
     }
 
@@ -2493,7 +3228,7 @@ if ($action === 'ai_analyze') {
     $sysPrompt = aiBuildSystemPrompt($signature);
     $userPrompt = aiBuildUserPrompt($payload, $signature);
 
-    $result = aiCallProviderStructured($sysPrompt, $userPrompt, $signature);
+    $result = aiCallProviderStructured($sysPrompt, $userPrompt, $signature, $payload);
     if (isset($result['error'])) {
         // Никогда не возвращаем сырое имя провайдера/модели в текстах ошибок,
         // но отдаём короткий машинный код (`transport`, `http_401`, `http_402`,
@@ -2527,22 +3262,48 @@ if ($action === 'ai_analyze') {
         exit;
     }
 
-    // Успех — пишем в кэш (если знаем период).
+    // Успех. Структура от aiCallProviderStructured: ['data' => ..., 'meta' => ...].
+    $data = $result['data'] ?? $result;
+    $meta = is_array($result['meta'] ?? null) ? $result['meta'] : [];
+
+    // Успех — пишем в кэш (если знаем период) с телеметрией и hash.
     $createdAt = time();
+    $cacheMeta = [
+        'payload_hash'      => $payloadHash,
+        'prompt_version'    => AI_PROMPT_VERSION,
+        'model_used'        => (string)($meta['model_used']        ?? ''),
+        'latency_ms'        => (int)   ($meta['latency_ms']        ?? 0),
+        'prompt_tokens'     => (int)   ($meta['prompt_tokens']     ?? 0),
+        'completion_tokens' => (int)   ($meta['completion_tokens'] ?? 0),
+        'total_tokens'      => (int)   ($meta['total_tokens']      ?? 0),
+    ];
     if ($periodFrom !== '' && $periodTo !== '') {
-        aiCachePut($db, $periodFrom, $periodTo, $result, $createdAt);
+        aiCachePut($db, $periodFrom, $periodTo, $data, $createdAt, $cacheMeta);
     }
     aiLog('ai_analyze_success', [
-        'period_from' => $periodFrom,
-        'period_to'   => $periodTo,
-        'created_at'  => $createdAt,
+        'period_from'    => $periodFrom,
+        'period_to'      => $periodTo,
+        'created_at'     => $createdAt,
+        'payload_hash'   => $payloadHash,
+        'prompt_version' => AI_PROMPT_VERSION,
+        'meta'           => $meta,
     ]);
     echo json_encode([
-        'status'     => 'success',
-        'data'       => $result,
-        'cached'     => false,
-        'period'     => ['from' => $periodFrom, 'to' => $periodTo],
-        'created_at' => $createdAt,
+        'status'         => 'success',
+        'data'           => $data,
+        'cached'         => false,
+        'stale'          => false,
+        'period'         => ['from' => $periodFrom, 'to' => $periodTo],
+        'created_at'     => $createdAt,
+        'payload_hash'   => $payloadHash,
+        'prompt_version' => AI_PROMPT_VERSION,
+        'meta'           => [
+            'model_used'        => $cacheMeta['model_used'],
+            'latency_ms'        => $cacheMeta['latency_ms'],
+            'prompt_tokens'     => $cacheMeta['prompt_tokens'],
+            'completion_tokens' => $cacheMeta['completion_tokens'],
+            'total_tokens'      => $cacheMeta['total_tokens'],
+        ],
     ]);
     exit;
 }

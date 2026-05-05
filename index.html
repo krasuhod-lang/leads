@@ -2036,10 +2036,304 @@ function _topPlatformsByRevenue(rows, sharePct = 99, hardCap = 10) {
   return out;
 }
 
+// ===== AI-пайплайн: вспомогательные функции =====
+// Канонический хеш payload-а: рекурсивно сортируем ключи объектов и считаем
+// SHA-1 от JSON. ДОЛЖЕН совпадать с PHP-реализацией aiPayloadHash() — только
+// тогда серверный кэш будет помечать stale-результат корректно.
+//
+// Подмешиваем версию схемы как префикс — точно так же, как PHP. При смене
+// промпта/схемы (AI_PROMPT_VERSION на сервере) старые хеши перестают совпадать
+// и кэш честно инвалидируется.
+const AI_PROMPT_VERSION_JS = '2026-05-05.v2-baseline-anomalies-noHallu';
+
+function _aiCanonicalize(v) {
+  if (Array.isArray(v)) return v.map(_aiCanonicalize);
+  if (v && typeof v === 'object') {
+    const sorted = {};
+    Object.keys(v).sort().forEach(k => { sorted[k] = _aiCanonicalize(v[k]); });
+    return sorted;
+  }
+  return v;
+}
+async function _aiPayloadHash(payload) {
+  const canon = _aiCanonicalize(payload);
+  // Идентичный JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES стороне PHP:
+  // JS JSON.stringify по умолчанию НЕ экранирует слеши, но экранирует
+  // unicode только если используются \uXXXX управляющие символы. Для
+  // обычных строк результат совпадает.
+  const text = AI_PROMPT_VERSION_JS + '|' + JSON.stringify(canon);
+  if (window.crypto && window.crypto.subtle) {
+    const buf = await window.crypto.subtle.digest('SHA-1', new TextEncoder().encode(text));
+    return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+  }
+  // Fallback: маленький встроенный SHA-1 (без зависимостей). Вызывается
+  // только в редких окружениях без crypto.subtle (например, http без https).
+  return _sha1Hex(text);
+}
+// Маленький чистый SHA-1 для fallback. Адаптация общеизвестного алгоритма.
+function _sha1Hex(str) {
+  function rotl(n, b) { return (n << b) | (n >>> (32 - b)); }
+  const bytes = new TextEncoder().encode(str);
+  const ml = bytes.length * 8;
+  const withPad = new Uint8Array(((bytes.length + 9 + 63) >> 6) << 6);
+  withPad.set(bytes);
+  withPad[bytes.length] = 0x80;
+  const dv = new DataView(withPad.buffer);
+  dv.setUint32(withPad.length - 4, ml >>> 0, false);
+  dv.setUint32(withPad.length - 8, Math.floor(ml / 0x100000000), false);
+  let h0 = 0x67452301, h1 = 0xEFCDAB89, h2 = 0x98BADCFE, h3 = 0x10325476, h4 = 0xC3D2E1F0;
+  const w = new Uint32Array(80);
+  for (let i = 0; i < withPad.length; i += 64) {
+    for (let j = 0; j < 16; j++) w[j] = dv.getUint32(i + j * 4, false);
+    for (let j = 16; j < 80; j++) w[j] = rotl(w[j - 3] ^ w[j - 8] ^ w[j - 14] ^ w[j - 16], 1);
+    let a = h0, b = h1, c = h2, d = h3, e = h4;
+    for (let j = 0; j < 80; j++) {
+      let f, k;
+      if (j < 20)      { f = (b & c) | ((~b) & d); k = 0x5A827999; }
+      else if (j < 40) { f = b ^ c ^ d;             k = 0x6ED9EBA1; }
+      else if (j < 60) { f = (b & c) | (b & d) | (c & d); k = 0x8F1BBCDC; }
+      else             { f = b ^ c ^ d;             k = 0xCA62C1D6; }
+      const t = (rotl(a, 5) + f + e + k + w[j]) >>> 0;
+      e = d; d = c; c = rotl(b, 30); b = a; a = t;
+    }
+    h0 = (h0 + a) >>> 0; h1 = (h1 + b) >>> 0; h2 = (h2 + c) >>> 0;
+    h3 = (h3 + d) >>> 0; h4 = (h4 + e) >>> 0;
+  }
+  return [h0, h1, h2, h3, h4].map(x => x.toString(16).padStart(8, '0')).join('');
+}
+
+// Детерминированный baseline-прогноз (точка роста №3).
+// Считаем 7- и 30-дневный прогноз revenue / clicks / EPC по методу
+// EMA(α=0.3) на дневном ряду + сезонная поправка по дню недели на основании
+// последних 28 дней. Если данных меньше 7 дней — возвращаем простое
+// усреднение. Этот baseline передаётся в payload как forecast_baseline,
+// чтобы AI ИСПОЛЬЗОВАЛ его как стартовую точку, а не выдумывал числа.
+function buildForecastBaseline(dailyRecent) {
+  if (!Array.isArray(dailyRecent) || dailyRecent.length < 3) return null;
+  const days = dailyRecent.slice(); // [{date, clicks, revenue, epc}, ...] от старого к новому
+  // EMA(α=0.3) для clicks и revenue (EPC выводится из ratio).
+  const alpha = 0.3;
+  let emaRev = days[0].revenue;
+  let emaClk = days[0].clicks;
+  for (let i = 1; i < days.length; i++) {
+    emaRev = alpha * days[i].revenue + (1 - alpha) * emaRev;
+    emaClk = alpha * days[i].clicks  + (1 - alpha) * emaClk;
+  }
+  // Сезонная поправка по дню недели: avg(weekday)/avg(all) на последних 28 днях.
+  const tail = days.slice(-28);
+  const dowAvgRev = [0,0,0,0,0,0,0], dowAvgClk = [0,0,0,0,0,0,0], dowCnt = [0,0,0,0,0,0,0];
+  for (const d of tail) {
+    const dow = new Date(d.date + 'T00:00:00Z').getUTCDay();
+    dowAvgRev[dow] += d.revenue; dowAvgClk[dow] += d.clicks; dowCnt[dow]++;
+  }
+  const meanRev = tail.reduce((s, d) => s + d.revenue, 0) / Math.max(1, tail.length);
+  const meanClk = tail.reduce((s, d) => s + d.clicks,  0) / Math.max(1, tail.length);
+  const dowFactorRev = dowAvgRev.map((s, i) => (dowCnt[i] && meanRev) ? (s / dowCnt[i]) / meanRev : 1);
+  const dowFactorClk = dowAvgClk.map((s, i) => (dowCnt[i] && meanClk) ? (s / dowCnt[i]) / meanClk : 1);
+
+  // Проектируем N дней вперёд от последнего дня dailyRecent.
+  const lastDate = new Date(days[days.length - 1].date + 'T00:00:00Z');
+  function projectNDays(n) {
+    let rev = 0, clk = 0;
+    for (let i = 1; i <= n; i++) {
+      const d = new Date(lastDate); d.setUTCDate(d.getUTCDate() + i);
+      const dow = d.getUTCDay();
+      rev += emaRev * (dowFactorRev[dow] || 1);
+      clk += emaClk * (dowFactorClk[dow] || 1);
+    }
+    return {
+      revenue: _r(rev, 0),
+      clicks:  Math.round(clk),
+      epc:     _r(clk > 0 ? rev / clk : 0, 2),
+    };
+  }
+  // Уверенность зависит от объёма данных и их стабильности.
+  const stdev = (arr) => {
+    const m = arr.reduce((s, x) => s + x, 0) / arr.length;
+    return Math.sqrt(arr.reduce((s, x) => s + (x - m) ** 2, 0) / arr.length);
+  };
+  const epcs = days.map(d => d.epc).filter(x => x > 0);
+  const cv = epcs.length >= 7 ? (stdev(epcs) / (epcs.reduce((s, x) => s + x, 0) / epcs.length)) : 1;
+  let confidence = 'medium';
+  if (days.length >= 21 && cv < 0.25) confidence = 'high';
+  else if (days.length < 10 || cv > 0.6) confidence = 'low';
+
+  return {
+    method: 'EMA(0.3) + DOW-seasonality(28d)',
+    based_on_days: days.length,
+    confidence,
+    period_7d:  projectNDays(7),
+    period_30d: projectNDays(30),
+  };
+}
+
+// Pre-detect аномалий и просадок (точка роста №4).
+// Возвращает массив объектов вида:
+//   {kind, severity, ...metrics, suggested_action}
+// kinds:
+//   - fraud_suspect       — sub1 с большими кликами и подозрительно низким AR/CR
+//   - epc_drop            — общий день-к-дню (резерв; основное в epc_drops_signals)
+//   - offer_epc_drop      — конкретный оффер просел vs trailing-7d-median
+//   - platform_epc_drop   — площадка просела vs trailing-7d-median
+//   - quality_anomaly     — пара offer×platform с аномально низким AR
+function detectAnomalies(rows) {
+  const out = [];
+  if (!rows.length) return out;
+
+  // 1. Sub1 fraud / low-quality.
+  const subAgg = {};
+  for (const r of rows) {
+    if (!r.sub1) continue;
+    const a = subAgg[r.sub1] || (subAgg[r.sub1] = { clicks: 0, conv: 0, app: 0, rev: 0 });
+    a.clicks += r.clicks; a.conv += r.conversions; a.app += r.approved; a.rev += r.revenue;
+  }
+  for (const [name, a] of Object.entries(subAgg)) {
+    if (a.clicks < 300) continue;
+    const ar = a.conv ? a.app / a.conv * 100 : 0;
+    const cr = a.clicks ? a.conv / a.clicks * 100 : 0;
+    if (ar < 2 || cr < 1) {
+      out.push({
+        kind: 'fraud_suspect',
+        severity: ar < 1 || cr < 0.3 ? 'high' : 'medium',
+        sub1: name,
+        clicks: a.clicks,
+        conversions: a.conv,
+        approved: a.app,
+        approve_rate_pct: _r(ar, 2),
+        cr_pct: _r(cr, 2),
+        suggested_action: 'Заблокировать sub1 / проверить источник трафика',
+      });
+    }
+  }
+
+  // 2. Offer EPC просадка vs trailing-7d-median (по дневному ряду).
+  // Берём топ офферы по выручке, чтобы не шуметь по «хвосту».
+  const offerRev = {};
+  for (const r of rows) offerRev[r.offer] = (offerRev[r.offer] || 0) + r.revenue;
+  const topOffers = Object.entries(offerRev).sort((a, b) => b[1] - a[1]).slice(0, 15).map(([n]) => n);
+  const offerByDate = {};
+  for (const r of rows) {
+    if (!topOffers.includes(r.offer)) continue;
+    const d = offerByDate[r.offer] || (offerByDate[r.offer] = {});
+    if (!d[r.date]) d[r.date] = { clicks: 0, rev: 0, conv: 0, app: 0 };
+    d[r.date].clicks += r.clicks; d[r.date].rev += r.revenue;
+    d[r.date].conv += r.conversions; d[r.date].app += r.approved;
+  }
+  function median(arr) {
+    if (!arr.length) return 0;
+    const s = arr.slice().sort((a, b) => a - b);
+    const m = Math.floor(s.length / 2);
+    return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+  }
+  for (const [name, dmap] of Object.entries(offerByDate)) {
+    const series = Object.entries(dmap).sort((a, b) => a[0] < b[0] ? -1 : 1);
+    if (series.length < 8) continue;
+    const last = series[series.length - 1];
+    const prevWindow = series.slice(-8, -1); // 7 дней до последнего
+    const epcs = prevWindow.map(([, v]) => v.clicks ? v.rev / v.clicks : 0).filter(x => x > 0);
+    if (epcs.length < 4) continue;
+    const med = median(epcs);
+    const lastEpc = last[1].clicks ? last[1].rev / last[1].clicks : 0;
+    if (med <= 0 || last[1].clicks < 50) continue;
+    const dropPct = (lastEpc - med) / med * 100;
+    if (dropPct <= -30) {
+      out.push({
+        kind: 'offer_epc_drop',
+        severity: dropPct <= -50 ? 'high' : 'medium',
+        offer: name,
+        date: last[0],
+        epc_today: _r(lastEpc, 2),
+        epc_median_7d: _r(med, 2),
+        drop_pct: _r(dropPct, 1),
+        clicks_today: last[1].clicks,
+        suggested_action: 'Проверить оффер: остановка, изменение выплат или сезонный спад',
+      });
+    }
+  }
+
+  // 3. Platform EPC просадка vs trailing-7d-median.
+  const platRev = {};
+  for (const r of rows) platRev[r.source] = (platRev[r.source] || 0) + r.revenue;
+  const topPlats = Object.entries(platRev).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([n]) => n);
+  const platByDate = {};
+  for (const r of rows) {
+    if (!topPlats.includes(r.source)) continue;
+    const d = platByDate[r.source] || (platByDate[r.source] = {});
+    if (!d[r.date]) d[r.date] = { clicks: 0, rev: 0 };
+    d[r.date].clicks += r.clicks; d[r.date].rev += r.revenue;
+  }
+  for (const [name, dmap] of Object.entries(platByDate)) {
+    const series = Object.entries(dmap).sort((a, b) => a[0] < b[0] ? -1 : 1);
+    if (series.length < 8) continue;
+    const last = series[series.length - 1];
+    const prevWindow = series.slice(-8, -1);
+    const epcs = prevWindow.map(([, v]) => v.clicks ? v.rev / v.clicks : 0).filter(x => x > 0);
+    if (epcs.length < 4) continue;
+    const med = median(epcs);
+    const lastEpc = last[1].clicks ? last[1].rev / last[1].clicks : 0;
+    if (med <= 0 || last[1].clicks < 100) continue;
+    const dropPct = (lastEpc - med) / med * 100;
+    if (dropPct <= -30) {
+      out.push({
+        kind: 'platform_epc_drop',
+        severity: dropPct <= -50 ? 'high' : 'medium',
+        platform: name,
+        date: last[0],
+        epc_today: _r(lastEpc, 2),
+        epc_median_7d: _r(med, 2),
+        drop_pct: _r(dropPct, 1),
+        clicks_today: last[1].clicks,
+        suggested_action: 'Проверить площадку: качество трафика, изменение источника, тех. сбой',
+      });
+    }
+  }
+
+  // 4. Quality anomaly: offer×platform пары с аномально низким AR
+  // (≥ 200 кликов, AR пары < AR оффера * 0.3).
+  const offerAr = {};
+  for (const r of rows) {
+    const o = offerAr[r.offer] || (offerAr[r.offer] = { conv: 0, app: 0 });
+    o.conv += r.conversions; o.app += r.approved;
+  }
+  const pairAgg = {};
+  for (const r of rows) {
+    const k = r.offer + '||' + r.source;
+    const p = pairAgg[k] || (pairAgg[k] = { offer: r.offer, platform: r.source, clicks: 0, conv: 0, app: 0, rev: 0 });
+    p.clicks += r.clicks; p.conv += r.conversions; p.app += r.approved; p.rev += r.revenue;
+  }
+  for (const p of Object.values(pairAgg)) {
+    if (p.clicks < 200 || p.conv < 5) continue;
+    const pairAr = p.conv ? p.app / p.conv * 100 : 0;
+    const oAgg = offerAr[p.offer];
+    if (!oAgg || oAgg.conv < 20) continue;
+    const offerAvg = oAgg.app / oAgg.conv * 100;
+    if (offerAvg < 10) continue; // нет смысла сравнивать с офферами, у которых AR и так низкий
+    if (pairAr < offerAvg * 0.3) {
+      out.push({
+        kind: 'quality_anomaly',
+        severity: pairAr < offerAvg * 0.15 ? 'high' : 'medium',
+        offer: p.offer,
+        platform: p.platform,
+        clicks: p.clicks,
+        approve_rate_pct: _r(pairAr, 2),
+        offer_avg_approve_rate_pct: _r(offerAvg, 2),
+        relative_quality: _r(pairAr / offerAvg, 2),
+        suggested_action: 'Перенаправить трафик с этой площадки на другой оффер или урезать ставку',
+      });
+    }
+  }
+
+  // Сортируем по severity (high first), потом по drop_pct / отклонению.
+  out.sort((a, b) => {
+    if (a.severity !== b.severity) return a.severity === 'high' ? -1 : 1;
+    return Math.abs(b.drop_pct || b.relative_quality || 0) - Math.abs(a.drop_pct || a.relative_quality || 0);
+  });
+  return out.slice(0, 30);
+}
+
 function buildAIPayload() {
   const rows = globalRawData;
   if (!rows.length) return null;
-
   // Период
   const dates = rows.map(r => r.date).sort();
   const dateFrom = dates[0], dateTo = dates[dates.length - 1];
@@ -2276,6 +2570,13 @@ function buildAIPayload() {
       : 'Оценка по эвристической сегментации каналов; primary_rejects = conversions − approved по нешоукейс-каналам.',
   };
 
+  // Детерминированный baseline-прогноз (точка роста №3): передаём AI как
+  // стартовую точку, чтобы он корректировал, а не выдумывал числа.
+  const forecastBaseline = buildForecastBaseline(dailyRecent);
+  // Pre-detect аномалий и просадок (точка роста №4): фронт уже знает «что
+  // сломано», AI задача — объяснить и предложить план, а не переоткрыть.
+  const anomaliesDetected = detectAnomalies(rows);
+
   return {
     period: { from: dateFrom, to: dateTo, days: new Set(dates).size },
     kpi: {
@@ -2299,6 +2600,8 @@ function buildAIPayload() {
     epc_drops_signals: epcDropsSignals,
     traffic_sources_breakdown: trafficSourcesBreakdown,
     reject_funnel: rejectFunnel,
+    forecast_baseline: forecastBaseline,
+    anomalies_detected: anomaliesDetected,
   };
 }
 
@@ -2314,16 +2617,80 @@ function formatAITimestamp(ts) {
   } catch (e) { return ''; }
 }
 
+// localStorage-бэкап AI-результата. Используется как fallback, если серверный
+// кэш `ai_analysis_cache` был очищен (например, при перевыкатке БД), но
+// пользователь хочет видеть последний полученный отчёт после перезагрузки.
+// Ключ — диапазон дат; для каждого диапазона храним один последний результат.
+const AI_LS_PREFIX = 'leadsAiResult:';
+const AI_LS_MAX_KEYS = 30; // не разрастаемся в localStorage сверх 30 диапазонов
+
+function _aiLsKey(from, to) { return AI_LS_PREFIX + from + '|' + to; }
+
+function aiLsSave(from, to, data, createdAt, payloadHash) {
+  if (!from || !to) return;
+  try {
+    const payload = {
+      data,
+      created_at: createdAt || Math.floor(Date.now() / 1000),
+      payload_hash: payloadHash || '',
+      saved_at: Date.now(),
+    };
+    localStorage.setItem(_aiLsKey(from, to), JSON.stringify(payload));
+    // Поддерживаем размер: если ключей > AI_LS_MAX_KEYS, удаляем самые старые.
+    const keys = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith(AI_LS_PREFIX)) keys.push(k);
+    }
+    if (keys.length > AI_LS_MAX_KEYS) {
+      const meta = keys.map(k => {
+        try { return [k, JSON.parse(localStorage.getItem(k)).saved_at || 0]; }
+        catch (_) { return [k, 0]; }
+      }).sort((a, b) => a[1] - b[1]);
+      const toRemove = meta.slice(0, keys.length - AI_LS_MAX_KEYS);
+      toRemove.forEach(([k]) => localStorage.removeItem(k));
+    }
+  } catch (e) {
+    // QuotaExceeded или приватный режим — тихо игнорируем, на сервере кэш есть.
+    console.debug('aiLsSave skipped:', e);
+  }
+}
+
+function aiLsLoad(from, to) {
+  if (!from || !to) return null;
+  try {
+    const raw = localStorage.getItem(_aiLsKey(from, to));
+    if (!raw) return null;
+    const obj = JSON.parse(raw);
+    if (!obj || !obj.data) return null;
+    return obj;
+  } catch (e) {
+    return null;
+  }
+}
+
 // Собирает текст статуса с периодом анализа и (если применимо) пометкой кэша.
-function buildAIStatusText(period, topPlatformsCount, createdAt, fromCache) {
+function buildAIStatusText(period, topPlatformsCount, createdAt, fromCache, opts) {
+  opts = opts || {};
   const from = (period && period.from) || '—';
   const to   = (period && period.to)   || '—';
   const platformsPart = (typeof topPlatformsCount === 'number' && topPlatformsCount > 0)
     ? `, площадок в анализе: ${topPlatformsCount} (≈99% выручки)` : '';
   const ts = formatAITimestamp(createdAt);
-  const cachedPart = fromCache && ts
-    ? ` <span class="text-slate-400">(сохранённый ответ от ${ts}; нажмите «🔄 Обновить» для нового)</span>`
-    : (ts ? ` <span class="text-slate-400">(${ts})</span>` : '');
+  let cachedPart = '';
+  if (opts.fromLocalStorage) {
+    cachedPart = ts
+      ? ` <span class="text-amber-400">(локальная копия от ${ts}; нажмите «🔄 Обновить» для нового)</span>`
+      : ' <span class="text-amber-400">(локальная копия; нажмите «🔄 Обновить» для нового)</span>';
+  } else if (opts.stale) {
+    cachedPart = ts
+      ? ` <span class="text-amber-400">⚠ Исходные данные обновились — отчёт от ${ts} мог устареть. Нажмите «🔄 Обновить».</span>`
+      : ' <span class="text-amber-400">⚠ Данные обновились, нажмите «🔄 Обновить».</span>';
+  } else if (fromCache && ts) {
+    cachedPart = ` <span class="text-slate-400">(сохранённый ответ от ${ts}; нажмите «🔄 Обновить» для нового)</span>`;
+  } else if (ts) {
+    cachedPart = ` <span class="text-slate-400">(${ts})</span>`;
+  }
   return `<span class="text-emerald-400">✅ Готово. Период: ${from} — ${to}${platformsPart}.</span>${cachedPart}`;
 }
 
@@ -2392,7 +2759,10 @@ async function runDeepAIAnalysis(force = false) {
     renderDeepAIResult(json.data);
     const period = (json.period && json.period.from) ? json.period : payload.period;
     statusEl.innerHTML = buildAIStatusText(
-      period, payload.top_platforms.length, json.created_at, !!json.cached);
+      period, payload.top_platforms.length, json.created_at, !!json.cached, { stale: !!json.stale });
+    // Бэкап в localStorage — чтобы при перезагрузке страницы (даже если
+    // серверный кэш почистили) мы могли мгновенно показать последний отчёт.
+    aiLsSave(period.from, period.to, json.data, json.created_at, json.payload_hash || '');
   } catch (e) {
     console.warn('Deep AI analysis failed:', e);
     // Если сервер прислал предметную причину (`uiReason`/`uiCode`) — покажем её,
@@ -2415,6 +2785,13 @@ async function runDeepAIAnalysis(force = false) {
 // При загрузке страницы / смене периода тихо подтягиваем сохранённый ранее
 // AI-анализ (если есть для этого диапазона) — чтобы пользователь не терял
 // результат после перезагрузки. Сетевая ошибка не считается фатальной.
+//
+// Порядок восстановления:
+//   1) Пробуем серверный кэш `ai_analysis_cache` — это «правда».
+//      Передаём текущий payload_hash, чтобы сервер сказал, не устарел ли он.
+//   2) Если серверного кэша нет — пробуем localStorage backup
+//      (на случай очистки БД или нового хостинга).
+//   3) Иначе показываем подсказку «нажмите Запустить анализ».
 async function loadCachedAIAnalysis() {
   const statusEl = document.getElementById('aiDeepStatus');
   const resEl = document.getElementById('aiDeepResult');
@@ -2422,24 +2799,55 @@ async function loadCachedAIAnalysis() {
   const dFrom = document.getElementById('dateFrom').value;
   const dTo   = document.getElementById('dateTo').value;
   if (!dFrom || !dTo) return;
+
+  // Считаем хеш текущего payload-а (если данные загружены) — чтобы
+  // сервер мог пометить кэш как stale при изменении исходных данных.
+  let payloadHash = '';
   try {
-    const res = await fetch(`${API_BASE}?action=ai_get_cached&from=${encodeURIComponent(dFrom)}&to=${encodeURIComponent(dTo)}`);
+    if (globalRawData && globalRawData.length) {
+      const p = buildAIPayload();
+      if (p) payloadHash = await _aiPayloadHash(p);
+    }
+  } catch (e) { /* hash optional */ }
+
+  try {
+    const url = `${API_BASE}?action=ai_get_cached&from=${encodeURIComponent(dFrom)}&to=${encodeURIComponent(dTo)}`
+      + (payloadHash ? `&payload_hash=${encodeURIComponent(payloadHash)}` : '');
+    const res = await fetch(url);
     const ct = res.headers.get('content-type') || '';
     if (!ct.toLowerCase().includes('application/json')) return;
     const json = await res.json();
     if (!json || json.status !== 'success') return;
-    if (!json.cached || !json.data) {
-      // Нет кэша — очищаем результат, чтобы при смене периода не остался
-      // отчёт от прошлого диапазона.
-      resEl.classList.add('hidden');
-      resEl.innerHTML = '';
-      statusEl.innerHTML = '<span class="text-slate-400">Нажмите «⚡ Запустить анализ», чтобы получить отчёт за выбранный период.</span>';
+    if (json.cached && json.data) {
+      renderDeepAIResult(json.data);
+      statusEl.innerHTML = buildAIStatusText(
+        json.period, 0, json.created_at, true, { stale: !!json.stale });
+      // Параллельно обновим localStorage — пусть всегда есть backup.
+      aiLsSave(dFrom, dTo, json.data, json.created_at, json.payload_hash || '');
       return;
     }
-    renderDeepAIResult(json.data);
-    statusEl.innerHTML = buildAIStatusText(json.period, 0, json.created_at, true);
+    // Серверного кэша нет — пробуем localStorage backup.
+    const ls = aiLsLoad(dFrom, dTo);
+    if (ls && ls.data) {
+      renderDeepAIResult(ls.data);
+      statusEl.innerHTML = buildAIStatusText(
+        { from: dFrom, to: dTo }, 0, ls.created_at, true, { fromLocalStorage: true });
+      return;
+    }
+    // Совсем ничего нет — очищаем результат, чтобы при смене периода не
+    // остался отчёт от прошлого диапазона.
+    resEl.classList.add('hidden');
+    resEl.innerHTML = '';
+    statusEl.innerHTML = '<span class="text-slate-400">Нажмите «⚡ Запустить анализ», чтобы получить отчёт за выбранный период.</span>';
   } catch (e) {
-    // Тихо игнорируем — это вспомогательный вызов.
+    // Сеть упала — всё равно попробуем локальный backup.
+    const ls = aiLsLoad(dFrom, dTo);
+    if (ls && ls.data) {
+      renderDeepAIResult(ls.data);
+      statusEl.innerHTML = buildAIStatusText(
+        { from: dFrom, to: dTo }, 0, ls.created_at, true, { fromLocalStorage: true });
+      return;
+    }
     console.debug('loadCachedAIAnalysis: skipped', e);
   }
 }
