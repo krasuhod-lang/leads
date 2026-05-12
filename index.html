@@ -423,6 +423,122 @@
         </div>
       </div>
       <p class="text-sm text-slate-400 mb-4">Анализирует выбранный период и площадки, дающие суммарно ~99% выручки (мелкие игнорируются), и сегментирует отказной трафик МФО по 4 каналам домонетизации (витрина в ЛК, SMS, оффлайн-коллцентр, мобильное приложение). Возвращает результат в виде 4 вкладок: «Сводка и Риски» (резюме, статус здоровья, прогноз 7/30 дней, риски), «Маршрутизация отказников» (рекомендации офферов под каждый канал с обоснованием), «Точки роста» (что и насколько нарастить + проседающие сегменты), «Офферы и площадки» (vs рынок, разбор top-площадок, дневные просадки EPC). Работает по текущему диапазону дат.</p>
+
+      <!-- AI SETTINGS PANEL: профиль + пороги + фильтры + KPI + детализация. -->
+      <!-- Все значения автоматически попадают в payload.control, в hash payload-а -->
+      <!-- (другой профиль/пороги → другой кэш) и в [CONTROL CONTEXT] system-prompt-а. -->
+      <details id="aiSettingsPanel" class="border border-slate-700 rounded bg-slate-900/40 mb-4">
+        <summary class="cursor-pointer px-3 py-2 text-sm text-slate-300 font-semibold flex items-center gap-2">
+          <span>⚙️ Настройки рекомендаций</span>
+          <span id="aiSettingsSummary" class="text-xs text-slate-400 font-normal"></span>
+        </summary>
+        <div class="p-4 space-y-4 text-sm">
+          <!-- Row 1: профиль + детализация -->
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label class="block text-xs text-slate-400 mb-1">Профиль рекомендаций</label>
+              <select id="aiCtrlProfile" class="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-white">
+                <option value="conservative">Консервативный (hold вместо replace)</option>
+                <option value="balanced" selected>Сбалансированный</option>
+                <option value="aggressive_growth">Агрессивный рост (scale, добавить)</option>
+                <option value="antifraud_focus">Антифрод-фокус (sub1 в приоритете)</option>
+                <option value="roi_only">Только ROI (delta_pct ≥ 5% по revenue/EPC)</option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-xs text-slate-400 mb-1">Уровень детализации</label>
+              <div class="flex gap-3 items-center mt-2">
+                <label class="flex items-center gap-1 text-slate-200"><input type="radio" name="aiCtrlDetail" value="short"> Коротко (3 пункта)</label>
+                <label class="flex items-center gap-1 text-slate-200"><input type="radio" name="aiCtrlDetail" value="detailed" checked> Подробно (5-7)</label>
+              </div>
+            </div>
+          </div>
+
+          <!-- Row 2: пороги (sliders/numbers) -->
+          <div>
+            <div class="text-xs text-slate-400 uppercase mb-2">Пороги чувствительности</div>
+            <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
+              <label class="block">
+                <span class="block text-xs text-slate-400 mb-1">Min клики (sub1/offer)</span>
+                <input id="aiCtrlMinClicks" type="number" min="0" step="10" value="100" class="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-white">
+              </label>
+              <label class="block">
+                <span class="block text-xs text-slate-400 mb-1">Просадка EPC, %</span>
+                <input id="aiCtrlEpcDropPct" type="number" min="1" max="90" step="1" value="20" class="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-white">
+              </label>
+              <label class="block">
+                <span class="block text-xs text-slate-400 mb-1">Approve floor, %</span>
+                <input id="aiCtrlArFloor" type="number" min="0" max="100" step="0.5" value="15" class="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-white">
+              </label>
+              <label class="block">
+                <span class="block text-xs text-slate-400 mb-1">CR floor, %</span>
+                <input id="aiCtrlCrFloor" type="number" min="0" max="100" step="0.5" value="10" class="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-white">
+              </label>
+              <label class="block">
+                <span class="block text-xs text-slate-400 mb-1">Fraud-порог кликов</span>
+                <input id="aiCtrlFraudClicks" type="number" min="0" step="50" value="300" class="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-white">
+              </label>
+              <label class="block">
+                <span class="block text-xs text-slate-400 mb-1">Min точек данных</span>
+                <input id="aiCtrlMinWindow" type="number" min="1" step="1" value="7" class="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-white">
+              </label>
+            </div>
+          </div>
+
+          <!-- Row 3: фильтры (исключения через запятую). -->
+          <div>
+            <div class="text-xs text-slate-400 uppercase mb-2">Фильтры области анализа (через запятую)</div>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <label class="block">
+                <span class="block text-xs text-slate-400 mb-1">Исключить площадки</span>
+                <input id="aiCtrlExcludePlatforms" type="text" placeholder="например: webview-junk, test-platform" class="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-white">
+              </label>
+              <label class="block">
+                <span class="block text-xs text-slate-400 mb-1">Исключить sub1</span>
+                <input id="aiCtrlExcludeSub1" type="text" placeholder="например: bot1, frauder42" class="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-white">
+              </label>
+              <label class="block">
+                <span class="block text-xs text-slate-400 mb-1">Исключить офферы</span>
+                <input id="aiCtrlExcludeOffers" type="text" placeholder="например: PaidOffer1, BadOffer2" class="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-white">
+              </label>
+              <label class="block">
+                <span class="block text-xs text-slate-400 mb-1">Только эти площадки (whitelist)</span>
+                <input id="aiCtrlIncludePlatforms" type="text" placeholder="оставьте пусто, чтобы анализировать все" class="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-white">
+              </label>
+            </div>
+          </div>
+
+          <!-- Row 4: KPI/ёмкость -->
+          <div>
+            <div class="text-xs text-slate-400 uppercase mb-2">KPI цели и ограничения</div>
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <label class="block">
+                <span class="block text-xs text-slate-400 mb-1">EPC цель, ₽</span>
+                <input id="aiCtrlEpcTarget" type="number" min="0" step="0.1" value="0" class="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-white">
+              </label>
+              <label class="block">
+                <span class="block text-xs text-slate-400 mb-1">Выручка цель, ₽</span>
+                <input id="aiCtrlRevenueTarget" type="number" min="0" step="1000" value="0" class="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-white">
+              </label>
+              <label class="block">
+                <span class="block text-xs text-slate-400 mb-1">SMS-ёмкость / день</span>
+                <input id="aiCtrlSmsCapacity" type="number" min="0" step="100" value="0" class="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-white">
+              </label>
+              <label class="block">
+                <span class="block text-xs text-slate-400 mb-1">Оффлайн / день</span>
+                <input id="aiCtrlOfflineCapacity" type="number" min="0" step="10" value="0" class="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-white">
+              </label>
+            </div>
+          </div>
+
+          <div class="flex gap-2 justify-end">
+            <button class="btn" style="background:#475569" onclick="aiSettingsReset()">↩︎ Сбросить</button>
+            <button class="btn" onclick="aiSettingsSave()">💾 Сохранить</button>
+          </div>
+          <div class="text-xs text-slate-500">Настройки сохраняются в браузере и автоматически попадают в каждый запуск анализа. Смена профиля или порогов инвалидирует серверный кэш для этого периода — следующий «⚡ Запустить анализ» сходит к провайдеру за свежим ответом.</div>
+        </div>
+      </details>
+
       <div id="aiDeepStatus" class="text-sm text-slate-400 mb-3"></div>
       <div id="aiDeepResult" class="space-y-5 hidden"></div>
     </div>
@@ -2044,7 +2160,7 @@ function _topPlatformsByRevenue(rows, sharePct = 99, hardCap = 10) {
 // Подмешиваем версию схемы как префикс — точно так же, как PHP. При смене
 // промпта/схемы (AI_PROMPT_VERSION на сервере) старые хеши перестают совпадать
 // и кэш честно инвалидируется.
-const AI_PROMPT_VERSION_JS = '2026-05-05.v2-baseline-anomalies-noHallu';
+const AI_PROMPT_VERSION_JS = '2026-05-12.v3-controllable-actionable';
 
 function _aiCanonicalize(v) {
   if (Array.isArray(v)) return v.map(_aiCanonicalize);
@@ -2331,8 +2447,175 @@ function detectAnomalies(rows) {
   return out.slice(0, 30);
 }
 
+// ============= AI SETTINGS (control panel) =============
+// Хранится в localStorage и отправляется на бэк как payload.control. Любое
+// изменение профиля/порогов/фильтров → новый hash payload-а → новый кэш →
+// при следующем «⚡ Запустить анализ» пользователь получает свежий ответ.
+const AI_CTRL_DEFAULTS = {
+  profile: 'balanced',
+  detail_level: 'detailed',
+  thresholds: {
+    min_clicks: 100,
+    epc_drop_pct: 20,
+    ar_floor: 15,
+    cr_floor: 10,
+    fraud_clicks_threshold: 300,
+    min_clicks_window: 7,
+  },
+  filters: {
+    include_platforms: [], exclude_platforms: [],
+    include_sub1: [],      exclude_sub1: [],
+    include_offers: [],    exclude_offers: [],
+  },
+  kpi_targets: {
+    epc_target: 0, revenue_target: 0,
+    sms_capacity_per_day: 0, offline_capacity_per_day: 0,
+    monthly_budget_rub: 0,
+  },
+};
+const AI_CTRL_LS_KEY = 'leadsAiControl:v1';
+
+function _aiCtrlSplit(s) {
+  return String(s || '').split(',').map(x => x.trim()).filter(Boolean);
+}
+function _aiCtrlNum(id, def) {
+  const v = parseFloat(document.getElementById(id)?.value);
+  return Number.isFinite(v) ? v : def;
+}
+function _aiCtrlInt(id, def) {
+  const v = parseInt(document.getElementById(id)?.value, 10);
+  return Number.isFinite(v) ? v : def;
+}
+
+// Возвращает текущее состояние панели как объект control. Используется
+// и для отправки в payload, и для подсказки в summary панели.
+function aiGetControl() {
+  const detailNode = document.querySelector('input[name="aiCtrlDetail"]:checked');
+  return {
+    profile: document.getElementById('aiCtrlProfile')?.value || AI_CTRL_DEFAULTS.profile,
+    detail_level: detailNode ? detailNode.value : AI_CTRL_DEFAULTS.detail_level,
+    thresholds: {
+      min_clicks:             _aiCtrlInt('aiCtrlMinClicks',   AI_CTRL_DEFAULTS.thresholds.min_clicks),
+      epc_drop_pct:           _aiCtrlInt('aiCtrlEpcDropPct',  AI_CTRL_DEFAULTS.thresholds.epc_drop_pct),
+      ar_floor:               _aiCtrlNum('aiCtrlArFloor',     AI_CTRL_DEFAULTS.thresholds.ar_floor),
+      cr_floor:               _aiCtrlNum('aiCtrlCrFloor',     AI_CTRL_DEFAULTS.thresholds.cr_floor),
+      fraud_clicks_threshold: _aiCtrlInt('aiCtrlFraudClicks', AI_CTRL_DEFAULTS.thresholds.fraud_clicks_threshold),
+      min_clicks_window:      _aiCtrlInt('aiCtrlMinWindow',   AI_CTRL_DEFAULTS.thresholds.min_clicks_window),
+    },
+    filters: {
+      include_platforms: _aiCtrlSplit(document.getElementById('aiCtrlIncludePlatforms')?.value),
+      exclude_platforms: _aiCtrlSplit(document.getElementById('aiCtrlExcludePlatforms')?.value),
+      include_sub1:      [],
+      exclude_sub1:      _aiCtrlSplit(document.getElementById('aiCtrlExcludeSub1')?.value),
+      include_offers:    [],
+      exclude_offers:    _aiCtrlSplit(document.getElementById('aiCtrlExcludeOffers')?.value),
+    },
+    kpi_targets: {
+      epc_target:               _aiCtrlNum('aiCtrlEpcTarget',       0),
+      revenue_target:           _aiCtrlNum('aiCtrlRevenueTarget',   0),
+      sms_capacity_per_day:     _aiCtrlInt('aiCtrlSmsCapacity',     0),
+      offline_capacity_per_day: _aiCtrlInt('aiCtrlOfflineCapacity', 0),
+      monthly_budget_rub:       0,
+    },
+  };
+}
+
+function _aiCtrlSetVal(id, v) { const el = document.getElementById(id); if (el) el.value = v; }
+function _aiCtrlSetList(id, arr) { _aiCtrlSetVal(id, Array.isArray(arr) ? arr.join(', ') : ''); }
+
+// Раскладывает control-объект обратно по полям формы. Используется при загрузке
+// из localStorage и при «Сбросить».
+function aiSettingsApply(c) {
+  if (!c) c = AI_CTRL_DEFAULTS;
+  _aiCtrlSetVal('aiCtrlProfile', c.profile || AI_CTRL_DEFAULTS.profile);
+  const detail = c.detail_level === 'short' ? 'short' : 'detailed';
+  document.querySelectorAll('input[name="aiCtrlDetail"]').forEach(r => { r.checked = (r.value === detail); });
+  const t = c.thresholds || {};
+  _aiCtrlSetVal('aiCtrlMinClicks',   t.min_clicks             ?? AI_CTRL_DEFAULTS.thresholds.min_clicks);
+  _aiCtrlSetVal('aiCtrlEpcDropPct',  t.epc_drop_pct           ?? AI_CTRL_DEFAULTS.thresholds.epc_drop_pct);
+  _aiCtrlSetVal('aiCtrlArFloor',     t.ar_floor               ?? AI_CTRL_DEFAULTS.thresholds.ar_floor);
+  _aiCtrlSetVal('aiCtrlCrFloor',     t.cr_floor               ?? AI_CTRL_DEFAULTS.thresholds.cr_floor);
+  _aiCtrlSetVal('aiCtrlFraudClicks', t.fraud_clicks_threshold ?? AI_CTRL_DEFAULTS.thresholds.fraud_clicks_threshold);
+  _aiCtrlSetVal('aiCtrlMinWindow',   t.min_clicks_window      ?? AI_CTRL_DEFAULTS.thresholds.min_clicks_window);
+  const f = c.filters || {};
+  _aiCtrlSetList('aiCtrlIncludePlatforms', f.include_platforms);
+  _aiCtrlSetList('aiCtrlExcludePlatforms', f.exclude_platforms);
+  _aiCtrlSetList('aiCtrlExcludeSub1',      f.exclude_sub1);
+  _aiCtrlSetList('aiCtrlExcludeOffers',    f.exclude_offers);
+  const k = c.kpi_targets || {};
+  _aiCtrlSetVal('aiCtrlEpcTarget',       k.epc_target               ?? 0);
+  _aiCtrlSetVal('aiCtrlRevenueTarget',   k.revenue_target           ?? 0);
+  _aiCtrlSetVal('aiCtrlSmsCapacity',     k.sms_capacity_per_day     ?? 0);
+  _aiCtrlSetVal('aiCtrlOfflineCapacity', k.offline_capacity_per_day ?? 0);
+  aiSettingsRefreshSummary();
+}
+
+function aiSettingsLoad() {
+  try {
+    const raw = localStorage.getItem(AI_CTRL_LS_KEY);
+    if (raw) aiSettingsApply(JSON.parse(raw));
+    else aiSettingsApply(AI_CTRL_DEFAULTS);
+  } catch (_) { aiSettingsApply(AI_CTRL_DEFAULTS); }
+}
+function aiSettingsSave() {
+  try {
+    const c = aiGetControl();
+    localStorage.setItem(AI_CTRL_LS_KEY, JSON.stringify(c));
+    aiSettingsRefreshSummary();
+    const sumEl = document.getElementById('aiSettingsSummary');
+    if (sumEl) {
+      const prev = sumEl.textContent;
+      sumEl.textContent = '✅ сохранено';
+      setTimeout(() => { sumEl.textContent = prev; aiSettingsRefreshSummary(); }, 1200);
+    }
+  } catch (e) { console.warn('aiSettingsSave failed', e); }
+}
+function aiSettingsReset() {
+  aiSettingsApply(AI_CTRL_DEFAULTS);
+  try { localStorage.removeItem(AI_CTRL_LS_KEY); } catch (_) {}
+}
+function aiSettingsRefreshSummary() {
+  const el = document.getElementById('aiSettingsSummary');
+  if (!el) return;
+  const c = aiGetControl();
+  const profileLabels = {
+    conservative: 'консерв.', balanced: 'сбаланс.', aggressive_growth: 'агресс.',
+    antifraud_focus: 'антифрод', roi_only: 'только ROI',
+  };
+  const t = c.thresholds;
+  el.textContent = `· ${profileLabels[c.profile] || c.profile} · drop≥${t.epc_drop_pct}% · AR≥${t.ar_floor}% · CR≥${t.cr_floor}% · ${c.detail_level === 'short' ? 'кратко' : 'подробно'}`;
+}
+
+
 function buildAIPayload() {
-  const rows = globalRawData;
+  // Настройки оператора (профиль/пороги/фильтры/KPI/детализация). Берём из
+  // панели «⚙️ Настройки рекомендаций»; они идут и в payload.control (для
+  // system-prompt-а), и используются ниже для пред-расчётов аномалий и
+  // подсветки сигналов — чтобы пользователь и AI работали с ОДНИМИ и теми
+  // же порогами.
+  const control = aiGetControl();
+  const TH = control.thresholds;
+
+  const rows0 = globalRawData;
+  if (!rows0.length) return null;
+  // Применяем exclude-фильтры контрольной панели до агрегаций — чтобы AI не
+  // видел этих сущностей в payload-е и не мог по ним рекомендовать. include_*
+  // (whitelist) тоже здесь применяется, если задан.
+  const _setLc = (arr) => new Set((arr || []).map(s => String(s).toLowerCase()));
+  const fExclPlat = _setLc(control.filters.exclude_platforms);
+  const fInclPlat = _setLc(control.filters.include_platforms);
+  const fExclSub  = _setLc(control.filters.exclude_sub1);
+  const fExclOff  = _setLc(control.filters.exclude_offers);
+  const rows = rows0.filter(r => {
+    const src = String(r.source || '').toLowerCase();
+    const sub = String(r.sub1 || '').toLowerCase();
+    const off = String(r.offer || '').toLowerCase();
+    if (fExclPlat.size && fExclPlat.has(src)) return false;
+    if (fInclPlat.size && !fInclPlat.has(src)) return false;
+    if (fExclSub.size  && sub && fExclSub.has(sub)) return false;
+    if (fExclOff.size  && fExclOff.has(off)) return false;
+    return true;
+  });
   if (!rows.length) return null;
   // Период
   const dates = rows.map(r => r.date).sort();
@@ -2396,7 +2679,7 @@ function buildAIPayload() {
     };
   });
   const offersTop = [...offerArr].sort((a, b) => b.revenue - a.revenue).slice(0, 15);
-  const offersUnder = offerArr.filter(o => o.clicks >= 100 && epc > 0 && o.epc < epc * 0.6)
+  const offersUnder = offerArr.filter(o => o.clicks >= TH.min_clicks && epc > 0 && o.epc < epc * 0.6)
     .sort((a, b) => b.clicks - a.clicks).slice(0, 10);
 
   // Сравнение с рынком (если есть кэш market EPC)
@@ -2424,7 +2707,7 @@ function buildAIPayload() {
     subMap[r.sub1].clicks += r.clicks; subMap[r.sub1].conversions += r.conversions;
     subMap[r.sub1].approved += r.approved; subMap[r.sub1].revenue += r.revenue;
   }
-  const sub1Anom = Object.entries(subMap).filter(([, v]) => v.clicks >= 200).map(([n, v]) => ({
+  const sub1Anom = Object.entries(subMap).filter(([, v]) => v.clicks >= Math.max(2 * TH.min_clicks, 200)).map(([n, v]) => ({
     name: n,
     clicks: v.clicks,
     epc: _r(v.clicks ? v.revenue / v.clicks : 0, 2),
@@ -2481,7 +2764,7 @@ function buildAIPayload() {
     const curr = dailyRecent[i];
     if (!prev.epc || !curr.epc) continue;
     const dropPct = _r((curr.epc - prev.epc) / prev.epc * 100, 1);
-    if (dropPct <= -20) {
+    if (dropPct <= -TH.epc_drop_pct) {
       epcDropsSignals.push({
         prev_date: prev.date, date: curr.date,
         prev_epc: prev.epc, curr_epc: curr.epc,
@@ -2602,6 +2885,11 @@ function buildAIPayload() {
     reject_funnel: rejectFunnel,
     forecast_baseline: forecastBaseline,
     anomalies_detected: anomaliesDetected,
+    // ⚙️ Настройки оператора. Сервер их нормализует, прокидывает в [CONTROL
+    // CONTEXT] system-prompt-а и в пост-валидацию (фильтры/калибровка
+    // confidence/дедуп). Поскольку control входит в payload, разные профили/
+    // пороги дают разный hash payload-а → отдельные кэш-записи.
+    control: control,
   };
 }
 
@@ -3096,13 +3384,16 @@ function renderDeepAIResult(d) {
           <th>Что сделать</th>
         </tr></thead>
         <tbody>
-          ${gp.map(g => `
+          ${gp.map(g => {
+            const ei = (g.expected_impact && typeof g.expected_impact === 'object') ? g.expected_impact : null;
+            return `
             <tr class="border-t border-slate-800 align-top">
-              <td class="py-2 font-semibold text-white">${escapeHtml(g.dimension || '')}</td>
-              <td class="text-slate-300">${escapeHtml(g.current_metric || '')}</td>
-              <td class="text-emerald-300 font-semibold">${escapeHtml(g.target_metric || '')}</td>
-              <td class="text-slate-200">${escapeHtml(g.action_plan || '')}</td>
-            </tr>`).join('')}
+              <td class="py-2 font-semibold text-white">${escapeHtml(g.dimension || '')} ${targetBadge(g.target)}</td>
+              <td class="text-slate-300">${escapeHtml(g.current_metric || (ei && ei.current !== undefined ? String(ei.current) : ''))}</td>
+              <td class="text-emerald-300 font-semibold">${escapeHtml(g.target_metric || (ei && ei.target !== undefined ? String(ei.target) : ''))} ${ei ? fmtImpact(ei) : ''}</td>
+              <td class="text-slate-200">${actionTypeBadge(g.action_type)} ${escapeHtml(g.action_plan || '')}</td>
+            </tr>`;
+          }).join('')}
         </tbody>
       </table></div>
     </div>` : '';
@@ -3128,23 +3419,110 @@ function renderDeepAIResult(d) {
       </div>
     </div>` : '';
 
+  // Helpers для отображения структурированных полей рекомендаций.
+  const targetBadge = (t) => {
+    if (!t || typeof t !== 'object') return '';
+    const type = String(t.type || '');
+    const name = String(t.name || '');
+    if (!type && !name) return '';
+    const icon = ({offer:'📦', platform:'🌐', sub1:'🏷', channel:'📡', global:'🌍'})[type] || '🎯';
+    return `<span class="px-2 py-0.5 rounded text-xs bg-slate-700 text-slate-200" title="${escapeHtml(type)}">${icon} ${escapeHtml(name || type)}</span>`;
+  };
+  const actionTypeBadge = (a) => {
+    if (!a) return '';
+    return `<span class="px-2 py-0.5 rounded text-xs bg-indigo-500/20 text-indigo-300 font-mono">${escapeHtml(String(a))}</span>`;
+  };
+  const fmtImpact = (ei) => {
+    if (!ei || typeof ei !== 'object') return '';
+    const pct = Number(ei.delta_pct);
+    const metric = String(ei.metric || '');
+    const cur = (ei.current !== undefined && ei.current !== null) ? Number(ei.current) : null;
+    const tgt = (ei.target  !== undefined && ei.target  !== null) ? Number(ei.target)  : null;
+    const horizon = ei.horizon_days ? `за ${ei.horizon_days}д` : '';
+    const sign = isFinite(pct) && pct > 0 ? '+' : '';
+    const pctTxt = isFinite(pct) ? `${sign}${pct.toFixed(1)}%` : '';
+    const cls = isFinite(pct) && pct >= 0 ? 'text-emerald-300' : 'text-red-300';
+    const arrow = (cur !== null && tgt !== null) ? ` ${cur} → ${tgt}` : '';
+    return `<span class="font-semibold ${cls}">${pctTxt}${arrow ? ' (' + escapeHtml(metric) + arrow + ')' : metric ? ' ' + escapeHtml(metric) : ''}</span>${horizon ? ` <span class="text-xs text-slate-400">${horizon}</span>` : ''}`;
+  };
+  const renderEvidence = (ev) => {
+    // ev может быть строкой (старый формат) или объектом {source,fields,values,note}.
+    if (!ev) return '';
+    if (typeof ev === 'string') {
+      return `<div class="text-xs text-slate-400 mt-1">📊 ${escapeHtml(ev)}</div>`;
+    }
+    if (typeof ev === 'object') {
+      const src = ev.source ? `<span class="font-mono">${escapeHtml(String(ev.source))}</span>` : '';
+      const fields = Array.isArray(ev.fields) && ev.fields.length
+        ? ` · <span class="text-slate-300">${ev.fields.map(escapeHtml).join(', ')}</span>` : '';
+      const valsStr = (ev.values && typeof ev.values === 'object')
+        ? Object.entries(ev.values).map(([k,v]) => `${escapeHtml(k)}=${escapeHtml(String(v))}`).join(', ')
+        : '';
+      const vals = valsStr ? ` <span class="text-slate-200">{${valsStr}}</span>` : '';
+      const note = ev.note ? `<div class="text-xs text-slate-400">${escapeHtml(String(ev.note))}</div>` : '';
+      return `<div class="text-xs text-slate-400 mt-1">📊 ${src}${fields}${vals}</div>${note}`;
+    }
+    return '';
+  };
+
   const recs = Array.isArray(d.recommendations) ? d.recommendations : [];
-  const recsHtml = recs.length ? `
-    <div>
-      <h3 class="text-white font-bold mb-3">🎯 Конкретные рекомендации</h3>
-      <div class="space-y-2">
-        ${recs.map(r => `
-          <div class="border border-slate-700 rounded p-3 bg-slate-900/50">
-            <div class="flex justify-between items-start gap-3 mb-1">
-              <div class="font-semibold text-white">${escapeHtml(r.title || '')}</div>
-              ${prio(r.priority)}
-            </div>
-            <div class="text-sm text-slate-200 mb-1"><span class="text-slate-400">Действие:</span> ${escapeHtml(r.action || '')}</div>
-            ${r.expected_impact ? `<div class="text-sm text-emerald-300"><span class="text-slate-400">Ожидаемый эффект:</span> ${escapeHtml(r.expected_impact)}</div>` : ''}
-            ${r.evidence ? `<div class="text-xs text-slate-400 mt-1">📊 ${escapeHtml(r.evidence)}</div>` : ''}
+  // Сортировка: high → medium → low; внутри — по |delta_pct| убыв. Низкокачественные
+  // (server pre-flagged как quality:"low") уходят в самый конец и сворачиваются.
+  const prioRank = { high: 0, medium: 1, low: 2 };
+  const recsSorted = recs.slice().sort((a, b) => {
+    const qa = (a && a.quality === 'low') ? 1 : 0;
+    const qb = (b && b.quality === 'low') ? 1 : 0;
+    if (qa !== qb) return qa - qb;
+    const ra = prioRank[a && a.priority] ?? 1;
+    const rb = prioRank[b && b.priority] ?? 1;
+    if (ra !== rb) return ra - rb;
+    const da = Math.abs(Number(a && a.expected_impact && a.expected_impact.delta_pct) || 0);
+    const db = Math.abs(Number(b && b.expected_impact && b.expected_impact.delta_pct) || 0);
+    return db - da;
+  });
+  const renderRec = (r) => {
+    const steps = Array.isArray(r.implementation_steps) ? r.implementation_steps.filter(Boolean) : [];
+    const stepsHtml = steps.length
+      ? `<details class="mt-1"><summary class="cursor-pointer text-xs text-blue-300">📋 Шаги (${steps.length})</summary><ol class="list-decimal pl-5 text-xs text-slate-200 mt-1 space-y-0.5">${steps.map(s => `<li>${escapeHtml(String(s))}</li>`).join('')}</ol></details>`
+      : '';
+    const tw = (r.time_window && r.time_window.from && r.time_window.to)
+      ? `<span class="text-xs text-slate-400">${escapeHtml(r.time_window.from)}…${escapeHtml(r.time_window.to)}</span>`
+      : '';
+    const dp = (r.data_points_used !== undefined && r.data_points_used !== null)
+      ? ` <span class="text-xs text-slate-500">· ${Number(r.data_points_used)} точек</span>` : '';
+    const conf2 = (r.expected_impact && r.expected_impact.confidence)
+      ? ` <span class="text-xs">conf: ${conf(r.expected_impact.confidence)}</span>` : '';
+    const revoke = r.revoke_if ? `<div class="text-xs text-amber-300 mt-1">↩️ Отменить если: ${escapeHtml(String(r.revoke_if))}</div>` : '';
+    return `
+      <div class="border border-slate-700 rounded p-3 bg-slate-900/50">
+        <div class="flex justify-between items-start gap-3 mb-1 flex-wrap">
+          <div class="font-semibold text-white">${escapeHtml(r.title || '')}</div>
+          <div class="flex flex-wrap gap-1 items-center">
+            ${prio(r.priority)}
+            ${actionTypeBadge(r.action_type)}
+            ${targetBadge(r.target)}
           </div>
-        `).join('')}
+        </div>
+        <div class="text-sm text-slate-200 mb-1"><span class="text-slate-400">Действие:</span> ${escapeHtml(r.action || '')}</div>
+        ${r.expected_impact && typeof r.expected_impact === 'object'
+          ? `<div class="text-sm"><span class="text-slate-400">Эффект:</span> ${fmtImpact(r.expected_impact)}${conf2}</div>`
+          : (r.expected_impact ? `<div class="text-sm text-emerald-300"><span class="text-slate-400">Эффект:</span> ${escapeHtml(String(r.expected_impact))}</div>` : '')}
+        ${stepsHtml}
+        ${renderEvidence(r.evidence)}
+        ${(tw || dp) ? `<div class="mt-1">${tw}${dp}</div>` : ''}
+        ${revoke}
+      </div>`;
+  };
+  // Делим: основной список + свёрнутый список low-quality (общие фразы).
+  const recsMain = recsSorted.filter(r => r && r.quality !== 'low');
+  const recsLow  = recsSorted.filter(r => r && r.quality === 'low');
+  const recsHtml = (recsSorted.length) ? `
+    <div>
+      <h3 class="text-white font-bold mb-3">🎯 Конкретные рекомендации <span class="text-xs text-slate-400 font-normal">(${recsMain.length} приоритетных${recsLow.length ? ', ' + recsLow.length + ' общих' : ''})</span></h3>
+      <div class="space-y-2">
+        ${recsMain.map(renderRec).join('')}
       </div>
+      ${recsLow.length ? `<details class="mt-2"><summary class="cursor-pointer text-xs text-slate-400">Показать ещё ${recsLow.length} общих/низкокачественных рекомендаций</summary><div class="space-y-2 mt-2 opacity-70">${recsLow.map(renderRec).join('')}</div></details>` : ''}
     </div>` : '';
 
   const kd = Array.isArray(d.key_decisions) ? d.key_decisions : [];
@@ -3152,12 +3530,21 @@ function renderDeepAIResult(d) {
     <div>
       <h3 class="text-white font-bold mb-3">🧭 Ключевые решения для роста выручки</h3>
       <div class="space-y-2">
-        ${kd.map(k => `
+        ${kd.map(k => {
+          const kpi = (k.kpi_impact && typeof k.kpi_impact === 'object')
+            ? fmtImpact({metric:k.kpi_impact.metric, delta_pct:k.kpi_impact.delta_pct, horizon_days:k.kpi_impact.horizon_days, current:null, target:null})
+            : (k.kpi_impact ? escapeHtml(String(k.kpi_impact)) : '');
+          return `
           <div class="border-l-4 border-emerald-500 bg-emerald-500/5 p-3 rounded">
-            <div class="font-semibold text-white">${escapeHtml(k.decision || '')}</div>
-            ${k.rationale ? `<div class="text-sm text-slate-300 mt-1"><span class="text-slate-400">Обоснование:</span> ${escapeHtml(k.rationale)}</div>` : ''}
-            ${k.kpi_impact ? `<div class="text-sm text-emerald-300 mt-1"><span class="text-slate-400">Эффект на KPI:</span> ${escapeHtml(k.kpi_impact)}</div>` : ''}
-          </div>`).join('')}
+            <div class="flex flex-wrap gap-1 items-center mb-1">
+              <div class="font-semibold text-white flex-1">${escapeHtml(k.decision || '')}</div>
+              ${actionTypeBadge(k.action_type)}
+              ${targetBadge(k.target)}
+            </div>
+            ${k.rationale ? `<div class="text-sm text-slate-300"><span class="text-slate-400">Обоснование:</span> ${escapeHtml(k.rationale)}</div>` : ''}
+            ${kpi ? `<div class="text-sm mt-1"><span class="text-slate-400">Эффект на KPI:</span> ${kpi}</div>` : ''}
+          </div>`;
+        }).join('')}
       </div>
     </div>` : '';
 
@@ -3866,6 +4253,13 @@ window.addEventListener('DOMContentLoaded', () => {
   checkYMConnection();
   loadTgSettings();
   loadEventsLog();
+  // ⚙️ AI settings: подгружаем сохранённые из localStorage и подписываемся на
+  // изменения, чтобы summary в шапке панели всегда отражал текущие значения.
+  try {
+    aiSettingsLoad();
+    document.getElementById('aiSettingsPanel')?.addEventListener('change', aiSettingsRefreshSummary);
+    document.getElementById('aiSettingsPanel')?.addEventListener('input',  aiSettingsRefreshSummary);
+  } catch (e) { console.debug('aiSettings init skipped:', e); }
   startAutoRefresh();
   autoLoadSavedStats();
 });
