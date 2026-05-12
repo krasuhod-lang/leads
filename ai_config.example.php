@@ -21,8 +21,12 @@ define('AI_API_KEY', 'sk-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX');
 // Эндпоинт провайдера. Менять обычно не нужно.
 define('AI_API_URL', 'https://api.deepseek.com/chat/completions');
 
-// Основная модель (быстрая, поддерживает JSON-mode).
-define('AI_MODEL', 'deepseek-chat');
+// Основная модель — `deepseek-v4-flash` (последнее поколение DeepSeek V4,
+// быстрая, поддерживает response_format=json_object и temperature).
+// Старые алиасы `deepseek-chat` / `deepseek-reasoner` ещё работают как
+// прокси на V4, но будут удалены 24 июля 2026 — закладываемся на новые имена.
+define('AI_MODEL', 'deepseek-v4-flash');
 
-// Резервная модель — используется только если основная вернула ошибку.
-define('AI_FALLBACK_MODEL', 'deepseek-reasoner');
+// Резервная модель — флагман `deepseek-v4-pro` (1.6T параметров, режим
+// «thinking»). Используется только если основная вернула ошибку.
+define('AI_FALLBACK_MODEL', 'deepseek-v4-pro');
