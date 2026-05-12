@@ -111,14 +111,20 @@ if (!defined('AI_API_URL')) {
     define('AI_API_URL', getenv('AI_API_URL') ?: 'https://api.deepseek.com/chat/completions');
 }
 if (!defined('AI_MODEL')) {
-    // По умолчанию — `deepseek-chat`: поддерживает response_format=json_object,
-    // быстрый, отвечает в пределах 30-60 сек. `deepseek-reasoner` НЕ поддерживает
-    // ни JSON-mode, ни temperature → отдаём его только как fallback.
-    define('AI_MODEL', getenv('AI_MODEL') ?: 'deepseek-chat');
+    // По умолчанию — `deepseek-v4-flash`: последнее поколение DeepSeek V4,
+    // быстрая (отвечает в пределах 30-60 сек), поддерживает
+    // response_format=json_object и temperature. Заменила legacy
+    // `deepseek-chat` (тот ещё работает как алиас, но будет удалён
+    // 24 июля 2026). `deepseek-v4-pro` — флагман с режимом «thinking»,
+    // отдаём его только как fallback (он медленнее).
+    define('AI_MODEL', getenv('AI_MODEL') ?: 'deepseek-v4-flash');
 }
 if (!defined('AI_FALLBACK_MODEL')) {
-    // Резерв — reasoner той же линейки (без JSON-mode и без temperature).
-    define('AI_FALLBACK_MODEL', getenv('AI_FALLBACK_MODEL') ?: 'deepseek-reasoner');
+    // Резерв — флагман `deepseek-v4-pro` (1.6T параметров, расширенное
+    // рассуждение). Поддерживает JSON-mode/temperature, но из-за thinking
+    // mode тратит больше токенов и времени → выше max_tokens/timeout
+    // (см. aiCallProvider).
+    define('AI_FALLBACK_MODEL', getenv('AI_FALLBACK_MODEL') ?: 'deepseek-v4-pro');
 }
 // Версия промпта/схемы. Меняется ВРУЧНУЮ при изменении aiBuildSignature() /
 // aiBuildSystemPrompt(). Включается в hash payload и сохраняется в
@@ -994,7 +1000,7 @@ function aiBuildSignature() {
         ],
         // Схема выходного JSON. Используем её одновременно как часть промта и для валидации.
         // ВАЖНО: reasoning_log намеренно вынесен в КОНЕЦ схемы. Если модель упрётся в
-        // max_tokens (deepseek-chat: 8192), обязательные поля (summary,
+        // max_tokens (deepseek-v4-flash: ~8192), обязательные поля (summary,
         // reject_monetization_strategy, risks) уже будут сериализованы ДО обрыва.
         'output_schema' => [
             'reasoning' => 'string — краткое резюме CoT для аналитика (опционально).',
@@ -1651,11 +1657,11 @@ function aiCallProviderStructured($sysPrompt, $userPrompt, $sig, $payload = null
         return aiBackfillOutput($pp['data']);
     };
 
-    // Шаг 1 — основной запрос на быстрой модели (deepseek-chat).
+    // Шаг 1 — основной запрос на быстрой модели (deepseek-v4-flash).
     $resp = aiCallProvider($sysPrompt, $userPrompt, AI_MODEL);
     $accMeta($meta, $resp, 'primary');
     if (isset($resp['error'])) {
-        // Один fallback на reasoner (он медленный, но иногда переживает 5xx).
+        // Один fallback на флагман V4-pro (он медленнее, но иногда переживает 5xx).
         aiLog('structured_fallback', ['primary_error' => $resp['error']]);
         $resp = aiCallProvider($sysPrompt, $userPrompt, AI_FALLBACK_MODEL);
         $accMeta($meta, $resp, 'fallback');
@@ -1676,9 +1682,9 @@ function aiCallProviderStructured($sysPrompt, $userPrompt, $sig, $payload = null
     ]);
 
     // Шаг 2 (Refine) — один retry с явной коррекцией.
-    // ВАЖНО: refine всегда идёт по быстрой модели (deepseek-chat), даже
-    // если основной ответ пришёл от reasoner. Иначе суммарное время
-    // запроса (chat ~60c + reasoner ~150c) легко уходит за proxy_read_timeout
+    // ВАЖНО: refine всегда идёт по быстрой модели (deepseek-v4-flash), даже
+    // если основной ответ пришёл от V4-pro. Иначе суммарное время
+    // запроса (flash ~60c + v4-pro ~150c) легко уходит за proxy_read_timeout
     // вышестоящего nginx/Cloudflare и клиент получает HTML 504 вместо JSON.
     $refineUser = $userPrompt . "\n\nПредыдущий ответ был невалиден: {$err}. Верни ИСПРАВЛЕННЫЙ JSON строго по схеме, без markdown.";
     $resp2 = aiCallProvider($sysPrompt, $refineUser, AI_MODEL);
@@ -1775,10 +1781,17 @@ function aiNoHalluRefineIfNeeded($obj, $sysPrompt, $userPrompt, $sig, $payload, 
 }
 
 function aiCallProvider($sysPrompt, $userPrompt, $model) {
-    // deepseek-reasoner НЕ поддерживает temperature, top_p, presence_penalty,
-    // frequency_penalty, response_format и tool/function calling.
-    // Передача любого из этих полей даёт HTTP 400 → "AI service unavailable".
-    $isReasoner = (stripos((string)$model, 'reasoner') !== false);
+    // Legacy `deepseek-reasoner` НЕ поддерживает temperature, top_p,
+    // presence_penalty, frequency_penalty, response_format и tool/function
+    // calling. Передача любого из этих полей даёт HTTP 400 →
+    // "AI service unavailable". Новый `deepseek-v4-pro` (флагман V4) ЭТИ
+    // поля поддерживает — гейтим JSON-mode/temperature только для legacy.
+    $isLegacyReasoner = (stripos((string)$model, 'reasoner') !== false);
+    // «Thinking» модели (legacy reasoner + V4-pro) кладут chain-of-thought
+    // в reasoning_content, который тратит max_tokens и заметно увеличивает
+    // время ответа → им нужен повышенный бюджет токенов и таймаут.
+    $isThinkingModel  = $isLegacyReasoner
+        || (stripos((string)$model, 'v4-pro') !== false);
 
     // ВАЖНО: ходим в провайдера ВСЕГДА в режиме SSE (stream=true).
     // Без стриминга deepseek шлёт тело ответа одним куском только после
@@ -1794,23 +1807,25 @@ function aiCallProvider($sysPrompt, $userPrompt, $model) {
             ['role' => 'system', 'content' => $sysPrompt],
             ['role' => 'user',   'content' => $userPrompt],
         ],
-        // Для reasoner поднимаем лимит: модель кладёт chain-of-thought в
-        // отдельное поле reasoning_content, но этот текст ТОЖЕ учитывается
-        // в max_tokens. На 3000 итоговый JSON часто обрывается → JSON-парс
-        // падает → fallback тоже валится. С добавлением 4 структурированных
-        // блоков (conversion_paths, offers_market_analysis, cross_sell, epc_drops)
-        // объём ответа вырос; на 5000 deepseek-chat стабильно ловил
-        // finish_reason=length и отдавал обрезанный JSON → "Output is not a
-        // JSON object". Поднято до 8000 (deepseek-chat capы 8192) и до 12000
-        // для reasoner с учётом скрытого reasoning_content.
-        'max_tokens' => $isReasoner ? 12000 : 8000,
+        // Для thinking-моделей (legacy reasoner + V4-pro) поднимаем лимит:
+        // модель кладёт chain-of-thought в отдельное поле reasoning_content,
+        // но этот текст ТОЖЕ учитывается в max_tokens. На 3000 итоговый JSON
+        // часто обрывается → JSON-парс падает → fallback тоже валится. С
+        // добавлением 4 структурированных блоков (conversion_paths,
+        // offers_market_analysis, cross_sell, epc_drops) объём ответа вырос;
+        // на 5000 deepseek-chat стабильно ловил finish_reason=length и отдавал
+        // обрезанный JSON → "Output is not a JSON object". Поднято до 8000
+        // (deepseek-v4-flash cap ~8192) и до 12000 для thinking-моделей с
+        // учётом скрытого reasoning_content.
+        'max_tokens' => $isThinkingModel ? 12000 : 8000,
         'stream' => true,
         // Просим usage в финальном чанке — нужен для логов.
         'stream_options' => ['include_usage' => true],
     ];
-    if (!$isReasoner) {
+    if (!$isLegacyReasoner) {
         $body['temperature'] = 0.2;
         // У провайдера есть JSON-mode — попросим, если поддерживается моделью.
+        // V4-flash и V4-pro поддерживают; legacy reasoner — нет.
         $body['response_format'] = ['type' => 'json_object'];
     }
 
@@ -1866,8 +1881,9 @@ function aiCallProvider($sysPrompt, $userPrompt, $model) {
                 $contentBuf .= $delta['content'];
                 $sawAnyDelta = true;
             }
-            // reasoning_content (chain-of-thought reasoner-а) НЕ кладём
-            // в итоговый ответ — это служебный текст.
+            // reasoning_content (chain-of-thought thinking-моделей: legacy
+            // reasoner / V4-pro) НЕ кладём в итоговый ответ — это служебный
+            // текст.
             if (isset($choice['finish_reason']) && $choice['finish_reason'] !== null) {
                 $finishReason = $choice['finish_reason'];
             }
@@ -1876,10 +1892,11 @@ function aiCallProvider($sysPrompt, $userPrompt, $model) {
     };
 
     // Общий тайм-аут — страховка на самый худший случай. С учётом стриминга
-    // нормальный ответ deepseek-chat укладывается в 30-60с; reasoner — до
-    // ~2-3 минут. Реальный обрыв «висящего» соединения детектится через
-    // CURLOPT_LOW_SPEED_TIME (нет байт N секунд → curl сам разорвёт).
-    $totalTimeout = $isReasoner ? 240 : 180;
+    // нормальный ответ deepseek-v4-flash укладывается в 30-60с; thinking-
+    // модели (V4-pro / legacy reasoner) — до ~2-3 минут. Реальный обрыв
+    // «висящего» соединения детектится через CURLOPT_LOW_SPEED_TIME (нет
+    // байт N секунд → curl сам разорвёт).
+    $totalTimeout = $isThinkingModel ? 240 : 180;
     $stallSeconds = 60;
 
     $ch = curl_init();
@@ -1908,7 +1925,8 @@ function aiCallProvider($sysPrompt, $userPrompt, $model) {
     ]);
     aiLog('provider_request', [
         'model'           => $model,
-        'is_reasoner'     => $isReasoner,
+        'is_reasoner'     => $isLegacyReasoner,
+        'is_thinking'     => $isThinkingModel,
         'sys_prompt_len'  => strlen((string)$sysPrompt),
         'user_prompt_len' => strlen((string)$userPrompt),
         'max_tokens'      => $body['max_tokens'],
@@ -3441,7 +3459,7 @@ if ($action === 'ai_analyze') {
     // Поднимаем PHP-лимиты: AI-запрос может занять несколько минут,
     // дефолтные max_execution_time/memory_limit на shared-хостинге часто
     // ниже реальной длительности и приводят к фаталу → пустой/HTML ответ.
-    // Со стримингом chat ≤180с, fallback reasoner ≤240с, refine chat ≤180с —
+    // Со стримингом v4-flash ≤180с, fallback v4-pro ≤240с, refine v4-flash ≤180с —
     // в худшем случае суммарно до ~10 минут, поэтому даём 720с с запасом.
     @set_time_limit(720);
     @ini_set('memory_limit', '256M');
