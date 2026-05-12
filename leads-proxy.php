@@ -125,7 +125,25 @@ if (!defined('AI_FALLBACK_MODEL')) {
 // `ai_analysis_cache.prompt_version` — позволяет различать кэш разных
 // версий схемы и при необходимости инвалидировать его.
 if (!defined('AI_PROMPT_VERSION')) {
-    define('AI_PROMPT_VERSION', '2026-05-05.v2-baseline-anomalies-noHallu');
+    // 2026-05-12.v3 — структурированные recommendations (target/action_type/
+    // объектный expected_impact/implementation_steps/revoke_if/evidence), блок
+    // [CONTROL CONTEXT] (профиль/пороги/фильтры/KPI), allowed_entities в payload,
+    // расширенная пост-валидация anomalies_detected, telemetry counters.
+    define('AI_PROMPT_VERSION', '2026-05-12.v3-controllable-actionable');
+}
+
+// Закрытый список значений action_type. Используется и в схеме промпта, и в
+// фильтре общих фраз: рекомендация без action_type считается «общей» и помечается
+// как low-quality в UI. Список заведомо узкий — добавление нового типа требует
+// смены AI_PROMPT_VERSION (иначе старый кэш не инвалидируется).
+if (!defined('AI_ACTION_TYPES_JSON')) {
+    define('AI_ACTION_TYPES_JSON', json_encode([
+        'scale_traffic', 'reduce_traffic', 'replace_offer', 'pause_offer',
+        'add_to_showcase', 'remove_from_showcase', 'change_placement',
+        'change_sms_copy', 'launch_sms_campaign', 'reroute_to_offline',
+        'reroute_to_app', 'block_sub1', 'investigate_sub1',
+        'negotiate_payout', 'request_creative_refresh', 'monitor',
+    ]));
 }
 
 // ---- Файловый лог AI-пайплайна. ----
@@ -534,6 +552,15 @@ try {
         'prompt_tokens'     => 'INTEGER',
         'completion_tokens' => 'INTEGER',
         'total_tokens'      => 'INTEGER',
+        // Quality counters (точность/качество ответа).
+        'refine_rounds'             => 'INTEGER',
+        'hallu_offer_count'         => 'INTEGER',
+        'numeric_check_failures'    => 'INTEGER',
+        'empty_evidence_count'      => 'INTEGER',
+        'low_quality_recs'          => 'INTEGER',
+        'duplicate_recs_dropped'    => 'INTEGER',
+        'filter_drops'              => 'INTEGER',
+        'anomaly_coverage_missed'   => 'INTEGER',
     ] as $colName => $colType) {
         if (!in_array($colName, $aiCacheCols, true)) {
             @$db->exec("ALTER TABLE ai_analysis_cache ADD COLUMN {$colName} {$colType}");
@@ -972,23 +999,27 @@ function aiBuildSignature() {
         'output_schema' => [
             'reasoning' => 'string — краткое резюме CoT для аналитика (опционально).',
             'summary' => 'string — деловое резюме периода (2-4 предложения), без воды.',
-            'recommendations' => 'array<{title:string, action:string, expected_impact:string, priority:"high"|"medium"|"low", evidence:string}> — 3-7 конкретных рекомендаций, каждая с действием и ожидаемым эффектом, привязкой к цифрам в evidence',
+            // ВАЖНО: каждая рекомендация ДОЛЖНА быть «адресной» и «измеримой».
+            // Пустые/общие формулировки (без target и без числового expected_impact.delta_pct)
+            // в UI помечаются как low-quality и сворачиваются — поэтому модели нет смысла их
+            // выдавать.
+            'recommendations' => 'array<{title:string, target:{type:"offer"|"platform"|"sub1"|"channel"|"global", name:string}, action_type:string (one of allowed_action_types), action:string, implementation_steps:array<string> (2-5 шагов «что нажать / кому позвонить»), expected_impact:{metric:"epc"|"revenue"|"cr"|"ar"|"approved"|"clicks", current:number, target:number, delta_abs:number, delta_pct:number, horizon_days:7|30, confidence:"low"|"medium"|"high"}, evidence:{source:"daily_recent"|"weekly_trend"|"monthly_trend"|"market_compare"|"sub1_anomalies"|"offers_top"|"offers_underperforming"|"offers_daily_epc"|"top_platforms"|"traffic_sources_breakdown"|"forecast_baseline"|"anomalies_detected"|"epc_drops_signals"|"reject_funnel"|"kpi", fields:array<string>, values:object, note:string}, time_window:{from:string, to:string}, data_points_used:number, revoke_if:string (короткое условие отмены, ≤140 chars), priority:"high"|"medium"|"low"}> — 3-7 конкретных рекомендаций. ОГРАНИЧЕНИЯ: target.name (если type≠"global"|"channel") ОБЯЗАН быть из allowed_entities соответствующего типа; action_type ОБЯЗАН быть из allowed_action_types; expected_impact.delta_pct — обязательно ненулевое число; evidence.fields должны существовать в evidence.source-блоке payload.',
             'forecast' => '{period_7d:{revenue:number, clicks:number, epc:number, approve_rate:number, confidence:"low"|"medium"|"high", basis:string}, period_30d:{revenue:number, clicks:number, epc:number, approve_rate:number, confidence:"low"|"medium"|"high", basis:string}}',
             'platforms_breakdown' => 'array<{name:string, revenue_share_pct:number, status:"grow"|"stable"|"watch"|"risk", insight:string, action:string}> — разбор только по площадкам из top_platforms (до 10), с долей в выручке',
-            'key_decisions' => 'array<{decision:string, rationale:string, kpi_impact:string}> — 2-5 ключевых управленческих решений, направленных на рост выручки',
+            'key_decisions' => 'array<{decision:string, target:{type:"offer"|"platform"|"sub1"|"channel"|"global", name:string}, action_type:string (one of allowed_action_types), rationale:string, kpi_impact:{metric:string, delta_pct:number, horizon_days:7|30}}> — 2-5 ключевых управленческих решений, направленных на рост выручки. Те же ограничения по target/action_type, что и в recommendations.',
             'risks' => 'array<string> — риски и аномалии, требующие внимания (фрод, концентрация, просадки)',
             // Структурированные блоки.
             'conversion_paths' => '{funnel:{clicks:number, conversions:number, approved:number, revenue:number, cr_pct:number, approve_rate_pct:number, epc:number}, weak_points:array<{stage:"click_to_conversion"|"conversion_to_approve"|"approve_to_revenue", where:string, metric:string, value:number, benchmark:number, severity:"high"|"medium"|"low", root_cause:string, fix:string, expected_uplift:string}>, summary:string} — пути конверсии и слабые точки воронки. weak_points — 2-6 шт.',
             'offers_market_analysis' => '{offers:array<{name:string, your_epc:number, market_epc:number, delta_pct:number, verdict:"scale"|"hold"|"replace"|"test", recommendation:string, forecast_epc:number, forecast_revenue_uplift:string, confidence:"low"|"medium"|"high", evidence:string}>, watchlist:array<{name:string, reason:string}>, summary:string} — поофферный анализ vs рыночный EPC, прогноз и список офферов, на которые стоит обратить внимание для увеличения доходности трафика. offers — 5-12 шт.',
             'cross_sell' => '{audience:string, products:array<{product:string, why:string, fit_score:"low"|"medium"|"high", suggested_offer_types:array<string>, expected_epc_range:string, kpi_impact:string}>, summary:string} — закономерности и идеи кросс-сейла другим продуктам займовой аудитории (страхование, карты, рефинанс, БКИ, мед.услуги, телеком и т.п.). 3-6 продуктов.',
-            'epc_drops' => '{detected:boolean, drops:array<{date:string, prev_date:string, prev_epc:number, curr_epc:number, drop_pct:number, affected_offers:array<string>, affected_platforms:array<string>, evidence_based_reasons:array<string>, recommended_replacement:{offer:string, basis:string, expected_epc:number, historical_period:string}, confidence:"low"|"medium"|"high"}>, summary:string} — диагностика резких просадок EPC ото дня ко дню. Если просадок >=20% не обнаружено — detected=false, drops=[]. Иначе для каждой просадки даётся аргументированное обоснование (на основании daily_recent / weekly_trend / sub1_anomalies / market_compare) и рекомендуется оффер для замены, опираясь на ретроданные прошлых периодов.',
+            'epc_drops' => '{detected:boolean, drops:array<{date:string, prev_date:string, prev_epc:number, curr_epc:number, drop_pct:number, affected_offers:array<string>, affected_platforms:array<string>, evidence_based_reasons:array<string>, recommended_replacement:{offer:string, basis:string, expected_epc:number, historical_period:string}, confidence:"low"|"medium"|"high"}>, summary:string} — диагностика резких просадок EPC ото дня ко дню. Если просадок >=control.thresholds.epc_drop_pct% не обнаружено — detected=false, drops=[]. Иначе для каждой просадки даётся аргументированное обоснование (на основании daily_recent / weekly_trend / sub1_anomalies / market_compare) и рекомендуется оффер для замены, опираясь на ретроданные прошлых периодов.',
             // НОВЫЕ блоки для модернизации под отказной трафик МФО.
-            'reject_monetization_strategy' => '{showcase_optimization:array<{offer_name:string, action:"add"|"promote"|"remove", reasoning:string}>, sms_campaigns:array<{offer_name:string, trigger_message_idea:string, expected_epc_uplift:number}>, offline_routing:array<{offer_name:string, reasoning:string}>, mobile_app_retention:array<{offer_name:string, placement_strategy:string}>, summary:string} — стратегия домонетизации отказного трафика по 4 каналам. По 2-5 офферов в каждом подмассиве. Все offer_name ОБЯЗАНЫ быть из offers_top / traffic_sources_breakdown.*.top_offers. Подбор: showcase = высокий CR + высокий Approve + средний/низкий EPC (горячий трафик после отказа); sms = высокий EPC + высокий CR + триггер 0%/одобрение всем; offline = высокая выплата за лид + низкий CR (сложные офферы для дожима оператором); mobile_app = долгосрочные/LTV-офферы (карты, рассрочка, длинные займы).',
-            'growth_points' => 'array<{dimension:string, current_metric:string, target_metric:string, action_plan:string}> — 3-6 точек роста с числовыми текущими и целевыми метриками. dimension — например «Увеличение CR в SMS», «Рост EPC на витрине ЛК», «Снижение CPL в оффлайне».',
+            'reject_monetization_strategy' => '{showcase_optimization:array<{offer_name:string, action:"add"|"promote"|"remove", reasoning:string}>, sms_campaigns:array<{offer_name:string, trigger_message_idea:string, expected_epc_uplift:number}>, offline_routing:array<{offer_name:string, reasoning:string}>, mobile_app_retention:array<{offer_name:string, placement_strategy:string}>, summary:string} — стратегия домонетизации отказного трафика по 4 каналам. По 2-5 офферов в каждом подмассиве. Все offer_name ОБЯЗАНЫ быть из allowed_entities.offers. Подбор: showcase = AR > control.thresholds.ar_floor% И CR > control.thresholds.cr_floor% (горячий трафик после отказа); sms = высокий EPC + высокий CR + триггер 0%/одобрение всем; offline = высокая выплата за лид + низкий CR (сложные офферы для дожима оператором); mobile_app = долгосрочные/LTV-офферы (карты, рассрочка, длинные займы).',
+            'growth_points' => 'array<{dimension:string, target:{type:"offer"|"platform"|"sub1"|"channel"|"global", name:string}, action_type:string (one of allowed_action_types), current_metric:string, target_metric:string, expected_impact:{metric:"epc"|"revenue"|"cr"|"ar"|"approved"|"clicks", current:number, target:number, delta_abs:number, delta_pct:number, horizon_days:7|30, confidence:"low"|"medium"|"high"}, action_plan:string}> — 3-6 точек роста с числовыми текущими и целевыми метриками. dimension — например «Увеличение CR в SMS», «Рост EPC на витрине ЛК», «Снижение CPL в оффлайне».',
             'underperforming_segments' => 'array<{segment:"showcase"|"sms"|"offline"|"app"|"web", issue:string, solution:string}> — 2-5 проседающих сегментов отказного трафика. issue должен содержать конкретные числа из traffic_sources_breakdown.',
             // reasoning_log вынесен в самый конец схемы (см. комментарий выше).
             // Описание укорочено: одна короткая строка на фазу, без раздувания.
-            'reasoning_log' => 'array<string> — РОВНО 4 коротких пункта (≤200 символов каждый), английский: "PHASE 1 DATA SANITY: ...", "PHASE 2 FRAUD DETECTION: ...", "PHASE 3 MARKET & DROPS: ...", "PHASE 4 ROUTING: ...". По одной ключевой цифре на пункт, без длинных рассуждений.',
+            'reasoning_log' => 'array<string> — РОВНО 5 коротких пунктов (≤200 символов каждый), английский: "PHASE 1 DATA SANITY: ...", "PHASE 2 FRAUD DETECTION: ...", "PHASE 3 MARKET & DROPS: ...", "PHASE 4 ROUTING: ...", "PHASE 5 SELF-CHECK: ...". По одной ключевой цифре на пункт, без длинных рассуждений. PHASE 5 — самопроверка: для каждой recommendation подтвердить, что target.name есть в allowed_entities и evidence.values сходятся с payload.',
         ],
     ];
 }
@@ -1000,18 +1031,44 @@ function aiBuildSystemPrompt($sig) {
     // key_decisions, recommendations, growth_points, underperforming_segments),
     // но добавляем reasoning_log и формализуем CoT-фазы.
     $schemaJson = json_encode($sig['output_schema'], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
+    $actionTypes = AI_ACTION_TYPES_JSON;
     return <<<PROMPT
 [ROLE & CONTEXT]
 You are a Senior Affiliate Marketing Analyst and Data Scientist specializing in Payday Loans (MFO) and Reject Traffic monetization.
 Your objective is to analyze the provided JSON payload containing daily performance metrics, detect anomalies, and strategically route underperforming or rejected traffic to the most profitable monetization channels.
 
+[CONTROL CONTEXT — READ FIRST, OBEY STRICTLY]
+The input payload contains a `control` object that defines HOW you must analyze and recommend. Treat it as the operator's directive. Specifically:
+- control.profile ∈ {conservative, balanced, aggressive_growth, antifraud_focus, roi_only} — adjusts your bias:
+  • conservative      → prefer verdict=hold over replace; min_confidence=high for any "replace"/"pause_offer"; growth_points cap = 3.
+  • balanced          → defaults; growth_points cap = 5.
+  • aggressive_growth → bias toward verdict=scale and action_type∈{scale_traffic, add_to_showcase, launch_sms_campaign}; allow medium confidence for big bets.
+  • antifraud_focus   → put fraud_suspect anomalies first in risks; recommend block_sub1 / investigate_sub1 with high priority; cap recommendations at 5, all targeting sub1/platform.
+  • roi_only          → only recommend changes whose expected_impact.delta_pct ≥ 5 AND expected_impact.metric ∈ {revenue, epc}; drop everything else.
+- control.thresholds.{min_clicks, epc_drop_pct, ar_floor, cr_floor, fraud_clicks_threshold} — OVERRIDE the defaults below. Use THESE values everywhere instead of the constants in [REJECT TRAFFIC ROUTING LOGIC] and [ANALYSIS PHASES].
+- control.filters.{include_platforms, exclude_platforms, include_sub1, exclude_sub1, include_offers, exclude_offers} — analysis scope filters. NEVER produce a recommendation, key_decision, growth_point, watchlist entry, epc_drops entry, platforms_breakdown row or reject_monetization_strategy entry whose target/name is in the corresponding exclude_* list. If include_* is non-empty, restrict to those values only. Always honor the filters even if a stronger signal exists outside.
+- control.kpi_targets — operator's targets for the period: {epc_target, revenue_target, sms_capacity_per_day, offline_capacity_per_day, monthly_budget_rub}. Cap your recommendations to feasible levels: SMS recommendations may not propose volume > sms_capacity_per_day; offline may not exceed offline_capacity_per_day; expected_impact.target on revenue/epc should reference distance to *_target.
+- control.detail_level ∈ {short, detailed} — short → recommendations=3, growth_points=3, evidence.note ≤ 80 chars; detailed → recommendations=5-7, growth_points=5-6, evidence.note ≤ 200 chars.
+- control.previous_feedback — array of {recommendation_title, target, action_type, verdict:"accepted"|"rejected"|"irrelevant", reason:string} from prior runs. DEMOTE (priority=low) or DROP entirely any recommendation whose (target.name + action_type) was rejected/irrelevant in the last feedback. Avoid repeating the exact title text of rejected items.
+
+If the `control` object is missing — apply defaults (profile=balanced, detail_level=detailed, no filters, thresholds = those listed in [REJECT TRAFFIC ROUTING LOGIC]).
+
+[ALLOWED ENTITIES — STRICT WHITELIST]
+The payload contains an `allowed_entities` object: {offers:[...], platforms:[...], sub1:[...]}. Every offer name, platform name and sub1 value you mention in any output field MUST appear (case-insensitive trim) in the corresponding list. If a list is empty, you MUST NOT mention that entity type at all. This whitelist is computed deterministically from the payload — there is no "smarter" alternative.
+
+[ALLOWED ACTION TYPES]
+Every recommendations[].action_type, key_decisions[].action_type and growth_points[].action_type MUST be one of:
+{$actionTypes}
+Do not invent new action_type values. If no listed type fits — use "monitor".
+
 [CRITICAL CONSTRAINTS - STRICT COMPLIANCE REQUIRED]
-1. NO HALLUCINATIONS: You MUST ONLY recommend offer names, platform names and sub1 values that exactly match strings present in the input JSON (offers_top[].name, traffic_sources_breakdown.*.top_offers[].name, market_compare[].name, offers_daily_epc[].name, top_platforms[].name, sub1_anomalies[].name). Do NOT invent, guess, translate or paraphrase offer names. If a channel has no eligible offers in the payload — return an empty array for that channel and explain why in reject_monetization_strategy.summary.
-2. DATA-DRIVEN ONLY: Every recommendation MUST be backed by numbers from the payload. Always cite the exact metric value (e.g. "AR=18.4%, CR=12.1%, EPC=2.7₽").
+1. NO HALLUCINATIONS: You MUST ONLY recommend offer names, platform names and sub1 values that exactly match strings present in allowed_entities (see above). Do NOT invent, guess, translate or paraphrase offer names. If a channel has no eligible offers in allowed_entities — return an empty array for that channel and explain why in reject_monetization_strategy.summary.
+2. DATA-DRIVEN ONLY: Every recommendation MUST be backed by numbers from the payload. Always cite the exact metric value in evidence.values (e.g. {"AR":18.4, "CR":12.1, "EPC":2.7}) AND name the source block in evidence.source AND list which fields you used in evidence.fields. evidence.fields MUST be real field names that exist in the named source block of the payload.
 3. SILENT OPERATION: Do not introduce yourself, do not apologize, do not mention you are an AI, do not mention the model or provider.
 4. JSON FORMAT: Your entire response MUST be a single, valid, parseable JSON object matching the OUTPUT SCHEMA below. No markdown, no code fences, no commentary outside JSON.
-5. LANGUAGE: User-facing text fields (summary, reasoning, recommendations.*, platforms_breakdown.*, conversion_paths.*, offers_market_analysis.*, cross_sell.*, epc_drops.*, reject_monetization_strategy.*, growth_points.*, underperforming_segments.*, risks) — Russian, professional, no fluff. The reasoning_log array — English, technical, with numbers.
-6. NUMERIC TYPES: All numeric fields (revenue, clicks, epc, *_pct, expected_epc_uplift, forecast_epc, etc.) — JSON numbers, never strings. Currency = ₽. Percentages = numbers like 27.4 (meaning 27.4%).
+5. LANGUAGE: User-facing text fields (summary, reasoning, recommendations.title/action/implementation_steps/revoke_if/evidence.note, platforms_breakdown.*, conversion_paths.*, offers_market_analysis.*, cross_sell.*, epc_drops.*, reject_monetization_strategy.*, growth_points.*, underperforming_segments.*, risks) — Russian, professional, no fluff. The reasoning_log array AND all enum values (action_type, target.type, evidence.source, expected_impact.metric, etc.) — English/snake_case. Numbers — JSON numbers, never strings. Currency = ₽. Percentages = numbers like 27.4 (meaning 27.4%).
+6. ADDRESSABILITY: Every recommendation, key_decision and growth_point MUST have a non-empty `target` and a non-empty `action_type`. If you cannot identify a concrete target — DO NOT emit the item; better fewer items than vague ones. expected_impact.delta_pct MUST be a non-zero number (positive for improvements, negative for cuts).
+7. EVIDENCE INTEGRITY: For each recommendation, set time_window to the actual date range you used (subset of period.from..period.to) and data_points_used to the number of daily records that informed the call (e.g. 7 for last week). If data_points_used < control.thresholds.min_clicks_window (default 7) — set expected_impact.confidence="low".
 
 [MATHEMATICS & DEFINITIONS — TREAT AS AXIOMS]
 - EPC (Earnings Per Click) = Revenue / Clicks
@@ -1022,10 +1079,10 @@ Your objective is to analyze the provided JSON payload containing daily performa
 - EPC variance for an offer = stdev(offers_daily_epc[i].series[].epc) / mean(...)
 
 [REJECT TRAFFIC ROUTING LOGIC — APPLY STRICTLY]
-Classify and route candidate offers from the payload into FOUR reject monetization channels using these strict criteria. Use offers_top, traffic_sources_breakdown.*.top_offers and offers_daily_epc as the candidate pool.
+Classify and route candidate offers from the payload into FOUR reject monetization channels using these strict criteria. Use offers_top, traffic_sources_breakdown.*.top_offers and offers_daily_epc as the candidate pool. THRESHOLDS BELOW are DEFAULTS — if control.thresholds overrides them, use the overrides.
 
 1. SHOWCASE (Витрина в ЛК МФО — Hot Online Rejects)
-   • Hard condition: AR > 15% AND CR > 10%.
+   • Hard condition: AR > control.thresholds.ar_floor (default 15%) AND CR > control.thresholds.cr_floor (default 10%).
    • Goal: Maximize probability of instant approval for users who just got rejected on the primary offer.
    • Signals from payload: high approve_rate_pct, high cr_pct, approval_difficulty="easy" or is_zero_percent=true.
    • action: "add" (new on showcase), "promote" (raise in ranking), "remove" (kick out an underperformer that was already there).
@@ -1035,12 +1092,12 @@ Classify and route candidate offers from the payload into FOUR reject monetizati
    • Goal: Maximize clickbait conversion on a cooled-down base. CPA matters less than high-volume CR.
    • Signals: high cr_pct, high epc, is_zero_percent=true or approval_difficulty="easy".
    • trigger_message_idea: short SMS copy (≤140 chars) with a concrete trigger ("0%", "одобрение всем", "до 30 000₽ за 5 мин").
-   • expected_epc_uplift: numeric expected % uplift of the SMS-channel EPC.
+   • expected_epc_uplift: numeric expected % uplift of the SMS-channel EPC. RESPECT control.kpi_targets.sms_capacity_per_day.
 
 3. OFFLINE CALL-CENTER (Hard Rejects)
    • Hard condition: Highest CPA among candidates. Low overall CR is acceptable if CPA is massive — that's what funds the operator.
    • Goal: Cover the expensive cost of human brokers/operators with high margin per closed sale.
-   • Signals: is_installment=true, approval_difficulty="hard", low cr_pct + high revenue/conversions.
+   • Signals: is_installment=true, approval_difficulty="hard", low cr_pct + high revenue/conversions. RESPECT control.kpi_targets.offline_capacity_per_day.
 
 4. MOBILE APP (Retention Rejects)
    • Hard condition: Stable EPC across the offers_daily_epc[].series array (low variance).
@@ -1051,20 +1108,21 @@ Classify and route candidate offers from the payload into FOUR reject monetizati
 [ANALYSIS PHASES - CHAIN OF THOUGHT]
 Mentally execute these phases BEFORE you start writing JSON. Then write the JSON in schema order, putting the reasoning_log array LAST (it is the final key of the JSON object). Keep each reasoning_log entry to ≤200 chars (one sentence with ONE key number). Phases:
 - PHASE 1 — DATA SANITY: Check for logical impossibilities (e.g. conversions > clicks, approved > conversions, negative revenue). Note any payload defects.
-- PHASE 2 — FRAUD DETECTION: Scan sub1_anomalies for clicks > 300 with AR < 2% or CR < 1%. Flag suspicious sub1 values with their numbers.
+- PHASE 2 — FRAUD DETECTION: Scan sub1_anomalies for clicks > control.thresholds.fraud_clicks_threshold (default 300) with AR < 2% or CR < 1%. Flag suspicious sub1 values with their numbers.
 - PHASE 3 — MARKET & DROPS: Walk market_compare and epc_drops_signals. Compute lost-revenue potential = sum(clicks * |delta|) for negative deltas.
 - PHASE 4 — ROUTING: Apply [REJECT TRAFFIC ROUTING LOGIC] to top offers. For each routed offer name explicitly cite AR/CR/CPA/EPC values from the payload and which channel it goes to and why.
+- PHASE 5 — SELF-CHECK: Walk YOUR OWN recommendations[]. For each, verify: (a) target.name ∈ allowed_entities, (b) action_type ∈ allowed_action_types, (c) evidence.values match payload numbers within ±1%, (d) target NOT in control.filters.exclude_*, (e) expected_impact.delta_pct ≠ 0. If anything fails — DROP the item BEFORE emitting JSON.
 
 [ADDITIONAL BLOCK GUIDANCE — keep all of these populated]
 A. conversion_paths — full funnel (clicks → conversions → approved → revenue) from kpi + 2-6 weak_points (stage / where / metric / value / benchmark / severity / root_cause / fix / expected_uplift).
 B. offers_market_analysis — for each offer in market_compare set verdict (scale/hold/replace/test) using Market Delta, give recommendation, forecast_epc, forecast_revenue_uplift; build watchlist of high-volume offers with positive delta.
 C. cross_sell — pick audience (PDL / installment / microloans) and propose 3-6 adjacent products (insurance, debit/credit cards, refinance, BKI, legal debt help, telecom). Tie each to a pattern visible in the payload.
-D. epc_drops — find days where EPC dropped ≥20% vs previous day (use daily_recent + offers_daily_epc); for each drop give evidence_based_reasons and a recommended_replacement offer drawn from historical periods. If none — detected=false, drops=[]. PRIORITIZE drops already pre-detected in input field anomalies_detected (kind="epc_drop" / "platform_epc_drop" / "offer_epc_drop") — they are the deterministic ground truth, do NOT skip them.
+D. epc_drops — find days where EPC dropped ≥control.thresholds.epc_drop_pct (default 20%) vs previous day (use daily_recent + offers_daily_epc); for each drop give evidence_based_reasons and a recommended_replacement offer drawn from historical periods. If none — detected=false, drops=[]. PRIORITIZE drops already pre-detected in input field anomalies_detected (kind="epc_drop" / "platform_epc_drop" / "offer_epc_drop") — they are the deterministic ground truth, do NOT skip them.
 E. forecast — period_7d and period_30d numeric forecasts.
    IF input contains forecast_baseline.period_7d / period_30d (deterministic EMA + DOW-seasonality projection): USE IT AS THE STARTING POINT. You may adjust UP or DOWN by at most ±20% per metric, and ONLY with an explicit numeric reason (e.g. "drop on platform X − 15% revenue", "new offer Y added"). Put your final adjusted numbers in forecast.period_*.{revenue,clicks,epc} and put the baseline values in forecast.period_*.baseline.{revenue,clicks,epc}. Set forecast.period_*.adjustment_reason (string).
    IF baseline is absent — derive forecast from weekly_trend / monthly_trend yourself; degrade confidence if data is sparse.
-F. platforms_breakdown — only top_platforms (~99% of revenue, ≤10). Skip the long tail.
-G. growth_points — 3-6 items with numeric current_metric and target_metric and a concrete action_plan (use traffic_sources_breakdown numbers).
+F. platforms_breakdown — only top_platforms (~99% of revenue, ≤10). Skip the long tail. Honor control.filters.exclude_platforms.
+G. growth_points — 3-6 items with numeric current_metric and target_metric and a concrete action_plan (use traffic_sources_breakdown numbers). Each MUST have target + action_type + expected_impact.
 H. underperforming_segments — 2-5 items with segment ∈ {showcase, sms, offline, app, web}, issue with payload numbers, solution.
 I. anomalies_detected (input field, NOT output) — массив заранее посчитанных аномалий: fraud_suspect (sub1 с подозрительно низким AR/CR при больших кликах), epc_drop (день-к-дню), offer_epc_drop / platform_epc_drop (просадки конкретного оффера или площадки vs trailing-7d-median), quality_anomaly (offer×platform пары с аномально низким AR). Используй их как АВТОРИТЕТНЫЕ диагнозы — не пропускай и не пересчитывай. Включи их в risks (kind=fraud_suspect → severity=high) и в epc_drops (kind=*epc_drop*). Для quality_anomaly выводи в reject_monetization_strategy с предложением routing-а.
 
@@ -1176,6 +1234,208 @@ function aiBackfillOutput($obj) {
     if (!array_key_exists('summary', $rms) || !is_string($rms['summary'])) $rms['summary'] = '';
     $obj['reject_monetization_strategy'] = $rms;
     return $obj;
+}
+
+// =================== УПРАВЛЯЕМОСТЬ: control defaults ===================
+// Фронт может прислать `payload.control` с профилем/порогами/фильтрами/KPI.
+// Здесь мы заполняем недостающие поля безопасными дефолтами, чтобы и
+// system-prompt, и пост-валидация работали с одной и той же конфигурацией.
+function aiNormalizeControl($control) {
+    if (!is_array($control)) $control = [];
+    $allowedProfiles = ['conservative','balanced','aggressive_growth','antifraud_focus','roi_only'];
+    $profile = isset($control['profile']) && in_array($control['profile'], $allowedProfiles, true)
+        ? $control['profile'] : 'balanced';
+    $detail = (isset($control['detail_level']) && $control['detail_level'] === 'short') ? 'short' : 'detailed';
+
+    $th = is_array($control['thresholds'] ?? null) ? $control['thresholds'] : [];
+    $thresholds = [
+        'min_clicks'              => isset($th['min_clicks'])              ? max(0, (int)$th['min_clicks'])              : 100,
+        'epc_drop_pct'            => isset($th['epc_drop_pct'])            ? max(1, (int)$th['epc_drop_pct'])            : 20,
+        'ar_floor'                => isset($th['ar_floor'])                ? max(0, (float)$th['ar_floor'])              : 15.0,
+        'cr_floor'                => isset($th['cr_floor'])                ? max(0, (float)$th['cr_floor'])              : 10.0,
+        'fraud_clicks_threshold'  => isset($th['fraud_clicks_threshold'])  ? max(0, (int)$th['fraud_clicks_threshold'])  : 300,
+        'min_clicks_window'       => isset($th['min_clicks_window'])       ? max(1, (int)$th['min_clicks_window'])       : 7,
+    ];
+
+    $f = is_array($control['filters'] ?? null) ? $control['filters'] : [];
+    $listOf = function ($v) {
+        if (!is_array($v)) return [];
+        $out = [];
+        foreach ($v as $x) { if (is_string($x) && trim($x) !== '') $out[] = trim($x); }
+        return array_values(array_unique($out));
+    };
+    $filters = [
+        'include_platforms' => $listOf($f['include_platforms'] ?? []),
+        'exclude_platforms' => $listOf($f['exclude_platforms'] ?? []),
+        'include_sub1'      => $listOf($f['include_sub1'] ?? []),
+        'exclude_sub1'      => $listOf($f['exclude_sub1'] ?? []),
+        'include_offers'    => $listOf($f['include_offers'] ?? []),
+        'exclude_offers'    => $listOf($f['exclude_offers'] ?? []),
+    ];
+
+    $kpi = is_array($control['kpi_targets'] ?? null) ? $control['kpi_targets'] : [];
+    $kpiTargets = [
+        'epc_target'              => isset($kpi['epc_target'])              ? (float)$kpi['epc_target']              : 0,
+        'revenue_target'          => isset($kpi['revenue_target'])          ? (float)$kpi['revenue_target']          : 0,
+        'sms_capacity_per_day'    => isset($kpi['sms_capacity_per_day'])    ? (int)  $kpi['sms_capacity_per_day']    : 0,
+        'offline_capacity_per_day'=> isset($kpi['offline_capacity_per_day'])? (int)  $kpi['offline_capacity_per_day']: 0,
+        'monthly_budget_rub'      => isset($kpi['monthly_budget_rub'])      ? (float)$kpi['monthly_budget_rub']      : 0,
+    ];
+
+    $prevFb = [];
+    if (isset($control['previous_feedback']) && is_array($control['previous_feedback'])) {
+        foreach (array_slice($control['previous_feedback'], 0, 50) as $fb) {
+            if (!is_array($fb)) continue;
+            $prevFb[] = [
+                'recommendation_title' => (string)($fb['recommendation_title'] ?? ''),
+                'target'               => is_array($fb['target'] ?? null) ? $fb['target'] : null,
+                'action_type'          => (string)($fb['action_type'] ?? ''),
+                'verdict'              => in_array($fb['verdict'] ?? '', ['accepted','rejected','irrelevant'], true) ? $fb['verdict'] : '',
+                'reason'               => (string)($fb['reason'] ?? ''),
+            ];
+        }
+    }
+
+    return [
+        'profile'           => $profile,
+        'detail_level'      => $detail,
+        'thresholds'        => $thresholds,
+        'filters'           => $filters,
+        'kpi_targets'       => $kpiTargets,
+        'previous_feedback' => $prevFb,
+    ];
+}
+
+// =================== ТОЧНОСТЬ: post-обработка AI-ответа ===================
+// Применяем дисциплинирующие правила К JSON-ответу модели уже после schema +
+// no-hallu валидации. Возвращаем «улучшенный» объект и счётчики качества для
+// телеметрии (сохраняются в ai_analysis_cache.*_count).
+//
+//   1. Калибровка confidence по data_points_used и delta_pct.
+//   2. Применение exclude-фильтров (на случай, если модель проигнорировала).
+//   3. Понижение priority для общих фраз (нет target / action_type / delta_pct)
+//      + установка флага quality:"low" — UI сворачивает такие карточки.
+//   4. Дедупликация по (target.type+target.name+action_type).
+//   5. Подсчёт пропущенных anomalies_detected (epc_drop → epc_drops.drops,
+//      fraud_suspect → risks).
+function aiPostProcess($obj, $payload, $control) {
+    $counters = [
+        'empty_evidence_count'    => 0,
+        'numeric_check_failures'  => 0,
+        'low_quality_recs'        => 0,
+        'duplicate_recs_dropped'  => 0,
+        'filter_drops'            => 0,
+        'anomaly_coverage_missed' => 0,
+    ];
+    if (!is_array($obj)) return ['data' => $obj, 'counters' => $counters];
+
+    $excludeOffersLc    = array_map('mb_strtolower', $control['filters']['exclude_offers']    ?? []);
+    $excludePlatformsLc = array_map('mb_strtolower', $control['filters']['exclude_platforms'] ?? []);
+    $excludeSub1Lc      = array_map('mb_strtolower', $control['filters']['exclude_sub1']      ?? []);
+
+    // --- 1+3. Recommendations: калибровка confidence, low-quality flag, exclude. ---
+    $allowedActionTypes = json_decode(AI_ACTION_TYPES_JSON, true) ?: [];
+    $processedRecs = [];
+    $seenKeys = [];
+    foreach ($obj['recommendations'] ?? [] as $r) {
+        if (!is_array($r)) continue;
+
+        // Exclude-фильтр.
+        $tType = is_array($r['target'] ?? null) ? (string)($r['target']['type'] ?? '') : '';
+        $tName = is_array($r['target'] ?? null) ? trim((string)($r['target']['name'] ?? '')) : '';
+        $tNameLc = mb_strtolower($tName);
+        if ($tType === 'offer'    && $tName !== '' && in_array($tNameLc, $excludeOffersLc, true))    { $counters['filter_drops']++; continue; }
+        if ($tType === 'platform' && $tName !== '' && in_array($tNameLc, $excludePlatformsLc, true)) { $counters['filter_drops']++; continue; }
+        if ($tType === 'sub1'     && $tName !== '' && in_array($tNameLc, $excludeSub1Lc, true))      { $counters['filter_drops']++; continue; }
+
+        // Калибровка confidence.
+        $ei = is_array($r['expected_impact'] ?? null) ? $r['expected_impact'] : [];
+        $deltaPct = isset($ei['delta_pct']) ? (float)$ei['delta_pct'] : 0;
+        $dataPoints = isset($r['data_points_used']) ? (int)$r['data_points_used'] : 0;
+        $minWindow = (int)($control['thresholds']['min_clicks_window'] ?? 7);
+        $cal = 'medium';
+        if ($dataPoints >= 21 && abs($deltaPct) >= 5) $cal = 'high';
+        elseif ($dataPoints < $minWindow || abs($deltaPct) < 5) $cal = 'low';
+        // Не повышаем уверенность модели, только понижаем — модель может
+        // переоценивать confidence, но не имеет права быть увереннее данных.
+        $modelConf = (string)($ei['confidence'] ?? '');
+        $rank = ['low' => 0, 'medium' => 1, 'high' => 2];
+        if (!isset($rank[$modelConf]) || $rank[$cal] < $rank[$modelConf]) {
+            $ei['confidence'] = $cal;
+            $r['expected_impact'] = $ei;
+        }
+
+        // Low-quality detector: нет target / action_type / нулевая delta.
+        $atype = (string)($r['action_type'] ?? '');
+        $isLow = ($tType === '' || $tName === '' && $tType !== 'global')
+              || (!in_array($atype, $allowedActionTypes, true))
+              || ($deltaPct == 0);
+        if (empty($r['evidence']) || (is_array($r['evidence']) && empty($r['evidence']['source'] ?? ''))) {
+            $isLow = true;
+            $counters['empty_evidence_count']++;
+        }
+        if ($isLow) {
+            $r['quality'] = 'low';
+            $r['priority'] = 'low';
+            $counters['low_quality_recs']++;
+        }
+
+        // ROI-only профиль: режем то, что не дотягивает по delta_pct/metric.
+        if (($control['profile'] ?? '') === 'roi_only') {
+            $metric = (string)($ei['metric'] ?? '');
+            if (abs($deltaPct) < 5 || !in_array($metric, ['revenue', 'epc'], true)) {
+                $counters['filter_drops']++;
+                continue;
+            }
+        }
+
+        // Дедупликация по (target.type, target.name, action_type).
+        $dupKey = $tType . '|' . $tNameLc . '|' . $atype;
+        if ($atype !== '' && $tName !== '' && isset($seenKeys[$dupKey])) {
+            $counters['duplicate_recs_dropped']++;
+            continue;
+        }
+        $seenKeys[$dupKey] = true;
+
+        $processedRecs[] = $r;
+    }
+    $obj['recommendations'] = $processedRecs;
+
+    // --- 5. Покрытие anomalies_detected. ---
+    $anoms = is_array($payload['anomalies_detected'] ?? null) ? $payload['anomalies_detected'] : [];
+    if ($anoms) {
+        $missedDrops = 0; $missedFraud = 0;
+        // Собираем то, что модель упомянула.
+        $epcDropsList = is_array($obj['epc_drops']['drops'] ?? null) ? $obj['epc_drops']['drops'] : [];
+        $mentionedDropDates = [];
+        foreach ($epcDropsList as $d) {
+            if (!is_array($d)) continue;
+            if (!empty($d['date'])) $mentionedDropDates[mb_strtolower(trim((string)$d['date']))] = true;
+            if (!empty($d['affected_offers']) && is_array($d['affected_offers'])) {
+                foreach ($d['affected_offers'] as $n) $mentionedDropDates[mb_strtolower(trim((string)$n))] = true;
+            }
+            if (!empty($d['affected_platforms']) && is_array($d['affected_platforms'])) {
+                foreach ($d['affected_platforms'] as $n) $mentionedDropDates[mb_strtolower(trim((string)$n))] = true;
+            }
+        }
+        $risksTextLc = mb_strtolower(json_encode($obj['risks'] ?? [], JSON_UNESCAPED_UNICODE) ?: '');
+        foreach ($anoms as $a) {
+            if (!is_array($a)) continue;
+            $kind = (string)($a['kind'] ?? '');
+            if (in_array($kind, ['epc_drop','offer_epc_drop','platform_epc_drop'], true)) {
+                $key = mb_strtolower(trim((string)($a['offer'] ?? $a['platform'] ?? $a['date'] ?? '')));
+                if ($key !== '' && empty($mentionedDropDates[$key])) {
+                    $missedDrops++;
+                }
+            } elseif ($kind === 'fraud_suspect') {
+                $sub = mb_strtolower(trim((string)($a['sub1'] ?? '')));
+                if ($sub !== '' && strpos($risksTextLc, $sub) === false) $missedFraud++;
+            }
+        }
+        $counters['anomaly_coverage_missed'] = $missedDrops + $missedFraud;
+    }
+
+    return ['data' => $obj, 'counters' => $counters];
 }
 
 /**
@@ -1348,10 +1608,22 @@ function aiCallProviderStructured($sysPrompt, $userPrompt, $sig, $payload = null
         'model_used'        => '',
         'calls'             => 0,
         'stages'            => [], // human-readable: ['primary','refine','hallu_refine']
+        // ---- Quality counters (для дашборда здоровья промпта). ----
+        'refine_rounds'           => 0,
+        'hallu_offer_count'       => 0,
+        'numeric_check_failures'  => 0,
+        'empty_evidence_count'    => 0,
+        'low_quality_recs'        => 0,
+        'duplicate_recs_dropped'  => 0,
+        'filter_drops'            => 0,
+        'anomaly_coverage_missed' => 0,
     ];
     $accMeta = function (&$meta, $resp, $stage) {
         $meta['calls']++;
         $meta['stages'][] = $stage;
+        if ($stage === 'refine_schema' || $stage === 'refine_no_hallu') {
+            $meta['refine_rounds']++;
+        }
         if (isset($resp['latency_ms']))  $meta['latency_ms']        += (int)$resp['latency_ms'];
         if (isset($resp['model']))       $meta['model_used']         = (string)$resp['model'];
         if (isset($resp['usage']) && is_array($resp['usage'])) {
@@ -1360,6 +1632,23 @@ function aiCallProviderStructured($sysPrompt, $userPrompt, $sig, $payload = null
             $meta['completion_tokens'] += (int)($u['completion_tokens'] ?? 0);
             $meta['total_tokens']      += (int)($u['total_tokens']      ?? 0);
         }
+    };
+    // Helper: финализация — пост-обработка (фильтры, confidence, дедуп,
+    // anomaly coverage), bake counters в meta, backfill опциональных полей.
+    $finalize = function ($obj) use (&$meta, $payload) {
+        $control = aiNormalizeControl($payload['control'] ?? null);
+        // Считаем галлюцинации ПОСЛЕ no-hallu refine — это итоговое значение.
+        if (is_array($payload)) {
+            $allowedFinal = aiCollectAllowedNames($payload);
+            $issuesFinal  = aiFindHallucinations($obj, $allowedFinal);
+            $meta['hallu_offer_count'] = count($issuesFinal);
+        }
+        $pp = aiPostProcess($obj, is_array($payload) ? $payload : [], $control);
+        foreach (['empty_evidence_count','numeric_check_failures','low_quality_recs',
+                  'duplicate_recs_dropped','filter_drops','anomaly_coverage_missed'] as $k) {
+            $meta[$k] = (int)($pp['counters'][$k] ?? 0);
+        }
+        return aiBackfillOutput($pp['data']);
     };
 
     // Шаг 1 — основной запрос на быстрой модели (deepseek-chat).
@@ -1378,7 +1667,7 @@ function aiCallProviderStructured($sysPrompt, $userPrompt, $sig, $payload = null
         aiLog('structured_ok', ['stage' => 'primary']);
         // No-hallucination проверка ПОСЛЕ schema validation.
         $obj = aiNoHalluRefineIfNeeded($obj, $sysPrompt, $userPrompt, $sig, $payload, $meta);
-        return ['data' => aiBackfillOutput($obj), 'meta' => $meta];
+        return ['data' => $finalize($obj), 'meta' => $meta];
     }
     aiLog('structured_validation_failed', [
         'stage'           => 'primary',
@@ -1400,7 +1689,7 @@ function aiCallProviderStructured($sysPrompt, $userPrompt, $sig, $payload = null
     if ($err2 === null) {
         aiLog('structured_ok', ['stage' => 'refine']);
         $obj2 = aiNoHalluRefineIfNeeded($obj2, $sysPrompt, $userPrompt, $sig, $payload, $meta);
-        return ['data' => aiBackfillOutput($obj2), 'meta' => $meta];
+        return ['data' => $finalize($obj2), 'meta' => $meta];
     }
     aiLog('structured_validation_failed', [
         'stage'           => 'refine',
@@ -1829,20 +2118,32 @@ function aiCachePut($db, $from, $to, $data, $createdAt, $meta = []) {
     $stmt = $db->prepare('INSERT INTO ai_analysis_cache
         (period_key, period_from, period_to, result_json, created_at,
          payload_hash, prompt_version, model_used, latency_ms,
-         prompt_tokens, completion_tokens, total_tokens)
-        VALUES (:k, :f, :t, :j, :c, :ph, :pv, :mu, :lm, :pt, :ct, :tt)
+         prompt_tokens, completion_tokens, total_tokens,
+         refine_rounds, hallu_offer_count, numeric_check_failures,
+         empty_evidence_count, low_quality_recs, duplicate_recs_dropped,
+         filter_drops, anomaly_coverage_missed)
+        VALUES (:k, :f, :t, :j, :c, :ph, :pv, :mu, :lm, :pt, :ct, :tt,
+                :rr, :hc, :nc, :ec, :lq, :dd, :fd, :ac)
         ON CONFLICT(period_key) DO UPDATE SET
-            period_from       = excluded.period_from,
-            period_to         = excluded.period_to,
-            result_json       = excluded.result_json,
-            created_at        = excluded.created_at,
-            payload_hash      = excluded.payload_hash,
-            prompt_version    = excluded.prompt_version,
-            model_used        = excluded.model_used,
-            latency_ms        = excluded.latency_ms,
-            prompt_tokens     = excluded.prompt_tokens,
-            completion_tokens = excluded.completion_tokens,
-            total_tokens      = excluded.total_tokens');
+            period_from              = excluded.period_from,
+            period_to                = excluded.period_to,
+            result_json              = excluded.result_json,
+            created_at               = excluded.created_at,
+            payload_hash             = excluded.payload_hash,
+            prompt_version           = excluded.prompt_version,
+            model_used               = excluded.model_used,
+            latency_ms               = excluded.latency_ms,
+            prompt_tokens            = excluded.prompt_tokens,
+            completion_tokens        = excluded.completion_tokens,
+            total_tokens             = excluded.total_tokens,
+            refine_rounds            = excluded.refine_rounds,
+            hallu_offer_count        = excluded.hallu_offer_count,
+            numeric_check_failures   = excluded.numeric_check_failures,
+            empty_evidence_count     = excluded.empty_evidence_count,
+            low_quality_recs         = excluded.low_quality_recs,
+            duplicate_recs_dropped   = excluded.duplicate_recs_dropped,
+            filter_drops             = excluded.filter_drops,
+            anomaly_coverage_missed  = excluded.anomaly_coverage_missed');
     $stmt->bindValue(':k',  $key, SQLITE3_TEXT);
     $stmt->bindValue(':f',  $from, SQLITE3_TEXT);
     $stmt->bindValue(':t',  $to, SQLITE3_TEXT);
@@ -1855,6 +2156,14 @@ function aiCachePut($db, $from, $to, $data, $createdAt, $meta = []) {
     $stmt->bindValue(':pt', (int)   ($meta['prompt_tokens']     ?? 0),  SQLITE3_INTEGER);
     $stmt->bindValue(':ct', (int)   ($meta['completion_tokens'] ?? 0),  SQLITE3_INTEGER);
     $stmt->bindValue(':tt', (int)   ($meta['total_tokens']      ?? 0),  SQLITE3_INTEGER);
+    $stmt->bindValue(':rr', (int)   ($meta['refine_rounds']            ?? 0), SQLITE3_INTEGER);
+    $stmt->bindValue(':hc', (int)   ($meta['hallu_offer_count']        ?? 0), SQLITE3_INTEGER);
+    $stmt->bindValue(':nc', (int)   ($meta['numeric_check_failures']   ?? 0), SQLITE3_INTEGER);
+    $stmt->bindValue(':ec', (int)   ($meta['empty_evidence_count']     ?? 0), SQLITE3_INTEGER);
+    $stmt->bindValue(':lq', (int)   ($meta['low_quality_recs']         ?? 0), SQLITE3_INTEGER);
+    $stmt->bindValue(':dd', (int)   ($meta['duplicate_recs_dropped']   ?? 0), SQLITE3_INTEGER);
+    $stmt->bindValue(':fd', (int)   ($meta['filter_drops']             ?? 0), SQLITE3_INTEGER);
+    $stmt->bindValue(':ac', (int)   ($meta['anomaly_coverage_missed']  ?? 0), SQLITE3_INTEGER);
     $stmt->execute();
 }
 
@@ -3224,6 +3533,27 @@ if ($action === 'ai_analyze') {
     // Жёстко ограничиваем размер payload, чтобы не раздувать prompt и стоимость.
     $payload = aiTrimPayload($payload);
 
+    // Обогащение payload-а перед отправкой модели:
+    //   • allowed_entities  — белый список офферов/площадок/sub1, считается из
+    //     других блоков payload-а; system-prompt требует выбирать ТОЛЬКО оттуда.
+    //   • allowed_action_types — закрытый список action_type (см. AI_ACTION_TYPES_JSON).
+    //   • control            — нормализованные настройки (профиль, пороги,
+    //     фильтры, KPI, detail_level, previous_feedback). Если фронт ничего не
+    //     прислал — будут безопасные дефолты (profile=balanced и т.п.).
+    // ВАЖНО: эти три поля НЕ влияют на $payloadHash — он считался раньше по
+    // payload-у в том виде, в каком его прислал фронт. Это сделано осознанно:
+    //   1) фронт не знает реализацию aiCollectAllowedNames, ему сложнее
+    //      повторить байт-в-байт ту же канонизацию;
+    //   2) `control` фронт уже шлёт сам, поэтому смена профиля/порогов
+    //      автоматически меняет hash и инвалидирует кэш — что и требовалось.
+    // Иначе говоря, control — это часть ВХОДА (от фронта), а allowed_entities
+    // и allowed_action_types — это ДЕТЕРМИНИРОВАННЫЕ ПРОИЗВОДНЫЕ от входа,
+    // их можно не включать в hash.
+    $allowedEntities = aiCollectAllowedNames($payload);
+    $payload['allowed_entities']    = $allowedEntities;
+    $payload['allowed_action_types'] = json_decode(AI_ACTION_TYPES_JSON, true);
+    $payload['control']             = aiNormalizeControl($payload['control'] ?? null);
+
     $signature = aiBuildSignature();
     $sysPrompt = aiBuildSystemPrompt($signature);
     $userPrompt = aiBuildUserPrompt($payload, $signature);
@@ -3276,6 +3606,14 @@ if ($action === 'ai_analyze') {
         'prompt_tokens'     => (int)   ($meta['prompt_tokens']     ?? 0),
         'completion_tokens' => (int)   ($meta['completion_tokens'] ?? 0),
         'total_tokens'      => (int)   ($meta['total_tokens']      ?? 0),
+        'refine_rounds'           => (int)($meta['refine_rounds']           ?? 0),
+        'hallu_offer_count'       => (int)($meta['hallu_offer_count']       ?? 0),
+        'numeric_check_failures'  => (int)($meta['numeric_check_failures']  ?? 0),
+        'empty_evidence_count'    => (int)($meta['empty_evidence_count']    ?? 0),
+        'low_quality_recs'        => (int)($meta['low_quality_recs']        ?? 0),
+        'duplicate_recs_dropped'  => (int)($meta['duplicate_recs_dropped']  ?? 0),
+        'filter_drops'            => (int)($meta['filter_drops']            ?? 0),
+        'anomaly_coverage_missed' => (int)($meta['anomaly_coverage_missed'] ?? 0),
     ];
     if ($periodFrom !== '' && $periodTo !== '') {
         aiCachePut($db, $periodFrom, $periodTo, $data, $createdAt, $cacheMeta);
