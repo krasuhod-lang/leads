@@ -3473,11 +3473,11 @@ function renderDeepAIResult(d) {
     const qa = (a && a.quality === 'low') ? 1 : 0;
     const qb = (b && b.quality === 'low') ? 1 : 0;
     if (qa !== qb) return qa - qb;
-    const ra = prioRank[a && a.priority] ?? 1;
-    const rb = prioRank[b && b.priority] ?? 1;
+    const ra = prioRank[a?.priority] ?? 1;
+    const rb = prioRank[b?.priority] ?? 1;
     if (ra !== rb) return ra - rb;
-    const da = Math.abs(Number(a && a.expected_impact && a.expected_impact.delta_pct) || 0);
-    const db = Math.abs(Number(b && b.expected_impact && b.expected_impact.delta_pct) || 0);
+    const da = Math.abs(Number(a?.expected_impact?.delta_pct) || 0);
+    const db = Math.abs(Number(b?.expected_impact?.delta_pct) || 0);
     return db - da;
   });
   const renderRec = (r) => {
