@@ -111,23 +111,29 @@ if (!defined('AI_API_URL')) {
     define('AI_API_URL', getenv('AI_API_URL') ?: 'https://api.deepseek.com/chat/completions');
 }
 if (!defined('AI_MODEL')) {
-    // По умолчанию — `deepseek-v4-pro`: флагман DeepSeek V4 (1.6T параметров,
-    // расширенное рассуждение через «thinking» mode). Поддерживает
-    // response_format=json_object и temperature. Медленнее `deepseek-v4-flash`,
-    // но даёт более качественный аналитический разбор и устойчивее на
-    // длинных промптах — поэтому выбран основной моделью по запросу
-    // продукта. См. aiCallProvider: для thinking-моделей повышены
-    // max_tokens (12000) и таймаут (240с).
-    define('AI_MODEL', getenv('AI_MODEL') ?: 'deepseek-v4-pro');
+    // По умолчанию — `deepseek-v4-flash`: быстрая модель DeepSeek V4,
+    // отвечает в пределах 30-60 сек, поддерживает response_format=json_object
+    // и temperature. Заменила legacy `deepseek-chat` (тот ещё работает как
+    // алиас, но будет удалён 24 июля 2026).
+    //
+    // ВАЖНО: основной моделью НЕЛЬЗЯ ставить `deepseek-v4-pro`. У pro
+    // включён thinking mode → ответ занимает ~150-240с, плюс refine-проход
+    // (ещё ~60с). Суммарное время уходит за proxy_read_timeout вышестоящего
+    // nginx/Cloudflare (обычно 100с), и клиент получает HTML 504 вместо
+    // JSON → фронт показывает общую фразу «Анализ временно недоступен.
+    // Попробуйте ещё раз через минуту.» (см. catch-блок runDeepAIAnalysis
+    // в index.html — он подставляет fallback-текст, если в ответе нет
+    // `uiReason`). Pro доступен как fallback и через AI_MODEL=...env.
+    define('AI_MODEL', getenv('AI_MODEL') ?: 'deepseek-v4-flash');
 }
 if (!defined('AI_FALLBACK_MODEL')) {
-    // Резерв — быстрая `deepseek-v4-flash` (отвечает в пределах 30-60 сек).
-    // Используется ТОЛЬКО как escape-hatch, если флагман вернул transport/HTTP
-    // ошибку: даём пользователю хоть какой-то ответ вместо «AI service
-    // unavailable». Также используется на refine-проходах, чтобы суммарное
-    // время запроса (pro ~150c + pro ~150c) не уходило за proxy_read_timeout
-    // вышестоящего nginx/Cloudflare → клиент получит HTML 504 вместо JSON.
-    define('AI_FALLBACK_MODEL', getenv('AI_FALLBACK_MODEL') ?: 'deepseek-v4-flash');
+    // Резерв — флагман `deepseek-v4-pro` (1.6T параметров, расширенное
+    // рассуждение через thinking mode). Поддерживает JSON-mode/temperature,
+    // но из-за thinking тратит больше токенов и времени → выше
+    // max_tokens/timeout (см. aiCallProvider). Используем только как
+    // escape-hatch при transport/HTTP-ошибке быстрой модели, чтобы дать
+    // пользователю хоть какой-то ответ вместо «AI service unavailable».
+    define('AI_FALLBACK_MODEL', getenv('AI_FALLBACK_MODEL') ?: 'deepseek-v4-pro');
 }
 // Версия промпта/схемы. Меняется ВРУЧНУЮ при изменении aiBuildSignature() /
 // aiBuildSystemPrompt(). Включается в hash payload и сохраняется в
@@ -1660,13 +1666,11 @@ function aiCallProviderStructured($sysPrompt, $userPrompt, $sig, $payload = null
         return aiBackfillOutput($pp['data']);
     };
 
-    // Шаг 1 — основной запрос на флагмане V4-pro (см. AI_MODEL).
+    // Шаг 1 — основной запрос на быстрой модели (deepseek-v4-flash).
     $resp = aiCallProvider($sysPrompt, $userPrompt, AI_MODEL);
     $accMeta($meta, $resp, 'primary');
     if (isset($resp['error'])) {
-        // Один fallback на быструю модель V4-flash — escape-hatch на случай
-        // 5xx/таймаута флагмана. Лучше отдать чуть менее глубокий, но
-        // валидный анализ, чем «AI service unavailable».
+        // Один fallback на флагман V4-pro (он медленнее, но иногда переживает 5xx).
         aiLog('structured_fallback', ['primary_error' => $resp['error']]);
         $resp = aiCallProvider($sysPrompt, $userPrompt, AI_FALLBACK_MODEL);
         $accMeta($meta, $resp, 'fallback');
@@ -1687,14 +1691,12 @@ function aiCallProviderStructured($sysPrompt, $userPrompt, $sig, $payload = null
     ]);
 
     // Шаг 2 (Refine) — один retry с явной коррекцией.
-    // ВАЖНО: refine всегда идёт по БЫСТРОЙ модели (AI_FALLBACK_MODEL,
-    // deepseek-v4-flash), даже когда основной AI_MODEL — флагман V4-pro.
-    // Иначе суммарное время запроса (pro ~150c + pro ~150c) уходит за
-    // proxy_read_timeout вышестоящего nginx/Cloudflare и клиент получает
-    // HTML 504 вместо JSON. Точность здесь вторична — нам нужно лишь
-    // починить структуру ответа, а не углублять анализ.
+    // ВАЖНО: refine всегда идёт по быстрой модели (deepseek-v4-flash), даже
+    // если основной ответ пришёл от V4-pro. Иначе суммарное время
+    // запроса (flash ~60c + v4-pro ~150c) легко уходит за proxy_read_timeout
+    // вышестоящего nginx/Cloudflare и клиент получает HTML 504 вместо JSON.
     $refineUser = $userPrompt . "\n\nПредыдущий ответ был невалиден: {$err}. Верни ИСПРАВЛЕННЫЙ JSON строго по схеме, без markdown.";
-    $resp2 = aiCallProvider($sysPrompt, $refineUser, AI_FALLBACK_MODEL);
+    $resp2 = aiCallProvider($sysPrompt, $refineUser, AI_MODEL);
     $accMeta($meta, $resp2, 'refine_schema');
     if (isset($resp2['error'])) { $resp2['meta'] = $meta; return $resp2; }
     $obj2 = aiExtractJson($resp2['content'] ?? '');
@@ -1748,10 +1750,7 @@ function aiNoHalluRefineIfNeeded($obj, $sysPrompt, $userPrompt, $sig, $payload, 
     $instr .= "Верни ИСПРАВЛЕННЫЙ JSON строго по схеме, без markdown. Все offer_name / name в reject_monetization_strategy, offers_market_analysis, epc_drops, platforms_breakdown ОБЯЗАНЫ совпадать со строками из allow-list побайтно.";
 
     $refineUser = $userPrompt . "\n\n" . $instr;
-    // Refine идёт на быстрой модели по той же причине, что и schema-refine
-    // (см. aiCallProviderStructured): два прохода на pro уходят за
-    // proxy_read_timeout вышестоящего nginx.
-    $resp = aiCallProvider($sysPrompt, $refineUser, AI_FALLBACK_MODEL);
+    $resp = aiCallProvider($sysPrompt, $refineUser, AI_MODEL);
     if (isset($meta) && is_array($meta)) {
         $meta['calls']    = ($meta['calls']    ?? 0) + 1;
         $meta['stages'][] = 'refine_no_hallu';
@@ -1826,8 +1825,7 @@ function aiCallProvider($sysPrompt, $userPrompt, $model) {
         // на 5000 deepseek-chat стабильно ловил finish_reason=length и отдавал
         // обрезанный JSON → "Output is not a JSON object". Поднято до 8000
         // (deepseek-v4-flash cap ~8192) и до 12000 для thinking-моделей с
-        // учётом скрытого reasoning_content. Для деф. AI_MODEL=v4-pro
-        // (thinking) используется ветка 12000.
+        // учётом скрытого reasoning_content.
         'max_tokens' => $isThinkingModel ? 12000 : 8000,
         'stream' => true,
         // Просим usage в финальном чанке — нужен для логов.
