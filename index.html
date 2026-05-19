@@ -325,11 +325,33 @@
     <div class="card">
       <div class="flex flex-wrap gap-3 justify-between items-center mb-2">
         <h2 class="text-white font-bold text-lg">🆚 Сравнение периодов</h2>
-        <select id="compareMode" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm focus:outline-none" onchange="renderCompareTab()">
+        <select id="compareMode" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm focus:outline-none" onchange="onCompareModeChange()">
           <option value="prev_period">Текущий vs предыдущий той же длины</option>
           <option value="prev_week">Эта неделя vs прошлая</option>
           <option value="prev_month">Этот месяц vs прошлый (то же количество дней)</option>
+          <option value="custom">Произвольные периоды (выбрать вручную)</option>
         </select>
+      </div>
+      <!-- Кастомный выбор двух периодов. По умолчанию скрыт; раскрывается, когда compareMode='custom'. -->
+      <div id="compareCustomRange" class="hidden flex-wrap items-end gap-3 mb-3 bg-slate-900/50 border border-slate-700 rounded p-3">
+        <div class="flex flex-col">
+          <label class="text-xs text-slate-400 mb-1">Текущий период: с</label>
+          <input id="compareCurFrom" type="date" class="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm focus:outline-none">
+        </div>
+        <div class="flex flex-col">
+          <label class="text-xs text-slate-400 mb-1">по</label>
+          <input id="compareCurTo" type="date" class="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm focus:outline-none">
+        </div>
+        <div class="w-px h-8 bg-slate-700 mx-1"></div>
+        <div class="flex flex-col">
+          <label class="text-xs text-slate-400 mb-1">Предыдущий период: с</label>
+          <input id="comparePrevFrom" type="date" class="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm focus:outline-none">
+        </div>
+        <div class="flex flex-col">
+          <label class="text-xs text-slate-400 mb-1">по</label>
+          <input id="comparePrevTo" type="date" class="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm focus:outline-none">
+        </div>
+        <button onclick="renderCompareTab()" class="bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-semibold rounded px-4 py-1.5">Сравнить</button>
       </div>
       <p class="text-sm text-slate-400 mb-4" id="comparePeriodLabel"></p>
       <div id="compareKpiGrid" class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-4"></div>
@@ -342,6 +364,42 @@
       <div class="card">
         <h3 class="text-white font-bold mb-3">📉 Топ-офферы по падению выручки</h3>
         <div class="overflow-auto" style="max-height:420px"><table class="w-full text-sm" id="compareLosersTable"><thead><tr><th>Оффер</th><th class="text-right">Текущий</th><th class="text-right">Предыдущий</th><th class="text-right">Δ ₽</th><th class="text-right">Δ %</th></tr></thead><tbody></tbody></table></div>
+      </div>
+    </div>
+    <!-- Полная разбивка по офферам: как каждый отработал в каждом из двух периодов -->
+    <div class="card">
+      <div class="flex flex-wrap gap-3 justify-between items-center mb-3">
+        <h3 class="text-white font-bold">📊 Офферы по периодам — детальное сравнение</h3>
+        <div class="flex items-center gap-2">
+          <label class="text-xs text-slate-400">Сортировать по</label>
+          <select id="compareOffersSort" class="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm focus:outline-none" onchange="renderCompareOffersTable()">
+            <option value="cur_revenue">Доходу (текущий)</option>
+            <option value="prev_revenue">Доходу (предыдущий)</option>
+            <option value="delta_revenue">Δ дохода</option>
+            <option value="cur_clicks">Кликам (текущий)</option>
+            <option value="cur_epc">EPC (текущий)</option>
+          </select>
+          <input id="compareOffersSearch" type="search" placeholder="Поиск оффера…" class="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm focus:outline-none" oninput="renderCompareOffersTable()">
+        </div>
+      </div>
+      <p class="text-xs text-slate-500 mb-2">Каждая строка — отдельный оффер с его метриками в текущем и предыдущем периодах и дельтой между ними.</p>
+      <div class="overflow-auto" style="max-height:560px">
+        <table class="w-full text-sm" id="compareOffersTable">
+          <thead class="sticky top-0 bg-slate-900 z-10">
+            <tr>
+              <th rowspan="2" class="text-left">Оффер</th>
+              <th colspan="5" class="text-center text-emerald-400 border-b border-slate-700">Текущий период</th>
+              <th colspan="5" class="text-center text-slate-400 border-b border-slate-700">Предыдущий период</th>
+              <th colspan="2" class="text-center text-amber-400 border-b border-slate-700">Δ</th>
+            </tr>
+            <tr class="text-xs text-slate-400">
+              <th class="text-right">Доход</th><th class="text-right">Клики</th><th class="text-right">Лиды</th><th class="text-right">EPC</th><th class="text-right">AR%</th>
+              <th class="text-right">Доход</th><th class="text-right">Клики</th><th class="text-right">Лиды</th><th class="text-right">EPC</th><th class="text-right">AR%</th>
+              <th class="text-right">Δ ₽</th><th class="text-right">Δ %</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
       </div>
     </div>
   </div>
@@ -3946,40 +4004,100 @@ function renderArMatrix() {
 // Считаем KPI по двум диапазонам: текущий (из originalData в [dateFrom, dateTo])
 // и предыдущий (по выбранному режиму). Берём данные из originalData, но если
 // предыдущий период вне фильтра — догружаем из get_stats напрямую.
-async function renderCompareTab() {
-  const dFrom = document.getElementById('dateFrom').value;
-  const dTo = document.getElementById('dateTo').value;
-  if (!dFrom || !dTo) return;
+// Для режима 'custom' оба диапазона задаются вручную инпутами в шапке таба.
+
+// Состояние таба сравнения — сохраняем агрегаты по офферам, чтобы детальная
+// таблица могла пересортироваться/фильтроваться без повторного запроса в API.
+let compareState = { offers: [], curRange: null, prevRange: null };
+
+function onCompareModeChange() {
   const mode = (document.getElementById('compareMode') || {}).value || 'prev_period';
-  const lenDays = Math.max(1, Math.round((new Date(dTo) - new Date(dFrom)) / 86400000) + 1);
-  let prevFrom, prevTo;
-  if (mode === 'prev_week') {
-    prevFrom = isoShift(dFrom, -7);
-    prevTo = isoShift(dTo, -7);
-  } else if (mode === 'prev_month') {
-    prevFrom = isoShift(dFrom, -30);
-    prevTo = isoShift(dTo, -30);
-  } else {
-    prevTo = isoShift(dFrom, -1);
-    prevFrom = isoShift(prevTo, -(lenDays - 1));
+  const box = document.getElementById('compareCustomRange');
+  if (box) {
+    if (mode === 'custom') {
+      box.classList.remove('hidden');
+      box.classList.add('flex');
+      // Предзаполним инпуты разумными значениями, если ещё пусто.
+      const dFrom = document.getElementById('dateFrom').value;
+      const dTo   = document.getElementById('dateTo').value;
+      const cf = document.getElementById('compareCurFrom');
+      const ct = document.getElementById('compareCurTo');
+      const pf = document.getElementById('comparePrevFrom');
+      const pt = document.getElementById('comparePrevTo');
+      if (cf && !cf.value && dFrom) cf.value = dFrom;
+      if (ct && !ct.value && dTo)   ct.value = dTo;
+      if (pf && !pf.value && dFrom && dTo) {
+        const len = Math.max(1, Math.round((new Date(dTo) - new Date(dFrom)) / 86400000) + 1);
+        pt.value = isoShift(dFrom, -1);
+        pf.value = isoShift(pt.value, -(len - 1));
+      }
+      // В custom-режиме ждём явного клика «Сравнить», чтобы пользователь
+      // успел задать обе пары дат.
+      return;
+    }
+    box.classList.add('hidden');
+    box.classList.remove('flex');
   }
+  renderCompareTab();
+}
+
+async function renderCompareTab() {
+  const mode = (document.getElementById('compareMode') || {}).value || 'prev_period';
+  let dFrom, dTo, prevFrom, prevTo;
+
+  if (mode === 'custom') {
+    dFrom    = (document.getElementById('compareCurFrom')  || {}).value || '';
+    dTo      = (document.getElementById('compareCurTo')    || {}).value || '';
+    prevFrom = (document.getElementById('comparePrevFrom') || {}).value || '';
+    prevTo   = (document.getElementById('comparePrevTo')   || {}).value || '';
+    if (!dFrom || !dTo || !prevFrom || !prevTo) {
+      const lbl = document.getElementById('comparePeriodLabel');
+      if (lbl) lbl.textContent = 'Укажите даты обоих периодов и нажмите «Сравнить».';
+      return;
+    }
+    if (dFrom > dTo)       { [dFrom, dTo]       = [dTo, dFrom]; }
+    if (prevFrom > prevTo) { [prevFrom, prevTo] = [prevTo, prevFrom]; }
+  } else {
+    dFrom = document.getElementById('dateFrom').value;
+    dTo   = document.getElementById('dateTo').value;
+    if (!dFrom || !dTo) return;
+    const lenDays = Math.max(1, Math.round((new Date(dTo) - new Date(dFrom)) / 86400000) + 1);
+    if (mode === 'prev_week') {
+      prevFrom = isoShift(dFrom, -7);
+      prevTo   = isoShift(dTo,   -7);
+    } else if (mode === 'prev_month') {
+      prevFrom = isoShift(dFrom, -30);
+      prevTo   = isoShift(dTo,   -30);
+    } else {
+      prevTo   = isoShift(dFrom, -1);
+      prevFrom = isoShift(prevTo, -(lenDays - 1));
+    }
+  }
+
   const lbl = document.getElementById('comparePeriodLabel');
   if (lbl) lbl.textContent = `Текущий: ${dFrom} → ${dTo} · Предыдущий: ${prevFrom} → ${prevTo}`;
-  // Текущий период — из памяти; предыдущий — отдельным запросом в БД
-  // (чтобы не зависеть от фильтра дат на основном дашборде).
-  const cur = originalData.filter(r => r.date >= dFrom && r.date <= dTo);
-  let prev = [];
-  try {
-    const res = await fetch(`${API_BASE}?action=get_stats&start_date=${prevFrom}&end_date=${prevTo}`);
-    const json = await res.json();
-    if (json.status === 'success') {
-      prev = json.data.map(row => ({
+
+  // В custom-режиме текущий период тоже может быть вне фильтра дашборда —
+  // тогда originalData не содержит нужных строк, и приходится тащить через API.
+  const inMemory = (from, to) => originalData.filter(r => r.date >= from && r.date <= to);
+  const fetchRange = async (from, to) => {
+    try {
+      const res = await fetch(`${API_BASE}?action=get_stats&start_date=${from}&end_date=${to}`);
+      const json = await res.json();
+      if (json.status !== 'success') return [];
+      return json.data.map(row => ({
         date: row.date, offer: row.offer_name || 'Unknown', offer_id: row.offer_id || '',
         clicks: row.clicks, conversions: row.conversions, approved: row.approved, revenue: row.revenue
       }));
-    }
-  } catch(e) { console.warn('Compare prev fetch error:', e); }
-  
+    } catch(e) { console.warn('Compare fetch error:', e); return []; }
+  };
+
+  const dashFrom = document.getElementById('dateFrom').value;
+  const dashTo   = document.getElementById('dateTo').value;
+  const curInMem = dashFrom && dashTo && dFrom >= dashFrom && dTo <= dashTo;
+  const cur  = curInMem ? inMemory(dFrom, dTo) : await fetchRange(dFrom, dTo);
+  const prev = await fetchRange(prevFrom, prevTo);
+
   const sumKpi = arr => arr.reduce((a, r) => {
     a.clicks += r.clicks; a.conversions += r.conversions; a.approved += r.approved; a.revenue += r.revenue; return a;
   }, { clicks: 0, conversions: 0, approved: 0, revenue: 0 });
@@ -3988,7 +4106,7 @@ async function renderCompareTab() {
   const pAr = p.conversions ? (p.approved / p.conversions * 100) : 0;
   const cEpc = c.clicks ? (c.revenue / c.clicks) : 0;
   const pEpc = p.clicks ? (p.revenue / p.clicks) : 0;
-  
+
   const card = (title, curVal, prevVal, fmt) => {
     const cs = fmt(curVal), ps = fmt(prevVal);
     let dPct = 0;
@@ -4014,32 +4132,113 @@ async function renderCompareTab() {
     card('Approve %', cAr, pAr, fmtP) +
     card('EPC', cEpc, pEpc, fmtE) +
     card('Approved лиды', c.approved, p.approved, fmtN);
-  
-  // Топ-офферы по приросту/падению выручки
-  const aggOffer = arr => {
+
+  // Полная разбивка по офферам (используется и для топов, и для детальной таблицы).
+  const aggOfferFull = arr => {
     const m = new Map();
-    for (const r of arr) m.set(r.offer, (m.get(r.offer) || 0) + r.revenue);
+    for (const r of arr) {
+      const k = r.offer;
+      let v = m.get(k);
+      if (!v) { v = { offer: k, clicks: 0, conversions: 0, approved: 0, revenue: 0 }; m.set(k, v); }
+      v.clicks      += r.clicks;
+      v.conversions += r.conversions;
+      v.approved    += r.approved;
+      v.revenue     += r.revenue;
+    }
     return m;
   };
-  const cm = aggOffer(cur), pm = aggOffer(prev);
+  const cm = aggOfferFull(cur), pm = aggOfferFull(prev);
   const allOffers = new Set([...cm.keys(), ...pm.keys()]);
-  const diffs = [];
+  const offerRows = [];
+  const empty = { clicks: 0, conversions: 0, approved: 0, revenue: 0 };
   for (const off of allOffers) {
-    const cv = cm.get(off) || 0, pv = pm.get(off) || 0;
-    if (cv === 0 && pv === 0) continue;
-    const delta = cv - pv;
-    const dPct = pv > 0 ? (delta / pv * 100) : (cv > 0 ? Infinity : 0);
-    diffs.push({ offer: off, cur: cv, prev: pv, delta, dPct });
+    const cv = cm.get(off) || empty;
+    const pv = pm.get(off) || empty;
+    if (cv.revenue === 0 && pv.revenue === 0 && cv.clicks === 0 && pv.clicks === 0) continue;
+    const delta = cv.revenue - pv.revenue;
+    const dPct  = pv.revenue > 0 ? (delta / pv.revenue * 100) : (cv.revenue > 0 ? Infinity : 0);
+    offerRows.push({
+      offer: off,
+      cur_revenue: cv.revenue, cur_clicks: cv.clicks, cur_leads: cv.conversions, cur_approved: cv.approved,
+      cur_epc: cv.clicks ? (cv.revenue / cv.clicks) : 0,
+      cur_ar:  cv.conversions ? (cv.approved / cv.conversions * 100) : 0,
+      prev_revenue: pv.revenue, prev_clicks: pv.clicks, prev_leads: pv.conversions, prev_approved: pv.approved,
+      prev_epc: pv.clicks ? (pv.revenue / pv.clicks) : 0,
+      prev_ar:  pv.conversions ? (pv.approved / pv.conversions * 100) : 0,
+      delta_revenue: delta,
+      delta_pct: dPct,
+    });
   }
+  compareState = {
+    offers: offerRows,
+    curRange:  { from: dFrom,    to: dTo },
+    prevRange: { from: prevFrom, to: prevTo },
+  };
+
+  // Топ-офферы по приросту/падению выручки
   const fmtPctCell = v => isFinite(v) ? `<span class="${v >= 0 ? 'text-emerald-400' : 'text-red-400'}">${v >= 0 ? '+' : ''}${v.toFixed(1)}%</span>` : '<span class="text-emerald-400">new</span>';
   const fmtDelta = v => `<span class="${v >= 0 ? 'text-emerald-400' : 'text-red-400'}">${v >= 0 ? '+' : ''}${Math.round(v).toLocaleString('ru-RU')} ₽</span>`;
-  const renderRows = arr => arr.slice(0, 15).map(r =>
-    `<tr class="hover:bg-slate-800"><td>${escapeHtml(r.offer)}</td><td class="text-right">${Math.round(r.cur).toLocaleString('ru-RU')} ₽</td><td class="text-right text-slate-500">${Math.round(r.prev).toLocaleString('ru-RU')} ₽</td><td class="text-right">${fmtDelta(r.delta)}</td><td class="text-right">${fmtPctCell(r.dPct)}</td></tr>`
+  const renderTopRows = arr => arr.slice(0, 15).map(r =>
+    `<tr class="hover:bg-slate-800"><td>${escapeHtml(r.offer)}</td><td class="text-right">${Math.round(r.cur_revenue).toLocaleString('ru-RU')} ₽</td><td class="text-right text-slate-500">${Math.round(r.prev_revenue).toLocaleString('ru-RU')} ₽</td><td class="text-right">${fmtDelta(r.delta_revenue)}</td><td class="text-right">${fmtPctCell(r.delta_pct)}</td></tr>`
   ).join('');
-  const gainers = diffs.filter(d => d.delta > 0).sort((a, b) => b.delta - a.delta);
-  const losers = diffs.filter(d => d.delta < 0).sort((a, b) => a.delta - b.delta);
-  document.querySelector('#compareGainersTable tbody').innerHTML = renderRows(gainers) || '<tr><td colspan="5" class="text-center text-slate-500 py-3">Нет приростов.</td></tr>';
-  document.querySelector('#compareLosersTable tbody').innerHTML = renderRows(losers) || '<tr><td colspan="5" class="text-center text-slate-500 py-3">Нет падений.</td></tr>';
+  const gainers = offerRows.filter(d => d.delta_revenue > 0).sort((a, b) => b.delta_revenue - a.delta_revenue);
+  const losers  = offerRows.filter(d => d.delta_revenue < 0).sort((a, b) => a.delta_revenue - b.delta_revenue);
+  document.querySelector('#compareGainersTable tbody').innerHTML = renderTopRows(gainers) || '<tr><td colspan="5" class="text-center text-slate-500 py-3">Нет приростов.</td></tr>';
+  document.querySelector('#compareLosersTable tbody').innerHTML  = renderTopRows(losers)  || '<tr><td colspan="5" class="text-center text-slate-500 py-3">Нет падений.</td></tr>';
+
+  renderCompareOffersTable();
+}
+
+// Перерисовывает детальную таблицу «офферы × периоды» по compareState — без
+// повторного запроса в API. Учитывает поиск и текущий критерий сортировки.
+function renderCompareOffersTable() {
+  const tbody = document.querySelector('#compareOffersTable tbody');
+  if (!tbody) return;
+  const sortKey = (document.getElementById('compareOffersSort') || {}).value || 'cur_revenue';
+  const q = ((document.getElementById('compareOffersSearch') || {}).value || '').trim().toLowerCase();
+  let rows = compareState.offers.slice();
+  if (q) rows = rows.filter(r => r.offer.toLowerCase().includes(q));
+  rows.sort((a, b) => {
+    const av = a[sortKey], bv = b[sortKey];
+    // Infinity (новые офферы) — в самый верх при сортировке по delta_pct.
+    if (av === Infinity && bv !== Infinity) return -1;
+    if (bv === Infinity && av !== Infinity) return 1;
+    return (bv || 0) - (av || 0);
+  });
+
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="13" class="text-center text-slate-500 py-4">Нет данных по офферам в выбранных периодах.</td></tr>';
+    return;
+  }
+
+  const num    = v => Math.round(v || 0).toLocaleString('ru-RU');
+  const money  = v => num(v) + ' ₽';
+  const epc    = v => (v || 0).toFixed(2) + ' ₽';
+  const pct    = v => (v || 0).toFixed(1) + '%';
+  const deltaR = v => `<span class="${v >= 0 ? 'text-emerald-400' : 'text-red-400'}">${v >= 0 ? '+' : ''}${num(v)} ₽</span>`;
+  const deltaP = v => isFinite(v)
+    ? `<span class="${v >= 0 ? 'text-emerald-400' : 'text-red-400'}">${v >= 0 ? '+' : ''}${v.toFixed(1)}%</span>`
+    : '<span class="text-emerald-400">new</span>';
+  // Подсветим «нулевые» ячейки приглушённо — сразу видно, что оффера в этом
+  // периоде не было (полезно для понимания «новых» и «ушедших» офферов).
+  const dim = (val, fmt) => (val ? fmt(val) : '<span class="text-slate-600">—</span>');
+
+  tbody.innerHTML = rows.map(r => `
+    <tr class="hover:bg-slate-800 border-b border-slate-800">
+      <td class="font-semibold py-1.5">${escapeHtml(r.offer)}</td>
+      <td class="text-right">${dim(r.cur_revenue, money)}</td>
+      <td class="text-right">${dim(r.cur_clicks, num)}</td>
+      <td class="text-right">${dim(r.cur_leads, num)}</td>
+      <td class="text-right">${dim(r.cur_clicks, () => epc(r.cur_epc))}</td>
+      <td class="text-right">${dim(r.cur_leads, () => pct(r.cur_ar))}</td>
+      <td class="text-right text-slate-400">${dim(r.prev_revenue, money)}</td>
+      <td class="text-right text-slate-400">${dim(r.prev_clicks, num)}</td>
+      <td class="text-right text-slate-400">${dim(r.prev_leads, num)}</td>
+      <td class="text-right text-slate-400">${dim(r.prev_clicks, () => epc(r.prev_epc))}</td>
+      <td class="text-right text-slate-400">${dim(r.prev_leads, () => pct(r.prev_ar))}</td>
+      <td class="text-right">${deltaR(r.delta_revenue)}</td>
+      <td class="text-right">${deltaP(r.delta_pct)}</td>
+    </tr>`).join('');
 }
 function isoShift(iso, days) {
   const d = new Date(iso + 'T00:00:00');
