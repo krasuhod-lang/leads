@@ -3620,6 +3620,70 @@ function renderDeepAIResult(d) {
     return '';
   };
 
+  // План достижения KPI — пошаговый приоритизированный roadmap к control.kpi_targets.
+  const kap = (d.kpi_action_plan && typeof d.kpi_action_plan === 'object') ? d.kpi_action_plan : null;
+  const kapTargets = kap && Array.isArray(kap.targets) ? kap.targets : [];
+  const kapSteps = kap && Array.isArray(kap.steps) ? kap.steps.slice().sort((a, b) => (Number(a?.order) || 0) - (Number(b?.order) || 0)) : [];
+  const reachBadge = (r) => {
+    const m = { yes: ['Достижимо', 'bg-emerald-500/20 text-emerald-300'], partial: ['Частично', 'bg-amber-500/20 text-amber-300'], no: ['Недостижимо', 'bg-red-500/20 text-red-300'] };
+    const v = m[String(r || '')] || null;
+    return v ? `<span class="px-2 py-0.5 rounded text-xs ${v[1]}">${v[0]}</span>` : '';
+  };
+  const chLabel = c => ({ showcase: '📱 Витрина', sms: '💬 SMS', offline: '🎧 Оффлайн', mobile_app: '📲 Приложение', web: '🌐 Веб', global: '🌍 Глобально' }[c] || c || '');
+  const kapHtml = (kapTargets.length || kapSteps.length) ? `
+    <div>
+      <h3 class="text-white font-bold mb-3">🎯 План достижения KPI</h3>
+      ${kapTargets.length ? `
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-2 mb-3">
+          ${kapTargets.map(t => {
+            const cur = Number(t.current), tg = Number(t.target), proj = Number(t.projected_after_plan);
+            const gapPct = Number(t.gap_pct);
+            const isRev = String(t.metric) === 'revenue';
+            const fmtV = v => isFinite(v) ? (isRev ? fmtRub(v) : (Number(v).toFixed(2) + ' ₽')) : '—';
+            return `
+            <div class="border border-slate-700 rounded p-3 bg-slate-900/50">
+              <div class="flex justify-between items-center mb-1">
+                <div class="font-semibold text-white uppercase text-xs tracking-wide">${escapeHtml(String(t.metric || ''))}${t.horizon_days ? ` <span class="text-slate-400 normal-case">· ${escapeHtml(String(t.horizon_days))}д</span>` : ''}</div>
+                ${reachBadge(t.reachable)}
+              </div>
+              <div class="text-sm text-slate-200">${fmtV(cur)} <span class="text-slate-500">→ цель</span> <span class="text-emerald-300 font-semibold">${fmtV(tg)}</span></div>
+              <div class="text-xs text-slate-400 mt-1">${isFinite(proj) ? `Прогноз после плана: <span class="text-slate-200">${fmtV(proj)}</span>` : ''}${isFinite(gapPct) ? ` · разрыв ${gapPct > 0 ? '+' : ''}${gapPct.toFixed(1)}%` : ''}</div>
+            </div>`;
+          }).join('')}
+        </div>` : ''}
+      ${kapSteps.length ? `
+        <div class="space-y-2">
+          ${kapSteps.map(s => {
+            const acts = Array.isArray(s.concrete_actions) ? s.concrete_actions.filter(Boolean) : [];
+            const actsHtml = acts.length
+              ? `<ol class="list-decimal pl-5 text-xs text-slate-200 mt-1 space-y-0.5">${acts.map(a => `<li>${escapeHtml(String(a))}</li>`).join('')}</ol>`
+              : '';
+            const ec = (s.expected_contribution && typeof s.expected_contribution === 'object') ? s.expected_contribution : null;
+            const dep = Array.isArray(s.depends_on) && s.depends_on.length ? `<span class="text-xs text-slate-500">после шага ${s.depends_on.map(x => escapeHtml(String(x))).join(', ')}</span>` : '';
+            const meta = [
+              s.owner ? `👤 ${escapeHtml(String(s.owner))}` : '',
+              (s.due_in_days !== undefined && s.due_in_days !== null) ? `⏱ ${escapeHtml(String(s.due_in_days))}д` : '',
+              s.confidence ? `conf: ${conf(s.confidence)}` : '',
+            ].filter(Boolean).join(' · ');
+            return `
+            <div class="border-l-4 border-blue-500 bg-blue-500/5 p-3 rounded">
+              <div class="flex flex-wrap gap-1 items-center mb-1">
+                <span class="px-2 py-0.5 rounded text-xs bg-blue-500/20 text-blue-200 font-mono">#${escapeHtml(String(s.order ?? ''))}</span>
+                <div class="font-semibold text-white flex-1">${escapeHtml(s.title || '')}</div>
+                ${s.channel ? `<span class="px-2 py-0.5 rounded text-xs bg-slate-700 text-slate-200">${chLabel(s.channel)}</span>` : ''}
+                ${actionTypeBadge(s.action_type)}
+                ${targetBadge(s.target)}
+              </div>
+              ${actsHtml}
+              ${ec ? `<div class="text-sm mt-1"><span class="text-slate-400">Вклад:</span> ${fmtImpact(ec)}</div>` : ''}
+              ${(meta || dep) ? `<div class="mt-1 flex flex-wrap gap-2 items-center text-xs text-slate-400">${meta}${meta && dep ? ' · ' : ''}${dep}</div>` : ''}
+            </div>`;
+          }).join('')}
+        </div>` : ''}
+      ${kap && kap.total_expected && typeof kap.total_expected === 'object' ? `<div class="text-sm text-slate-300 mt-2"><span class="text-slate-400">Суммарный ожидаемый эффект:</span> выручка ${isFinite(Number(kap.total_expected.revenue_delta_pct)) ? (Number(kap.total_expected.revenue_delta_pct) > 0 ? '+' : '') + Number(kap.total_expected.revenue_delta_pct).toFixed(1) + '%' : '—'} · EPC ${isFinite(Number(kap.total_expected.epc_delta_pct)) ? (Number(kap.total_expected.epc_delta_pct) > 0 ? '+' : '') + Number(kap.total_expected.epc_delta_pct).toFixed(1) + '%' : '—'}</div>` : ''}
+      ${kap && kap.summary ? `<div class="text-xs text-slate-400 mt-2">${escapeHtml(String(kap.summary))}</div>` : ''}
+    </div>` : '';
+
   const gp = Array.isArray(d.growth_points) ? d.growth_points : [];
   const gpHtml = gp.length ? `
     <div>
@@ -3752,7 +3816,7 @@ function renderDeepAIResult(d) {
       </div>
     </div>` : '';
 
-  const tab3 = [gpHtml, usHtml, recsHtml, kdHtml].filter(Boolean).join('<div class="h-1"></div>')
+  const tab3 = [kapHtml, gpHtml, usHtml, recsHtml, kdHtml].filter(Boolean).join('<div class="h-1"></div>')
     || '<div class="text-sm text-slate-400">Нет данных для блока «Точки роста».</div>';
 
   // ============== ВКЛАДКА 4: Анализ офферов и площадок ==============
