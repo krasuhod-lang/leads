@@ -104,7 +104,7 @@ if (!defined('AI_API_KEY')) {
 }
 // Дополнительная диагностика: файл подключился, но define() вернул пустое
 // значение (например, забыли вписать ключ или вписали пустую строку).
-if ($AI_CONFIG_LOAD_STATUS === 'loaded' && trim(AI_API_KEY) === '') {
+if ($AI_CONFIG_LOAD_STATUS === 'loaded' && aiSanitizeApiKey(AI_API_KEY) === '') {
     error_log('AI: ai_config.php was loaded but AI_API_KEY is empty. Check the define(\'AI_API_KEY\', \'sk-...\') line.');
 }
 if (!defined('AI_API_URL')) {
@@ -254,21 +254,39 @@ aiLog('config_loaded', [
  * Результат кэшируется в статической переменной на время запроса, чтобы не
  * дёргать БД при каждом вызове (provider request + diag + guard).
  */
+/**
+ * Чистит API-ключ перед использованием в заголовке Authorization.
+ *
+ * trim() убирает пробелы/переводы строки только по краям, но при копировании
+ * ключа из мессенджеров/PDF/таблиц в него часто попадают НЕВИДИМЫЕ символы,
+ * которые trim() не трогает: неразрывный пробел (U+00A0), zero-width space
+ * (U+200B), внутренние табы/переводы строки. Любой такой символ делает
+ * заголовок Authorization невалидным, и DeepSeek отвечает 401.
+ *
+ * Валидный ключ DeepSeek состоит только из печатаемых ASCII-символов
+ * (`sk-`, латиница, цифры, дефис), поэтому безопасно выбросить всё, что не
+ * попадает в диапазон 0x21–0x7E (печатаемый ASCII без пробела).
+ */
+function aiSanitizeApiKey($key) {
+    return preg_replace('/[^\x21-\x7E]/', '', (string)$key);
+}
+
 function aiEffectiveApiKey() {
     static $cached = null;
     if ($cached !== null) {
         return $cached;
     }
-    // Тримим ключ независимо от источника: при копировании в ai_config.php или
-    // env часто попадают пробелы/перевод строки, из-за чего заголовок
-    // Authorization становится невалидным и провайдер отвечает 401.
-    if (defined('AI_API_KEY') && trim(AI_API_KEY) !== '') {
-        $cached = trim(AI_API_KEY);
+    // Чистим ключ независимо от источника: при копировании в ai_config.php или
+    // env часто попадают пробелы/перевод строки и невидимые символы, из-за
+    // которых заголовок Authorization становится невалидным и провайдер
+    // отвечает 401 (см. aiSanitizeApiKey).
+    if (defined('AI_API_KEY') && aiSanitizeApiKey(AI_API_KEY) !== '') {
+        $cached = aiSanitizeApiKey(AI_API_KEY);
         return $cached;
     }
     global $db;
     if ($db instanceof SQLite3) {
-        $cached = trim(settingGet($db, 'ai_api_key', ''));
+        $cached = aiSanitizeApiKey(settingGet($db, 'ai_api_key', ''));
         return $cached;
     }
     $cached = '';
@@ -277,7 +295,7 @@ function aiEffectiveApiKey() {
 
 /** Откуда взят действующий ключ: 'config'|'db'|'none' (для диагностики). */
 function aiApiKeySource() {
-    if (defined('AI_API_KEY') && trim(AI_API_KEY) !== '') {
+    if (defined('AI_API_KEY') && aiSanitizeApiKey(AI_API_KEY) !== '') {
         return 'config';
     }
     return aiEffectiveApiKey() !== '' ? 'db' : 'none';
@@ -3010,9 +3028,14 @@ if ($action === 'save_settings') {
         if (!is_string($k)) continue;
         // Не перезаписываем секреты маркером "***SET***".
         if ($v === '***SET***') continue;
-        // API-ключи часто вставляют с пробелами/переводом строки — чистим,
-        // иначе DeepSeek вернёт 401 из-за лишних символов в Authorization.
-        if (($k === 'ai_api_key' || $k === 'tg_bot_token') && is_string($v)) {
+        // API-ключи часто вставляют с пробелами/переводом строки и невидимыми
+        // символами (U+00A0, U+200B) — чистим, иначе DeepSeek вернёт 401 из-за
+        // лишних символов в Authorization. Ключ DeepSeek — печатаемый ASCII,
+        // поэтому полностью выбрасываем непечатаемые символы. Telegram-токен
+        // тоже печатаемый ASCII, но достаточно trim() (двоеточие в нём значимо).
+        if ($k === 'ai_api_key' && is_string($v)) {
+            $v = aiSanitizeApiKey($v);
+        } elseif ($k === 'tg_bot_token' && is_string($v)) {
             $v = trim($v);
         }
         $stmt->bindValue(':k', $k, SQLITE3_TEXT);
@@ -3448,7 +3471,7 @@ if ($action === 'ai_diag') {
     if ($diag['probe']['curl_error']) {
         $diag['hint'] = 'CURL ошибка — вероятно, хостинг блокирует исходящие соединения к API провайдера или нет DNS/SSL. Проверьте, открыт ли исходящий 443 порт.';
     } elseif ($code === 401) {
-        $diag['hint'] = 'HTTP 401 — ключ невалиден/отозван/опечатка. Проверьте AI_API_KEY (без пробелов и переводов строк).';
+        $diag['hint'] = 'HTTP 401 — ключ невалиден/отозван/опечатка. Проверьте AI_API_KEY (без пробелов, переводов строк и невидимых символов; пересохраните ключ через интерфейс).';
     } elseif ($code === 402) {
         $diag['hint'] = 'HTTP 402 — недостаточный баланс у провайдера. Пополните счёт.';
     } elseif ($code === 429) {
@@ -3651,7 +3674,7 @@ if ($action === 'ai_analyze') {
         if ($code === 'transport') {
             $hint = 'Не удаётся достучаться до AI-сервиса (исходящие соединения от хостинга?).';
         } elseif (strpos($code, 'http_401') === 0) {
-            $hint = 'AI ключ отклонён (401). Проверьте AI_API_KEY.';
+            $hint = 'AI ключ отклонён (401). Проверьте AI_API_KEY (без пробелов и невидимых символов) и пересохраните ключ.';
         } elseif (strpos($code, 'http_402') === 0) {
             $hint = 'У AI-провайдера недостаточный баланс (402).';
         } elseif (strpos($code, 'http_429') === 0) {
