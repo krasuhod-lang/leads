@@ -238,6 +238,47 @@ aiLog('config_loaded', [
     'fallback_model'       => AI_FALLBACK_MODEL,
     'api_url'              => AI_API_URL,
 ]);
+
+/**
+ * Возвращает действующий API-ключ DeepSeek с учётом всех источников.
+ *
+ * Приоритет:
+ *   1) AI_API_KEY из переменной окружения или ai_config.php (если задан);
+ *   2) ключ, введённый пользователем через интерфейс и сохранённый в
+ *      app_settings (key='ai_api_key'). Это нужно для shared-хостинга, где
+ *      нельзя задать env-переменные и неудобно править ai_config.php.
+ *
+ * Ключ хранится только на сервере (SQLite), наружу никогда не отдаётся
+ * целиком (см. get_settings — он маскируется как '***SET***').
+ *
+ * Результат кэшируется в статической переменной на время запроса, чтобы не
+ * дёргать БД при каждом вызове (provider request + diag + guard).
+ */
+function aiEffectiveApiKey() {
+    static $cached = null;
+    if ($cached !== null) {
+        return $cached;
+    }
+    if (defined('AI_API_KEY') && AI_API_KEY !== '') {
+        $cached = AI_API_KEY;
+        return $cached;
+    }
+    global $db;
+    if ($db instanceof SQLite3) {
+        $cached = trim(settingGet($db, 'ai_api_key', ''));
+        return $cached;
+    }
+    $cached = '';
+    return $cached;
+}
+
+/** Откуда взят действующий ключ: 'config'|'db'|'none' (для диагностики). */
+function aiApiKeySource() {
+    if (defined('AI_API_KEY') && AI_API_KEY !== '') {
+        return 'config';
+    }
+    return aiEffectiveApiKey() !== '' ? 'db' : 'none';
+}
 // =======================================================
 
 // ---- Подключение к SQLite (один файл stats.db) ----
@@ -1921,7 +1962,7 @@ function aiCallProvider($sysPrompt, $userPrompt, $model) {
         CURLOPT_HTTPHEADER => [
             'Content-Type: application/json',
             'Accept: text/event-stream',
-            'Authorization: Bearer ' . AI_API_KEY,
+            'Authorization: Bearer ' . aiEffectiveApiKey(),
         ],
         CURLOPT_POSTFIELDS    => json_encode($body, JSON_UNESCAPED_UNICODE),
         CURLOPT_WRITEFUNCTION => $writeFn,
@@ -2953,6 +2994,7 @@ if ($action === 'get_settings') {
     // Маскируем чувствительные значения, оставляя признак "задано".
     $masked = $out;
     if (!empty($masked['tg_bot_token'])) $masked['tg_bot_token'] = '***SET***';
+    if (!empty($masked['ai_api_key']))   $masked['ai_api_key']   = '***SET***';
     echo json_encode(['status' => 'success', 'data' => $masked]);
     exit;
 }
@@ -2963,8 +3005,13 @@ if ($action === 'save_settings') {
         ON CONFLICT(key) DO UPDATE SET value = excluded.value');
     foreach ($input as $k => $v) {
         if (!is_string($k)) continue;
-        // Не перезаписываем bot_token маркером "***SET***".
+        // Не перезаписываем секреты маркером "***SET***".
         if ($v === '***SET***') continue;
+        // API-ключи часто вставляют с пробелами/переводом строки — чистим,
+        // иначе DeepSeek вернёт 401 из-за лишних символов в Authorization.
+        if (($k === 'ai_api_key' || $k === 'tg_bot_token') && is_string($v)) {
+            $v = trim($v);
+        }
         $stmt->bindValue(':k', $k, SQLITE3_TEXT);
         $stmt->bindValue(':v', is_scalar($v) ? (string)$v : json_encode($v, JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
         $stmt->execute();
@@ -3309,14 +3356,16 @@ if ($action === 'ai_diag') {
     @set_time_limit(30);
     aiLog('ai_diag_start', []);
     global $AI_CONFIG_LOAD_STATUS;
+    $effKey = aiEffectiveApiKey();
     $diag = [
         'status' => 'success',
         'config_file_present' => is_file(__DIR__ . '/ai_config.php'),
         'config_file_readable' => is_readable(__DIR__ . '/ai_config.php'),
         'config_load_status' => $AI_CONFIG_LOAD_STATUS ?? 'unknown', // absent|loaded|unreadable
-        'api_key_present' => (AI_API_KEY !== ''),
-        'api_key_length_bucket' => AI_API_KEY === '' ? 'empty' : (strlen(AI_API_KEY) < 20 ? 'short' : 'ok'),
-        'api_key_prefix' => AI_API_KEY === '' ? '' : substr(AI_API_KEY, 0, 4) . '…',
+        'api_key_present' => ($effKey !== ''),
+        'api_key_source' => aiApiKeySource(), // config|db|none
+        'api_key_length_bucket' => $effKey === '' ? 'empty' : (strlen($effKey) < 20 ? 'short' : 'ok'),
+        'api_key_prefix' => $effKey === '' ? '' : substr($effKey, 0, 4) . '…',
         'env_key_set' => (getenv('AI_API_KEY') !== false && getenv('AI_API_KEY') !== ''),
         'php_version' => PHP_VERSION,
         'curl_loaded' => function_exists('curl_init'),
@@ -3336,12 +3385,13 @@ if ($action === 'ai_diag') {
     if (!$diag['api_key_present']) {
         // Подскажем точную причину пустого ключа:
         if ($diag['config_load_status'] === 'absent') {
-            $diag['hint'] = 'Файл ai_config.php НЕ найден по пути ' . $diag['expected_config_path']
-                . '. Загрузите его рядом с leads-proxy.php (а не в корень сайта).';
+            $diag['hint'] = 'Ключ DeepSeek не задан. Самый простой способ — вписать его в интерфейсе '
+                . '(вкладка «События» → блок «🤖 DeepSeek API-ключ» → Сохранить). '
+                . 'Либо положите ai_config.php рядом с leads-proxy.php, либо задайте переменную окружения AI_API_KEY.';
         } elseif ($diag['config_load_status'] === 'unreadable') {
-            $diag['hint'] = 'Файл ai_config.php найден, но веб-сервер не может его прочитать. Сделайте chmod 644.';
+            $diag['hint'] = 'Файл ai_config.php найден, но веб-сервер не может его прочитать. Сделайте chmod 644 или впишите ключ через интерфейс.';
         } else {
-            $diag['hint'] = 'Файл ai_config.php подключился, но AI_API_KEY пуст. Проверьте, что внутри есть строка define(\'AI_API_KEY\', \'sk-...\'); без пробелов и переводов строк.';
+            $diag['hint'] = 'Ключ пуст. Впишите его через интерфейс (блок «🤖 DeepSeek API-ключ») или проверьте строку define(\'AI_API_KEY\', \'sk-...\'); в ai_config.php.';
         }
         aiLog('ai_diag_no_key', [
             'config_load_status' => $diag['config_load_status'],
@@ -3373,7 +3423,7 @@ if ($action === 'ai_diag') {
         CURLOPT_HTTPHEADER => [
             'Content-Type: application/json',
             'Accept: application/json',
-            'Authorization: Bearer ' . AI_API_KEY,
+            'Authorization: Bearer ' . aiEffectiveApiKey(),
         ],
         CURLOPT_POSTFIELDS => json_encode($probeBody, JSON_UNESCAPED_UNICODE),
     ]);
@@ -3550,11 +3600,11 @@ if ($action === 'ai_analyze') {
         }
     }
 
-    if (AI_API_KEY === '') {
+    if (aiEffectiveApiKey() === '') {
         // Ключ не сконфигурирован на сервере — отдаём JSON, а не падаем в HTML.
-        error_log('AI: AI_API_KEY env is empty; refusing to call provider');
+        error_log('AI: API key is empty; refusing to call provider');
         aiLog('ai_analyze_no_key', []);
-        echo json_encode(['status' => 'error', 'error' => 'AI service is not configured.']);
+        echo json_encode(['status' => 'error', 'error' => 'Ключ DeepSeek не задан. Откройте вкладку «События» → «🤖 DeepSeek API-ключ» и сохраните ключ.']);
         exit;
     }
     // Жёстко ограничиваем размер payload, чтобы не раздувать prompt и стоимость.

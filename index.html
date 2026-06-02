@@ -652,6 +652,24 @@
       </div>
       <div id="tgMessage" class="mt-3 text-sm hidden"></div>
     </div>
+    <div class="card">
+      <h2 class="text-white font-bold text-lg mb-3">🤖 DeepSeek API-ключ</h2>
+      <p class="text-sm text-slate-400 mb-3">Нужен для генерации AI-анализа. Получите его в <a href="https://platform.deepseek.com/api_keys" target="_blank" rel="noopener" class="text-blue-400 underline">личном кабинете DeepSeek</a> и вставьте сюда. Ключ хранится только на сервере (в БД), наружу не отдаётся и в логи не пишется — после сохранения поле показывает лишь отметку «задан».</p>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
+        <div>
+          <label for="aiApiKey" class="text-xs text-slate-400 block mb-1">API key (sk-...)</label>
+          <input id="aiApiKey" type="password" autocomplete="off" placeholder="sk-XXXXXXXXXXXXXXXX" class="bg-slate-800 border border-slate-700 rounded px-3 py-2 w-full text-sm focus:outline-none focus:border-blue-500">
+        </div>
+        <div class="flex items-end">
+          <span id="aiKeyStatus" class="text-xs text-slate-500">Статус ключа неизвестен.</span>
+        </div>
+      </div>
+      <div class="flex gap-2 flex-wrap">
+        <button class="btn" onclick="saveAiKey()">💾 Сохранить ключ</button>
+        <button class="btn" style="background:#16a34a" onclick="testAiKey()">🔌 Проверить связь</button>
+      </div>
+      <div id="aiKeyMessage" class="mt-3 text-sm hidden"></div>
+    </div>
   </div>
 </div>
 
@@ -4288,6 +4306,15 @@ async function loadTgSettings() {
     if (d.tg_bot_token === '***SET***') document.getElementById('tgBotToken').placeholder = '••• уже задан, оставьте пустым чтобы не менять';
     if (d.tg_chat_id) document.getElementById('tgChatId').value = d.tg_chat_id;
     if (d.monthly_revenue_plan) document.getElementById('monthlyRevenuePlan').value = d.monthly_revenue_plan;
+    const aiKeyInput = document.getElementById('aiApiKey');
+    const aiKeyStatus = document.getElementById('aiKeyStatus');
+    if (d.ai_api_key === '***SET***') {
+      if (aiKeyInput) aiKeyInput.placeholder = '••• уже задан, оставьте пустым чтобы не менять';
+      if (aiKeyStatus) { aiKeyStatus.textContent = '✅ Ключ сохранён на сервере.'; aiKeyStatus.className = 'text-xs text-emerald-400'; }
+    } else if (aiKeyStatus) {
+      aiKeyStatus.textContent = '⚠️ Ключ не задан — AI-анализ работать не будет.';
+      aiKeyStatus.className = 'text-xs text-amber-400';
+    }
   } catch(e) { console.warn('TG settings load:', e); }
 }
 async function saveTgSettings() {
@@ -4318,6 +4345,63 @@ async function saveTgSettings() {
   }
   msg.classList.remove('hidden');
   setTimeout(() => msg.classList.add('hidden'), 4000);
+}
+// ========================== DEEPSEEK API KEY ==========================
+async function saveAiKey() {
+  const key = document.getElementById('aiApiKey').value.trim();
+  const msg = document.getElementById('aiKeyMessage');
+  if (!key) {
+    msg.textContent = '⚠️ Введите ключ перед сохранением.';
+    msg.className = 'mt-3 text-sm text-amber-400';
+    msg.classList.remove('hidden');
+    setTimeout(() => msg.classList.add('hidden'), 4000);
+    return;
+  }
+  msg.textContent = '⏳ Сохранение...';
+  msg.className = 'mt-3 text-sm text-blue-400';
+  msg.classList.remove('hidden');
+  try {
+    const res = await fetch(`${API_BASE}?action=save_settings`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ai_api_key: key })
+    });
+    const json = await res.json();
+    if (json.status === 'success') {
+      msg.textContent = '✅ Ключ сохранён. Нажмите «🔌 Проверить связь», чтобы убедиться, что DeepSeek отвечает.';
+      msg.className = 'mt-3 text-sm text-emerald-400';
+      document.getElementById('aiApiKey').value = '';
+      await loadTgSettings();
+    } else {
+      throw new Error(json.error || 'unknown');
+    }
+  } catch(e) {
+    msg.textContent = '❌ Ошибка: ' + e.message;
+    msg.className = 'mt-3 text-sm text-red-400';
+  }
+  setTimeout(() => msg.classList.add('hidden'), 6000);
+}
+async function testAiKey() {
+  const msg = document.getElementById('aiKeyMessage');
+  msg.textContent = '⏳ Проверяю связь с DeepSeek...';
+  msg.className = 'mt-3 text-sm text-blue-400';
+  msg.classList.remove('hidden');
+  try {
+    const res = await fetch(`${API_BASE}?action=ai_diag`);
+    const json = await res.json();
+    if (!json.api_key_present) {
+      msg.textContent = '⚠️ ' + (json.hint || 'Ключ не задан.');
+      msg.className = 'mt-3 text-sm text-amber-400';
+      return;
+    }
+    const code = json.probe ? json.probe.http_code : 0;
+    const ok = code >= 200 && code < 300;
+    const src = json.api_key_source === 'db' ? ' (ключ из интерфейса)'
+              : json.api_key_source === 'config' ? ' (ключ из ai_config.php/env)' : '';
+    msg.textContent = (ok ? '✅ Связь с DeepSeek работает' : '⚠️ ' + (json.hint || ('HTTP ' + code))) + src;
+    msg.className = 'mt-3 text-sm ' + (ok ? 'text-emerald-400' : 'text-amber-400');
+  } catch(e) {
+    msg.textContent = '❌ Ошибка: ' + e.message;
+    msg.className = 'mt-3 text-sm text-red-400';
+  }
 }
 async function testTgSend() {
   const msg = document.getElementById('tgMessage');
