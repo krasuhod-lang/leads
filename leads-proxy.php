@@ -1317,17 +1317,19 @@ function aiTrimPayload($p) {
 
 function aiValidateOutput($obj, $sig) {
     if (!is_array($obj)) return 'Output is not a JSON object';
-    // Жёстко валидируем ТОЛЬКО три ключа верхнего уровня (по новому ТЗ):
-    //   summary, reject_monetization_strategy, risks.
-    // Остальные блоки — мягкие: при отсутствии бэкфиллим безопасными
-    // значениями в aiBackfillOutput, чтобы фронт не падал.
-    foreach (['summary', 'reject_monetization_strategy', 'risks'] as $req) {
+    // Жёстко валидируем ТОЛЬКО summary (минимальный человекочитаемый вывод).
+    // reject_monetization_strategy и risks — мягкие: при отсутствии их
+    // гарантированно бэкфиллит aiBackfillOutput (все 4 канала + summary для
+    // reject_monetization_strategy, пустой массив для risks), а фронт корректно
+    // показывает фолбэк. Поэтому отсутствие этих блоков не должно ронять весь
+    // ответ — иначе модель, забывшая один блок, приводит к "Validation failed".
+    foreach (['summary'] as $req) {
         if (!array_key_exists($req, $obj)) return "Missing required field: {$req}";
     }
-    if (!is_array($obj['reject_monetization_strategy'])) {
+    if (array_key_exists('reject_monetization_strategy', $obj) && !is_array($obj['reject_monetization_strategy'])) {
         return 'reject_monetization_strategy must be an object';
     }
-    if (!is_array($obj['risks'])) {
+    if (array_key_exists('risks', $obj) && !is_array($obj['risks'])) {
         return 'risks must be an array';
     }
     // Мягкая проверка типов прочих блоков (не роняем ответ, если просто отсутствуют).
@@ -1352,7 +1354,7 @@ function aiBackfillOutput($obj) {
     if (!is_array($obj)) return $obj;
     // Опциональные массивы верхнего уровня.
     foreach (['recommendations', 'platforms_breakdown', 'key_decisions',
-             'growth_points', 'underperforming_segments', 'reasoning_log'] as $k) {
+             'growth_points', 'underperforming_segments', 'reasoning_log', 'risks'] as $k) {
         if (!array_key_exists($k, $obj) || !is_array($obj[$k])) $obj[$k] = [];
     }
     // Опциональные объекты верхнего уровня.
