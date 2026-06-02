@@ -254,6 +254,34 @@ aiLog('config_loaded', [
  * Результат кэшируется в статической переменной на время запроса, чтобы не
  * дёргать БД при каждом вызове (provider request + diag + guard).
  */
+/**
+ * Является ли ключ заглушкой-плейсхолдером из ai_config.example.php
+ * (`sk-XXXXXXXXXXXX…`) или иным очевидно «ненастоящим» значением.
+ *
+ * Зачем: если пользователь скопировал ai_config.php, но не вписал реальный
+ * ключ (или оставил env AI_API_KEY=плейсхолдер), константа AI_API_KEY
+ * становится непустой и ПЕРЕКРЫВАЕТ валидный ключ, введённый через UI (БД).
+ * В результате провайдер навсегда отвечает 401, хотя в интерфейсе ключ задан.
+ * Считая плейсхолдер «незаданным», мы позволяем ключу из БД сработать.
+ */
+function aiIsPlaceholderKey($key) {
+    $k = trim((string)$key);
+    if ($k === '') {
+        return true;
+    }
+    // Плейсхолдер из примера: `sk-` и дальше только символы X (в любом
+    // регистре). Реальный ключ DeepSeek после `sk-` содержит [a-z0-9].
+    if (preg_match('/^sk-x+$/i', $k)) {
+        return true;
+    }
+    // Прочие типовые заглушки.
+    $lower = strtolower($k);
+    if ($lower === 'your-api-key' || $lower === 'your_api_key' || $lower === 'sk-') {
+        return true;
+    }
+    return false;
+}
+
 function aiEffectiveApiKey() {
     static $cached = null;
     if ($cached !== null) {
@@ -262,13 +290,16 @@ function aiEffectiveApiKey() {
     // Тримим ключ независимо от источника: при копировании в ai_config.php или
     // env часто попадают пробелы/перевод строки, из-за чего заголовок
     // Authorization становится невалидным и провайдер отвечает 401.
-    if (defined('AI_API_KEY') && trim(AI_API_KEY) !== '') {
+    // Плейсхолдеры (`sk-XXXX…`) игнорируем — иначе они навсегда перекрыли бы
+    // валидный ключ из БД (введённый через UI) и дали бы постоянный 401.
+    if (defined('AI_API_KEY') && trim(AI_API_KEY) !== '' && !aiIsPlaceholderKey(AI_API_KEY)) {
         $cached = trim(AI_API_KEY);
         return $cached;
     }
     global $db;
     if ($db instanceof SQLite3) {
-        $cached = trim(settingGet($db, 'ai_api_key', ''));
+        $dbKey = trim(settingGet($db, 'ai_api_key', ''));
+        $cached = aiIsPlaceholderKey($dbKey) ? '' : $dbKey;
         return $cached;
     }
     $cached = '';
@@ -277,7 +308,7 @@ function aiEffectiveApiKey() {
 
 /** Откуда взят действующий ключ: 'config'|'db'|'none' (для диагностики). */
 function aiApiKeySource() {
-    if (defined('AI_API_KEY') && trim(AI_API_KEY) !== '') {
+    if (defined('AI_API_KEY') && trim(AI_API_KEY) !== '' && !aiIsPlaceholderKey(AI_API_KEY)) {
         return 'config';
     }
     return aiEffectiveApiKey() !== '' ? 'db' : 'none';
@@ -3394,7 +3425,7 @@ if ($action === 'ai_diag') {
         } elseif ($diag['config_load_status'] === 'unreadable') {
             $diag['hint'] = 'Файл ai_config.php найден, но веб-сервер не может его прочитать. Сделайте chmod 644 или впишите ключ через интерфейс.';
         } else {
-            $diag['hint'] = 'Ключ пуст. Впишите его через интерфейс (блок «🤖 DeepSeek API-ключ») или проверьте строку define(\'AI_API_KEY\', \'sk-...\'); в ai_config.php.';
+            $diag['hint'] = 'Ключ пуст или это плейсхолдер (sk-XXXX…). Впишите реальный ключ через интерфейс (блок «🤖 DeepSeek API-ключ») или проверьте строку define(\'AI_API_KEY\', \'sk-...\'); в ai_config.php.';
         }
         aiLog('ai_diag_no_key', [
             'config_load_status' => $diag['config_load_status'],
