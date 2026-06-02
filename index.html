@@ -30,6 +30,19 @@
     .sort-th:hover { color: #e2e8f0; }
     .auto-refresh-indicator { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: #10b981; }
     .auto-refresh-indicator .dot { width: 8px; height: 8px; background: #10b981; border-radius: 50%; animation: pulse 2s infinite; }
+    /* Закреплённые заголовки таблиц при прокрутке длинных списков */
+    .overflow-auto table thead th { position: sticky; top: 0; z-index: 2; background: #1e293b; }
+    .matrix-table thead th { position: sticky; top: 0; z-index: 2; }
+    /* Горизонтальный скролл вкладок на узких экранах + индикатор */
+    #tabBar { overflow-x: auto; flex-wrap: nowrap; scrollbar-width: thin; scrollbar-color: #334155 transparent; -webkit-overflow-scrolling: touch; }
+    #tabBar::-webkit-scrollbar { height: 6px; }
+    #tabBar::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+    .tab-btn { flex: 0 0 auto; white-space: nowrap; position: relative; }
+    /* Бейдж непрочитанных и индикатор статуса на вкладках */
+    .tab-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px; padding: 0 5px; margin-left: 6px; font-size: 11px; font-weight: 700; line-height: 1; color: #fff; background: #ef4444; border-radius: 9px; vertical-align: middle; }
+    .tab-dot { margin-left: 6px; font-size: 10px; vertical-align: middle; }
+    .tab-dot.ok { color: #10b981; }
+    .tab-dot.off { color: #f59e0b; }
     .quick-range-btn { background: #1e293b; color: #94a3b8; border: 1px solid #334155; padding: 6px 12px; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer; transition: background 0.15s, color 0.15s, border-color 0.15s; }
     .quick-range-btn:hover { background: #334155; color: #e2e8f0; }
     .quick-range-btn.active { background: #2563eb; border-color: #2563eb; color: #fff; }
@@ -49,10 +62,12 @@
         <input id="dateFrom" type="date" class="bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-blue-500">
         <input id="dateTo" type="date" class="bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-blue-500">
         <button id="btnLoadAPI" class="btn" onclick="loadFromAPI()">⚡ Загрузить данные</button>
+        <button id="btnManualRefresh" class="btn" style="background:#475569" title="Обновить из сохранённого снапшота" onclick="manualRefresh()">🔄 Обновить</button>
         <div class="auto-refresh-indicator" id="autoRefreshStatus">
           <span class="dot"></span>
           <span>Автообновление: <span id="nextRefreshTime">--:--</span></span>
         </div>
+        <span id="lastUpdatedLabel" class="text-xs text-slate-400"></span>
       </div>
       <div id="quickRangeBar" class="flex flex-wrap gap-2 mt-3" role="group" aria-label="Быстрый выбор периода">
         <button type="button" class="quick-range-btn" data-range="today"      onclick="setQuickRange('today')">Сегодня</button>
@@ -76,7 +91,7 @@
   </div>
 
   <!-- Tabs -->
-  <div class="flex gap-1 border-b border-slate-700">
+  <div id="tabBar" class="flex gap-1 border-b border-slate-700">
     <button class="tab-btn active" data-tab="dashboard" onclick="switchTab('dashboard')">📊 Дашборд</button>
     <button class="tab-btn" data-tab="epc" onclick="switchTab('epc')">📈 EPC-анализ</button>
     <button class="tab-btn" data-tab="market" onclick="switchTab('market')">🌐 Рынок офферов</button>
@@ -84,8 +99,8 @@
     <button class="tab-btn" data-tab="ar-matrix" onclick="switchTab('ar-matrix')">🎛️ AR-матрица</button>
     <button class="tab-btn" data-tab="compare" onclick="switchTab('compare')">🆚 Сравнение</button>
     <button class="tab-btn" data-tab="banner" onclick="switchTab('banner')">🎯 Баннер</button>
-    <button class="tab-btn" data-tab="ai" onclick="switchTab('ai')">🤖 AI-аналитика</button>
-    <button class="tab-btn" data-tab="events" onclick="switchTab('events')">📰 События</button>
+    <button class="tab-btn" data-tab="ai" onclick="switchTab('ai')">🤖 AI-аналитика<span id="aiKeyIndicator" class="tab-dot off" title="Статус AI-ключа неизвестен">●</span></button>
+    <button class="tab-btn" data-tab="events" onclick="switchTab('events')">📰 События<span id="eventsUnreadBadge" class="tab-badge hidden">0</span></button>
   </div>
 
   <!-- TAB: DASHBOARD -->
@@ -652,6 +667,24 @@
       </div>
       <div id="tgMessage" class="mt-3 text-sm hidden"></div>
     </div>
+    <div class="card">
+      <h2 class="text-white font-bold text-lg mb-3">🤖 DeepSeek API-ключ</h2>
+      <p class="text-sm text-slate-400 mb-3">Нужен для генерации AI-анализа. Получите его в <a href="https://platform.deepseek.com/api_keys" target="_blank" rel="noopener" class="text-blue-400 underline">личном кабинете DeepSeek</a> и вставьте сюда. Ключ хранится только на сервере (в БД), наружу не отдаётся и в логи не пишется — после сохранения поле показывает лишь отметку «задан».</p>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
+        <div>
+          <label for="aiApiKey" class="text-xs text-slate-400 block mb-1">API key (sk-...)</label>
+          <input id="aiApiKey" type="password" autocomplete="off" placeholder="sk-XXXXXXXXXXXXXXXX" class="bg-slate-800 border border-slate-700 rounded px-3 py-2 w-full text-sm focus:outline-none focus:border-blue-500">
+        </div>
+        <div class="flex items-end">
+          <span id="aiKeyStatus" class="text-xs text-slate-500">Статус ключа неизвестен.</span>
+        </div>
+      </div>
+      <div class="flex gap-2 flex-wrap">
+        <button class="btn" onclick="saveAiKey()">💾 Сохранить ключ</button>
+        <button class="btn" style="background:#16a34a" onclick="testAiKey()">🔌 Проверить связь</button>
+      </div>
+      <div id="aiKeyMessage" class="mt-3 text-sm hidden"></div>
+    </div>
   </div>
 </div>
 
@@ -700,15 +733,32 @@ const sharedTooltipConfig = {
 };
 
 // ========================== TAB NAVIGATION ==========================
+const LAST_TAB_KEY = 'leadsLastTab';
+
 function switchTab(tabName) {
   document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
   document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
   const tabEl = document.getElementById('tab-' + tabName);
   if (tabEl) tabEl.classList.add('active');
   document.querySelectorAll('.tab-btn').forEach(btn => {
-    if (btn.dataset.tab === tabName) btn.classList.add('active');
+    if (btn.dataset.tab === tabName) {
+      btn.classList.add('active');
+      // Подскролл активной вкладки в зону видимости (горизонтальный скролл на мобильных)
+      try { btn.scrollIntoView({ inline: 'nearest', block: 'nearest' }); } catch (_) {}
+    }
   });
+  // Запоминаем последнюю открытую вкладку, чтобы восстановить при перезагрузке.
+  try { localStorage.setItem(LAST_TAB_KEY, tabName); } catch (_) {}
+  // Открытие «Событий» помечает все события прочитанными.
+  if (tabName === 'events') markEventsRead();
   setTimeout(() => window.dispatchEvent(new Event('resize')), 100);
+}
+
+// Восстанавливает последнюю открытую вкладку из localStorage (если она существует).
+function restoreLastTab() {
+  let last = null;
+  try { last = localStorage.getItem(LAST_TAB_KEY); } catch (_) {}
+  if (last && document.getElementById('tab-' + last)) switchTab(last);
 }
 
 // ========================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========================
@@ -1097,6 +1147,97 @@ function updateNextRefreshTime() {
   if (el) el.textContent = `${hh}:${mm}`;
 }
 
+// ===================== «ОБНОВЛЕНО N МИНУТ НАЗАД» =====================
+// Метка времени последнего успешного рендера данных. Обновляется в renderUI().
+let lastDataUpdateTs = 0;
+
+function markDataUpdated() {
+  lastDataUpdateTs = Date.now();
+  updateLastUpdatedLabel();
+}
+
+function updateLastUpdatedLabel() {
+  const el = document.getElementById('lastUpdatedLabel');
+  if (!el) return;
+  if (!lastDataUpdateTs) { el.textContent = ''; return; }
+  const mins = Math.floor((Date.now() - lastDataUpdateTs) / 60000);
+  let txt;
+  if (mins <= 0) txt = 'обновлено только что';
+  else if (mins === 1) txt = 'обновлено 1 минуту назад';
+  else if (mins < 60) txt = `обновлено ${mins} мин. назад`;
+  else {
+    const h = Math.floor(mins / 60);
+    txt = `обновлено ${h} ч. назад`;
+  }
+  el.textContent = '🕒 ' + txt;
+}
+
+// Ручное обновление из сохранённого снапшота БД (быстро, без обращения к API).
+async function manualRefresh() {
+  const btn = document.getElementById('btnManualRefresh');
+  if (btn) btn.disabled = true;
+  try { await autoLoadSavedStats(); } catch (e) { console.warn('manualRefresh:', e); }
+  if (btn) btn.disabled = false;
+}
+
+// ===================== БЕЙДЖ НЕПРОЧИТАННЫХ СОБЫТИЙ =====================
+const EVENTS_WATERMARK_KEY = 'leadsEventsWatermark';
+let lastEventsData = [];
+
+function maxEventDate(list) {
+  return (list || []).reduce((m, e) => {
+    const d = String(e.event_date || '');
+    return d > m ? d : m;
+  }, '');
+}
+
+function updateEventsBadge() {
+  const badge = document.getElementById('eventsUnreadBadge');
+  if (!badge) return;
+  let watermark = '';
+  try { watermark = localStorage.getItem(EVENTS_WATERMARK_KEY) || ''; } catch (_) {}
+  const unread = lastEventsData.filter(e => String(e.event_date || '') > watermark).length;
+  // Если вкладка «События» открыта прямо сейчас — считаем всё прочитанным.
+  const eventsActive = document.getElementById('tab-events')?.classList.contains('active');
+  if (unread > 0 && !eventsActive) {
+    badge.textContent = unread > 99 ? '99+' : String(unread);
+    badge.classList.remove('hidden');
+  } else {
+    badge.classList.add('hidden');
+    if (eventsActive) markEventsRead();
+  }
+}
+
+function markEventsRead() {
+  const wm = maxEventDate(lastEventsData);
+  if (wm) { try { localStorage.setItem(EVENTS_WATERMARK_KEY, wm); } catch (_) {} }
+  const badge = document.getElementById('eventsUnreadBadge');
+  if (badge) badge.classList.add('hidden');
+}
+
+// ===================== ИНДИКАТОР AI-КЛЮЧА =====================
+// Использует api_key_source из ai_diag: задан ключ (db/config) → зелёный, иначе жёлтый.
+async function updateAiKeyIndicator() {
+  const dot = document.getElementById('aiKeyIndicator');
+  if (!dot) return;
+  try {
+    const res = await fetch(`${API_BASE}?action=ai_diag`);
+    const json = await res.json();
+    if (json.api_key_present) {
+      const src = json.api_key_source === 'db' ? 'из интерфейса'
+                : json.api_key_source === 'config' ? 'из ai_config.php/env' : 'задан';
+      dot.className = 'tab-dot ok';
+      dot.title = `AI-ключ задан (${src})`;
+    } else {
+      dot.className = 'tab-dot off';
+      dot.title = 'AI-ключ не задан — AI-анализ работать не будет';
+    }
+  } catch (e) {
+    dot.className = 'tab-dot off';
+    dot.title = 'Статус AI-ключа неизвестен';
+  }
+}
+
 async function loadOfferMarketData() {
   try {
     const res = await fetch(`${API_BASE}?action=get_offers_market`);
@@ -1384,6 +1525,7 @@ function renderUI() {
     <div class="flex justify-between"><span>CR:</span><strong>${cr.toFixed(2)}%</strong></div>
     <div class="flex justify-between"><span>Approve Rate:</span><strong>${ar.toFixed(2)}%</strong></div>
     <div class="flex justify-between"><span>EPC:</span><strong>${epc.toFixed(2)} ₽</strong></div>`;
+  markDataUpdated();
 }
 
 function aggregateBy(field, sourceFilter) {
@@ -4256,6 +4398,8 @@ async function loadEventsLog() {
     const res = await fetch(`${API_BASE}?action=get_notifications&limit=200`);
     const json = await res.json();
     const tb = document.getElementById('eventsLogBody');
+    lastEventsData = (json && json.data) ? json.data : [];
+    updateEventsBadge();
     if (!tb) return;
     if (!json.data || !json.data.length) {
       tb.innerHTML = '<tr><td colspan="5" class="text-center text-slate-500 py-3">Журнал пуст. Нажмите «🔄 Подтянуть свежие».</td></tr>';
@@ -4288,6 +4432,15 @@ async function loadTgSettings() {
     if (d.tg_bot_token === '***SET***') document.getElementById('tgBotToken').placeholder = '••• уже задан, оставьте пустым чтобы не менять';
     if (d.tg_chat_id) document.getElementById('tgChatId').value = d.tg_chat_id;
     if (d.monthly_revenue_plan) document.getElementById('monthlyRevenuePlan').value = d.monthly_revenue_plan;
+    const aiKeyInput = document.getElementById('aiApiKey');
+    const aiKeyStatus = document.getElementById('aiKeyStatus');
+    if (d.ai_api_key === '***SET***') {
+      if (aiKeyInput) aiKeyInput.placeholder = '••• уже задан, оставьте пустым чтобы не менять';
+      if (aiKeyStatus) { aiKeyStatus.textContent = '✅ Ключ сохранён на сервере.'; aiKeyStatus.className = 'text-xs text-emerald-400'; }
+    } else if (aiKeyStatus) {
+      aiKeyStatus.textContent = '⚠️ Ключ не задан — AI-анализ работать не будет.';
+      aiKeyStatus.className = 'text-xs text-amber-400';
+    }
   } catch(e) { console.warn('TG settings load:', e); }
 }
 async function saveTgSettings() {
@@ -4318,6 +4471,63 @@ async function saveTgSettings() {
   }
   msg.classList.remove('hidden');
   setTimeout(() => msg.classList.add('hidden'), 4000);
+}
+// ========================== DEEPSEEK API KEY ==========================
+async function saveAiKey() {
+  const key = document.getElementById('aiApiKey').value.trim();
+  const msg = document.getElementById('aiKeyMessage');
+  if (!key) {
+    msg.textContent = '⚠️ Введите ключ перед сохранением.';
+    msg.className = 'mt-3 text-sm text-amber-400';
+    msg.classList.remove('hidden');
+    setTimeout(() => msg.classList.add('hidden'), 4000);
+    return;
+  }
+  msg.textContent = '⏳ Сохранение...';
+  msg.className = 'mt-3 text-sm text-blue-400';
+  msg.classList.remove('hidden');
+  try {
+    const res = await fetch(`${API_BASE}?action=save_settings`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ai_api_key: key })
+    });
+    const json = await res.json();
+    if (json.status === 'success') {
+      msg.textContent = '✅ Ключ сохранён. Нажмите «🔌 Проверить связь», чтобы убедиться, что DeepSeek отвечает.';
+      msg.className = 'mt-3 text-sm text-emerald-400';
+      document.getElementById('aiApiKey').value = '';
+      await loadTgSettings();
+    } else {
+      throw new Error(json.error || 'unknown');
+    }
+  } catch(e) {
+    msg.textContent = '❌ Ошибка: ' + e.message;
+    msg.className = 'mt-3 text-sm text-red-400';
+  }
+  setTimeout(() => msg.classList.add('hidden'), 6000);
+}
+async function testAiKey() {
+  const msg = document.getElementById('aiKeyMessage');
+  msg.textContent = '⏳ Проверяю связь с DeepSeek...';
+  msg.className = 'mt-3 text-sm text-blue-400';
+  msg.classList.remove('hidden');
+  try {
+    const res = await fetch(`${API_BASE}?action=ai_diag`);
+    const json = await res.json();
+    if (!json.api_key_present) {
+      msg.textContent = '⚠️ ' + (json.hint || 'Ключ не задан.');
+      msg.className = 'mt-3 text-sm text-amber-400';
+      return;
+    }
+    const code = json.probe ? json.probe.http_code : 0;
+    const ok = code >= 200 && code < 300;
+    const src = json.api_key_source === 'db' ? ' (ключ из интерфейса)'
+              : json.api_key_source === 'config' ? ' (ключ из ai_config.php/env)' : '';
+    msg.textContent = (ok ? '✅ Связь с DeepSeek работает' : '⚠️ ' + (json.hint || ('HTTP ' + code))) + src;
+    msg.className = 'mt-3 text-sm ' + (ok ? 'text-emerald-400' : 'text-amber-400');
+  } catch(e) {
+    msg.textContent = '❌ Ошибка: ' + e.message;
+    msg.className = 'mt-3 text-sm text-red-400';
+  }
 }
 async function testTgSend() {
   const msg = document.getElementById('tgMessage');
@@ -4456,6 +4666,10 @@ window.addEventListener('DOMContentLoaded', () => {
   checkYMConnection();
   loadTgSettings();
   loadEventsLog();
+  updateAiKeyIndicator();
+  // «Обновлено N минут назад» — обновляем метку раз в минуту.
+  updateLastUpdatedLabel();
+  setInterval(updateLastUpdatedLabel, 60 * 1000);
   // ⚙️ AI settings: подгружаем сохранённые из localStorage и подписываемся на
   // изменения, чтобы summary в шапке панели всегда отражал текущие значения.
   try {
@@ -4465,6 +4679,8 @@ window.addEventListener('DOMContentLoaded', () => {
   } catch (e) { console.debug('aiSettings init skipped:', e); }
   startAutoRefresh();
   autoLoadSavedStats();
+  // Восстанавливаем последнюю открытую вкладку (после инициализации контента).
+  restoreLastTab();
 });
 </script>
 </body>
