@@ -104,7 +104,7 @@ if (!defined('AI_API_KEY')) {
 }
 // Дополнительная диагностика: файл подключился, но define() вернул пустое
 // значение (например, забыли вписать ключ или вписали пустую строку).
-if ($AI_CONFIG_LOAD_STATUS === 'loaded' && AI_API_KEY === '') {
+if ($AI_CONFIG_LOAD_STATUS === 'loaded' && trim(AI_API_KEY) === '') {
     error_log('AI: ai_config.php was loaded but AI_API_KEY is empty. Check the define(\'AI_API_KEY\', \'sk-...\') line.');
 }
 if (!defined('AI_API_URL')) {
@@ -259,8 +259,11 @@ function aiEffectiveApiKey() {
     if ($cached !== null) {
         return $cached;
     }
-    if (defined('AI_API_KEY') && AI_API_KEY !== '') {
-        $cached = AI_API_KEY;
+    // Тримим ключ независимо от источника: при копировании в ai_config.php или
+    // env часто попадают пробелы/перевод строки, из-за чего заголовок
+    // Authorization становится невалидным и провайдер отвечает 401.
+    if (defined('AI_API_KEY') && trim(AI_API_KEY) !== '') {
+        $cached = trim(AI_API_KEY);
         return $cached;
     }
     global $db;
@@ -274,7 +277,7 @@ function aiEffectiveApiKey() {
 
 /** Откуда взят действующий ключ: 'config'|'db'|'none' (для диагностики). */
 function aiApiKeySource() {
-    if (defined('AI_API_KEY') && AI_API_KEY !== '') {
+    if (defined('AI_API_KEY') && trim(AI_API_KEY) !== '') {
         return 'config';
     }
     return aiEffectiveApiKey() !== '' ? 'db' : 'none';
