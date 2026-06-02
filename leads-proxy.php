@@ -313,6 +313,49 @@ function aiApiKeySource() {
     }
     return aiEffectiveApiKey() !== '' ? 'db' : 'none';
 }
+
+// ---- Heartbeat-«keepalive» для долгого ai_analyze. ----
+// Синхронный вызов DeepSeek занимает десятки секунд–минуты. Всё это время PHP
+// не отдаёт в браузер ни байта, и вышестоящий gateway (nginx proxy_read_timeout,
+// Cloudflare ~100с, PHP-FPM request_terminate_timeout) закрывает «висящее»
+// соединение → браузер получает `TypeError: Failed to fetch` (без HTTP-ответа),
+// а фронт показывает общий fallback «Анализ временно недоступен».
+//
+// Решение: пока идёт вызов провайдера, периодически отправляем в браузер один
+// пробельный байт (' ') и flush(). Пробелы — это валидный JSON-whitespace
+// (RFC 8259), поэтому ведущие пробелы перед итоговым телом НЕ ломают
+// JSON.parse на фронте. Соединение остаётся «живым», и gateway не рвёт его.
+// Флаг включается только в обработчике action=ai_analyze; в остальных местах
+// (cron, diag, прочие действия) heartbeat молчит и поведение не меняется.
+$GLOBALS['AI_HEARTBEAT_ENABLED'] = false;
+$GLOBALS['AI_HEARTBEAT_LAST']    = 0.0;
+
+/** Включить/выключить heartbeat для текущего запроса. */
+function aiHeartbeatEnable($on = true) {
+    $GLOBALS['AI_HEARTBEAT_ENABLED'] = (bool)$on;
+    $GLOBALS['AI_HEARTBEAT_LAST']    = microtime(true);
+}
+
+/**
+ * Отправляет в браузер heartbeat-байт, но не чаще раза в секунду (троттлинг),
+ * чтобы не раздувать ответ. Безопасно вызывать сколь угодно часто.
+ * Ничего не делает, если heartbeat выключен или заголовки ещё не отправлены
+ * клиенту по иным причинам (echo сам инициирует отправку).
+ */
+function aiHeartbeatTick() {
+    if (empty($GLOBALS['AI_HEARTBEAT_ENABLED'])) {
+        return;
+    }
+    $now = microtime(true);
+    if (($now - (float)$GLOBALS['AI_HEARTBEAT_LAST']) < 1.0) {
+        return;
+    }
+    $GLOBALS['AI_HEARTBEAT_LAST'] = $now;
+    // Один пробел — валидный leading-whitespace для JSON.parse на фронте.
+    echo ' ';
+    @ob_flush();
+    @flush();
+}
 // =======================================================
 
 // ---- Подключение к SQLite (один файл stats.db) ----
@@ -1972,6 +2015,9 @@ function aiCallProvider($sysPrompt, $userPrompt, $model) {
                 $finishReason = $choice['finish_reason'];
             }
         }
+        // Каждый пришедший от провайдера chunk — повод «подержать» соединение
+        // с браузером живым (троттлинг внутри aiHeartbeatTick — раз в секунду).
+        aiHeartbeatTick();
         return strlen($chunk);
     };
 
@@ -2006,6 +2052,14 @@ function aiCallProvider($sysPrompt, $userPrompt, $model) {
         CURLOPT_LOW_SPEED_LIMIT => 1,
         // Полностью убиваем любую буферизацию на стороне curl/прокси.
         CURLOPT_TCP_NODELAY => true,
+        // Периодический колбэк curl (≈раз в секунду, в т.ч. ПОКА ждём первый
+        // байт от провайдера). Используем его как heartbeat в браузер, чтобы
+        // gateway не закрыл «висящее» соединение до прихода данных от DeepSeek.
+        CURLOPT_NOPROGRESS     => false,
+        CURLOPT_PROGRESSFUNCTION => function ($ch, $dlTotal, $dlNow, $ulTotal, $ulNow) {
+            aiHeartbeatTick();
+            return 0; // 0 — продолжать передачу; ненулевое прервало бы запрос.
+        },
     ]);
     aiLog('provider_request', [
         'model'           => $model,
@@ -3564,6 +3618,9 @@ if ($action === 'ai_analyze') {
     // Сбрасываем уже накопленные хедеры в сокет до начала тяжёлого вызова.
     @ob_flush();
     @flush();
+    // Включаем heartbeat: пока идёт длинный вызов DeepSeek, в браузер будут
+    // капать пробельные байты, удерживая соединение живым (см. aiHeartbeatTick).
+    aiHeartbeatEnable(true);
 
     $raw = file_get_contents('php://input');
     $payload = json_decode($raw, true);
