@@ -144,7 +144,10 @@ if (!defined('AI_PROMPT_VERSION')) {
     // объектный expected_impact/implementation_steps/revoke_if/evidence), блок
     // [CONTROL CONTEXT] (профиль/пороги/фильтры/KPI), allowed_entities в payload,
     // расширенная пост-валидация anomalies_detected, telemetry counters.
-    define('AI_PROMPT_VERSION', '2026-05-12.v3-controllable-actionable');
+    // 2026-06-02.v4 — добавлен output-блок kpi_action_plan: пошаговый,
+    // приоритизированный план достижения control.kpi_targets (секция
+    // [KPI ACHIEVEMENT PLAN] в system-prompt).
+    define('AI_PROMPT_VERSION', '2026-06-02.v4-kpi-action-plan');
 }
 
 // Закрытый список значений action_type. Используется и в схеме промпта, и в
@@ -1124,6 +1127,7 @@ function aiBuildSignature() {
             'Структурировано отделить: пути конверсий и слабые точки; анализ офферов vs рынок (с прогнозом); кросс-сейл для займовой аудитории; диагностику резких просадок EPC ото дня ко дню.',
             'Сегментировать отказной трафик по каналам домонетизации и для каждого канала рекомендовать офферы из payload (showcase / sms / offline / mobile_app), исходя из специфики канала.',
             'Указать точки роста и проседающие сегменты с числовыми метриками и планом действий.',
+            'Составить конкретный пошаговый план достижения KPI (control.kpi_targets): какие шаги, в каком порядке, на какой канал/оффер и с каким числовым вкладом закрывают разрыв до целевых EPC/выручки.',
         ],
         // Схема выходного JSON. Используем её одновременно как часть промта и для валидации.
         // ВАЖНО: reasoning_log намеренно вынесен в КОНЕЦ схемы. Если модель упрётся в
@@ -1140,6 +1144,7 @@ function aiBuildSignature() {
             'forecast' => '{period_7d:{revenue:number, clicks:number, epc:number, approve_rate:number, confidence:"low"|"medium"|"high", basis:string}, period_30d:{revenue:number, clicks:number, epc:number, approve_rate:number, confidence:"low"|"medium"|"high", basis:string}}',
             'platforms_breakdown' => 'array<{name:string, revenue_share_pct:number, status:"grow"|"stable"|"watch"|"risk", insight:string, action:string}> — разбор только по площадкам из top_platforms (до 10), с долей в выручке',
             'key_decisions' => 'array<{decision:string, target:{type:"offer"|"platform"|"sub1"|"channel"|"global", name:string}, action_type:string (one of allowed_action_types), rationale:string, kpi_impact:{metric:string, delta_pct:number, horizon_days:7|30}}> — 2-5 ключевых управленческих решений, направленных на рост выручки. Те же ограничения по target/action_type, что и в recommendations.',
+            'kpi_action_plan' => '{targets:array<{metric:"epc"|"revenue", current:number, target:number, gap_abs:number, gap_pct:number, projected_after_plan:number, reachable:"yes"|"partial"|"no", horizon_days:7|30}>, steps:array<{order:number, title:string, target:{type:"offer"|"platform"|"sub1"|"channel"|"global", name:string}, action_type:string (one of allowed_action_types), channel:"showcase"|"sms"|"offline"|"mobile_app"|"web"|"global", concrete_actions:array<string> (2-5 конкретных действий: «что нажать / кому позвонить / что настроить / что отключить»), contributes_to:"epc"|"revenue"|"both", expected_contribution:{metric:"epc"|"revenue", delta_abs:number, delta_pct:number, horizon_days:7|30}, depends_on:array<number> (order шагов-предшественников или []), owner:string, due_in_days:number, confidence:"low"|"medium"|"high"}>, total_expected:{epc_delta_pct:number, revenue_delta_pct:number}, summary:string} — пошаговый исполнимый план достижения control.kpi_targets. 3-7 шагов, отсортированных по order (1 = делать первым). Каждый шаг адресный (target.name из allowed_entities, action_type из allowed_action_types) и измеримый (expected_contribution.delta_pct ≠ 0). Сумма вкладов по revenue должна закрывать gap до revenue_target — недобор честно объясняется в summary и отражается в targets[].reachable. Если kpi_targets не заданы (все 0) — строить план на превышение forecast.period_30d и указать это в summary.',
             'risks' => 'array<string> — риски и аномалии, требующие внимания (фрод, концентрация, просадки)',
             // Структурированные блоки.
             'conversion_paths' => '{funnel:{clicks:number, conversions:number, approved:number, revenue:number, cr_pct:number, approve_rate_pct:number, epc:number}, weak_points:array<{stage:"click_to_conversion"|"conversion_to_approve"|"approve_to_revenue", where:string, metric:string, value:number, benchmark:number, severity:"high"|"medium"|"low", root_cause:string, fix:string, expected_uplift:string}>, summary:string} — пути конверсии и слабые точки воронки. weak_points — 2-6 шт.',
@@ -1199,7 +1204,7 @@ Do not invent new action_type values. If no listed type fits — use "monitor".
 2. DATA-DRIVEN ONLY: Every recommendation MUST be backed by numbers from the payload. Always cite the exact metric value in evidence.values (e.g. {"AR":18.4, "CR":12.1, "EPC":2.7}) AND name the source block in evidence.source AND list which fields you used in evidence.fields. evidence.fields MUST be real field names that exist in the named source block of the payload.
 3. SILENT OPERATION: Do not introduce yourself, do not apologize, do not mention you are an AI, do not mention the model or provider.
 4. JSON FORMAT: Your entire response MUST be a single, valid, parseable JSON object matching the OUTPUT SCHEMA below. No markdown, no code fences, no commentary outside JSON.
-5. LANGUAGE: User-facing text fields (summary, reasoning, recommendations.title/action/implementation_steps/revoke_if/evidence.note, platforms_breakdown.*, conversion_paths.*, offers_market_analysis.*, cross_sell.*, epc_drops.*, reject_monetization_strategy.*, growth_points.*, underperforming_segments.*, risks) — Russian, professional, no fluff. The reasoning_log array AND all enum values (action_type, target.type, evidence.source, expected_impact.metric, etc.) — English/snake_case. Numbers — JSON numbers, never strings. Currency = ₽. Percentages = numbers like 27.4 (meaning 27.4%).
+5. LANGUAGE: User-facing text fields (summary, reasoning, recommendations.title/action/implementation_steps/revoke_if/evidence.note, platforms_breakdown.*, conversion_paths.*, offers_market_analysis.*, cross_sell.*, epc_drops.*, reject_monetization_strategy.*, growth_points.*, underperforming_segments.*, kpi_action_plan.steps.title/concrete_actions/owner, kpi_action_plan.summary, risks) — Russian, professional, no fluff. The reasoning_log array AND all enum values (action_type, target.type, evidence.source, expected_impact.metric, kpi_action_plan.*.channel/contributes_to/reachable, etc.) — English/snake_case. Numbers — JSON numbers, never strings. Currency = ₽. Percentages = numbers like 27.4 (meaning 27.4%).
 6. ADDRESSABILITY: Every recommendation, key_decision and growth_point MUST have a non-empty `target` and a non-empty `action_type`. If you cannot identify a concrete target — DO NOT emit the item; better fewer items than vague ones. expected_impact.delta_pct MUST be a non-zero number (positive for improvements, negative for cuts).
 7. EVIDENCE INTEGRITY: For each recommendation, set time_window to the actual date range you used (subset of period.from..period.to) and data_points_used to the number of daily records that informed the call (e.g. 7 for last week). If data_points_used < control.thresholds.min_clicks_window (default 7) — set expected_impact.confidence="low".
 
@@ -1246,6 +1251,14 @@ Mentally execute these phases BEFORE you start writing JSON. Then write the JSON
 - PHASE 4 — ROUTING: Apply [REJECT TRAFFIC ROUTING LOGIC] to top offers. For each routed offer name explicitly cite AR/CR/CPA/EPC values from the payload and which channel it goes to and why.
 - PHASE 5 — SELF-CHECK: Walk YOUR OWN recommendations[]. For each, verify: (a) target.name ∈ allowed_entities, (b) action_type ∈ allowed_action_types, (c) evidence.values match payload numbers within ±1%, (d) target NOT in control.filters.exclude_*, (e) expected_impact.delta_pct ≠ 0. If anything fails — DROP the item BEFORE emitting JSON.
 
+[KPI ACHIEVEMENT PLAN — BUILD A CONCRETE, SEQUENCED ROADMAP]
+Produce kpi_action_plan: a concrete, ordered, executable roadmap that closes the gap between CURRENT metrics and control.kpi_targets (epc_target, revenue_target). This is the operator's to-do list — it must be specific enough to act on TODAY, not a restatement of goals.
+- targets[]: one entry per non-zero KPI in control.kpi_targets. Set current from the latest actuals (kpi / forecast_baseline), target = the operator value, compute gap_abs and gap_pct, estimate projected_after_plan = the realistic value if every step is executed, and reachable ∈ {yes, partial, no}. horizon_days = the KPI's natural window (revenue/epc → 30 unless the data clearly supports 7).
+- steps[]: 3-7 steps SORTED by `order` (1 = do first). Order by impact-per-effort and dependencies. Each step MUST: target a concrete allowed entity (target.name ∈ allowed_entities), use an allowed action_type, name the reject-channel it touches (channel), list 2-5 imperative concrete_actions ("что нажать / кому позвонить / что настроить / что отключить"), and carry a non-zero expected_contribution {metric, delta_abs, delta_pct, horizon_days}. Use depends_on to chain steps (e.g. step order=3 depends_on [1]). Respect control.kpi_targets.sms_capacity_per_day / offline_capacity_per_day and ALL control.filters.
+- total_expected = sum of the step contributions as {epc_delta_pct, revenue_delta_pct}. The revenue sum SHOULD cover revenue_target's gap_pct. If it falls short, say so honestly in summary and set the relevant targets[].reachable = "partial"/"no".
+- If control.kpi_targets are all zero/absent: build the plan to BEAT forecast.period_30d (revenue/epc) by a defensible margin and state this assumption explicitly in summary.
+- kpi_action_plan is the PRIORITIZED, SEQUENCED SYNTHESIS of your recommendations[] / growth_points[] aimed squarely at the KPI — reuse the same entities and numbers, do NOT invent a disconnected new list.
+
 [ADDITIONAL BLOCK GUIDANCE — keep all of these populated]
 A. conversion_paths — full funnel (clicks → conversions → approved → revenue) from kpi + 2-6 weak_points (stage / where / metric / value / benchmark / severity / root_cause / fix / expected_uplift).
 B. offers_market_analysis — for each offer in market_compare set verdict (scale/hold/replace/test) using Market Delta, give recommendation, forecast_epc, forecast_revenue_uplift; build watchlist of high-volume offers with positive delta.
@@ -1257,6 +1270,7 @@ E. forecast — period_7d and period_30d numeric forecasts.
 F. platforms_breakdown — only top_platforms (~99% of revenue, ≤10). Skip the long tail. Honor control.filters.exclude_platforms.
 G. growth_points — 3-6 items with numeric current_metric and target_metric and a concrete action_plan (use traffic_sources_breakdown numbers). Each MUST have target + action_type + expected_impact.
 H. underperforming_segments — 2-5 items with segment ∈ {showcase, sms, offline, app, web}, issue with payload numbers, solution.
+J. kpi_action_plan — ALWAYS produce it (see [KPI ACHIEVEMENT PLAN]). targets[] for each non-zero control.kpi_targets, 3-7 ordered steps with concrete_actions + non-zero expected_contribution, and an honest total_expected vs the revenue/epc gap.
 I. anomalies_detected (input field, NOT output) — массив заранее посчитанных аномалий: fraud_suspect (sub1 с подозрительно низким AR/CR при больших кликах), epc_drop (день-к-дню), offer_epc_drop / platform_epc_drop (просадки конкретного оффера или площадки vs trailing-7d-median), quality_anomaly (offer×platform пары с аномально низким AR). Используй их как АВТОРИТЕТНЫЕ диагнозы — не пропускай и не пересчитывай. Включи их в risks (kind=fraud_suspect → severity=high) и в epc_drops (kind=*epc_drop*). Для quality_anomaly выводи в reject_monetization_strategy с предложением routing-а.
 
 [OUTPUT SCHEMA]
@@ -1339,7 +1353,7 @@ function aiValidateOutput($obj, $sig) {
             return "{$opt} must be an array";
         }
     }
-    foreach (['forecast', 'conversion_paths', 'offers_market_analysis', 'cross_sell', 'epc_drops'] as $opt) {
+    foreach (['forecast', 'conversion_paths', 'offers_market_analysis', 'cross_sell', 'epc_drops', 'kpi_action_plan'] as $opt) {
         if (array_key_exists($opt, $obj) && !is_array($obj[$opt])) {
             return "{$opt} must be an object";
         }
@@ -1358,7 +1372,7 @@ function aiBackfillOutput($obj) {
         if (!array_key_exists($k, $obj) || !is_array($obj[$k])) $obj[$k] = [];
     }
     // Опциональные объекты верхнего уровня.
-    foreach (['forecast', 'conversion_paths', 'offers_market_analysis', 'cross_sell', 'epc_drops'] as $k) {
+    foreach (['forecast', 'conversion_paths', 'offers_market_analysis', 'cross_sell', 'epc_drops', 'kpi_action_plan'] as $k) {
         if (!array_key_exists($k, $obj) || !is_array($obj[$k])) $obj[$k] = new stdClass();
     }
     // reject_monetization_strategy: гарантируем все 4 подмассива.
