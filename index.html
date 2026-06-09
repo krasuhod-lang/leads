@@ -15,245 +15,448 @@
   <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
   <script src="https://cdn.jsdelivr.net/npm/flatpickr/dist/l10n/ru.js"></script>
   <style>
-    /* ==================== БАЗА ==================== */
+    /* ==================== ДИЗАЙН-ТОКЕНЫ (Apple HIG / apple.com) ==================== */
     :root {
-      --bg-app:        #0b1020;
-      --bg-app-2:      #0e1530;
-      --surface:       rgba(22, 28, 50, 0.72);
-      --surface-solid: #161c32;
-      --surface-hi:    rgba(30, 38, 66, 0.85);
+      /* Семейство шрифтов: SF Pro как у apple.com, Inter как фоллбэк */
+      --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display",
+                 "Helvetica Neue", "Inter", "Segoe UI", system-ui, sans-serif;
+
+      /* Типографическая шкала (px / line-height) */
+      --fs-display: 44px;  --lh-display: 52px;
+      --fs-title:   28px;  --lh-title:   34px;
+      --fs-headline:20px;  --lh-headline:26px;
+      --fs-body:    15px;  --lh-body:    22px;
+      --fs-caption: 12px;  --lh-caption: 16px;
+
+      /* Радиусы — шкала iOS */
+      --r-chip:   10px;
+      --r-input:  14px;
+      --r-card:   20px;
+      --r-modal:  28px;
+      --radius:   var(--r-card); /* совместимость со старыми правилами */
+
+      /* Кривые и длительности — Apple standard */
+      --ease-apple: cubic-bezier(.4, 0, .2, 1);
+      --t-fast:     200ms;
+      --t-base:     300ms;
+      --t-slow:     500ms;
+
+      /* Акцент: systemBlue с apple.com — единственный фирменный цвет */
+      --accent:        #0071E3;
+      --accent-strong: #0077ED;
+      --accent-press:  #0058B0;
+      --accent-2:      #0071E3; /* совместимость: убран фиолетовый */
+      --accent-soft:   rgba(0, 113, 227, 0.14);
+      --accent-ring:   rgba(0, 113, 227, 0.28);
+
+      /* Семантика */
+      --ok:   #30D158;
+      --warn: #FF9F0A;
+      --bad:  #FF453A;
+    }
+
+    /* ----- ТЁМНАЯ ТЕМА (по умолчанию: true black, без синевы) ----- */
+    :root,
+    [data-theme="dark"] {
+      --bg-app:        #000000;
+      --bg-app-2:      #0a0a0c;
+      --surface:       rgba(28, 28, 30, 0.72);   /* visionOS material-thick */
+      --surface-solid: #1c1c1e;
+      --surface-hi:    rgba(44, 44, 46, 0.85);   /* material-regular */
+      --surface-thin:  rgba(255, 255, 255, 0.04);/* material-thin */
       --border:        rgba(255, 255, 255, 0.08);
       --border-strong: rgba(255, 255, 255, 0.14);
-      --text:          #e5e9f5;
-      --text-dim:      #9aa3bf;
-      --text-faint:    #6b748f;
-      --accent:        #5b8cff;
-      --accent-2:      #8b5cf6;
-      --ok:            #34d399;
-      --warn:          #fbbf24;
-      --bad:           #f87171;
-      --shadow-card:   0 1px 0 rgba(255,255,255,.04) inset, 0 12px 40px -16px rgba(0,0,0,.55);
-      --radius:        16px;
+      --text:          #F5F5F7;
+      --text-dim:      #A1A1A6;
+      --text-faint:    #6E6E73;
+      --shadow-card:   0 1px 2px rgba(0,0,0,.35), 0 12px 32px -12px rgba(0,0,0,.55);
+      --shadow-pop:    0 20px 60px -20px rgba(0,0,0,.7);
+      color-scheme: dark;
     }
+
+    /* ----- СВЕТЛАЯ ТЕМА (apple.com off-white) ----- */
+    [data-theme="light"] {
+      --bg-app:        #FBFBFD;
+      --bg-app-2:      #F5F5F7;
+      --surface:       rgba(255, 255, 255, 0.72);
+      --surface-solid: #FFFFFF;
+      --surface-hi:    rgba(255, 255, 255, 0.92);
+      --surface-thin:  rgba(0, 0, 0, 0.03);
+      --border:        rgba(0, 0, 0, 0.08);
+      --border-strong: rgba(0, 0, 0, 0.14);
+      --text:          #1D1D1F;
+      --text-dim:      #6E6E73;
+      --text-faint:    #86868B;
+      --shadow-card:   0 1px 2px rgba(0,0,0,.04), 0 8px 24px rgba(0,0,0,.06);
+      --shadow-pop:    0 24px 60px -20px rgba(0,0,0,.18);
+      color-scheme: light;
+    }
+
+    /* ==================== БАЗА ==================== */
     html, body { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
     body {
-      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', system-ui, sans-serif;
-      background:
-        radial-gradient(1200px 600px at 10% -10%, rgba(91,140,255,.18), transparent 60%),
-        radial-gradient(900px 500px at 110% 0%, rgba(139,92,246,.16), transparent 60%),
-        linear-gradient(180deg, var(--bg-app) 0%, var(--bg-app-2) 100%);
-      background-attachment: fixed;
+      font-family: var(--font-ui);
+      background: var(--bg-app);
       color: var(--text);
+      font-size: var(--fs-body);
+      line-height: var(--lh-body);
       letter-spacing: -0.01em;
+      font-feature-settings: "ss01" 1, "cv11" 1;
     }
-    h1, h2, h3 { letter-spacing: -0.02em; }
+    /* Едва заметный градиент-вуаль, без радужных пятен */
+    [data-theme="dark"] body,
+    :root body {
+      background:
+        radial-gradient(1400px 700px at 50% -10%, rgba(255,255,255,.03), transparent 60%),
+        var(--bg-app);
+      background-attachment: fixed;
+    }
+    [data-theme="light"] body {
+      background:
+        radial-gradient(1400px 700px at 50% -10%, rgba(0,0,0,.025), transparent 60%),
+        var(--bg-app);
+      background-attachment: fixed;
+    }
 
-    /* ==================== КАРТОЧКИ ==================== */
+    /* Заголовки — Semibold (600), сжатый трекинг */
+    h1, h2, h3, h4 { letter-spacing: -0.022em; font-weight: 600; color: var(--text); }
+    h1 { font-size: var(--fs-title); line-height: var(--lh-title); }
+    h2 { font-size: var(--fs-headline); line-height: var(--lh-headline); }
+    h3 { font-size: 17px; line-height: 24px; }
+
+    /* Универсальные табличные цифры там, где это важно */
+    .num, .tabular, table td, table th,
+    [id$="KpiCards"] *, #compareKpiGrid * {
+      font-feature-settings: "tnum" 1, "lnum" 1, "ss01" 1;
+    }
+    .all-caps { text-transform: uppercase; letter-spacing: 0.06em; font-size: var(--fs-caption); color: var(--text-dim); font-weight: 600; }
+
+    /* Контейнер ширины Apple: ~1280–1440 */
+    .max-w-7xl { max-width: 1320px !important; }
+
+    /* ==================== КАРТОЧКИ (плоские, мягкая тень) ==================== */
     .card {
-      background: var(--surface);
+      background: var(--surface-solid);
       border: 1px solid var(--border);
-      border-radius: var(--radius);
-      padding: 22px;
+      border-radius: var(--r-card);
+      padding: 24px;
       box-shadow: var(--shadow-card);
-      backdrop-filter: blur(14px) saturate(140%);
-      -webkit-backdrop-filter: blur(14px) saturate(140%);
-      transition: transform .35s cubic-bezier(.2,.7,.2,1), border-color .25s ease, box-shadow .35s ease;
+      transition: border-color var(--t-base) var(--ease-apple),
+                  background var(--t-base) var(--ease-apple),
+                  box-shadow var(--t-base) var(--ease-apple);
     }
-    .card:hover {
-      border-color: var(--border-strong);
-      box-shadow: 0 1px 0 rgba(255,255,255,.06) inset, 0 22px 50px -22px rgba(0,0,0,.7);
-    }
-    .card h2, .card h3 { color: #f3f5fb; }
+    [data-theme="dark"] .card { background: var(--surface); backdrop-filter: blur(20px) saturate(180%); -webkit-backdrop-filter: blur(20px) saturate(180%); }
+    .card:hover { border-color: var(--border-strong); }
+    [data-theme="dark"] .card:hover { background: var(--surface-hi); }
+    [data-theme="light"] .card:hover { background: #FFFFFF; box-shadow: 0 1px 2px rgba(0,0,0,.04), 0 14px 36px rgba(0,0,0,.08); }
+    .card h2, .card h3 { color: var(--text); }
 
     /* ==================== KPI ==================== */
     #kpiCards .card,
     #compareKpiGrid .card,
     #bannerKpiCards .card {
       position: relative;
-      padding: 18px 20px;
+      padding: 20px 22px;
       overflow: hidden;
     }
+    /* Тончайший индикатор-полоска вместо градиента; видна на hover */
     #kpiCards .card::after,
     #compareKpiGrid .card::after,
     #bannerKpiCards .card::after {
       content: "";
-      position: absolute; left: 0; right: 0; bottom: 0; height: 2px;
-      background: linear-gradient(90deg, var(--accent), var(--accent-2));
-      opacity: .0;
-      transition: opacity .3s ease;
+      position: absolute; left: 0; right: 0; bottom: 0; height: 1px;
+      background: var(--accent);
+      opacity: 0;
+      transition: opacity var(--t-base) var(--ease-apple);
     }
     #kpiCards .card:hover::after,
     #compareKpiGrid .card:hover::after,
-    #bannerKpiCards .card:hover::after { opacity: .85; }
+    #bannerKpiCards .card:hover::after { opacity: .7; }
+
+    /* Большая цифра — SF Pro Semibold 40px */
     #kpiCards .text-3xl, #bannerKpiCards .text-3xl, #compareKpiGrid .text-2xl {
-      font-weight: 700;
+      font-weight: 600;
       font-feature-settings: "tnum" 1, "lnum" 1;
-      letter-spacing: -0.025em;
-      font-size: 28px;
-      line-height: 1.1;
+      letter-spacing: -0.03em;
+      font-size: 40px;
+      line-height: 1.05;
+      color: var(--text);
     }
+    /* Caption под цифрой — all-caps серым */
     #kpiCards .text-xs, #bannerKpiCards .text-xs, #compareKpiGrid .text-xs {
       color: var(--text-dim);
       font-weight: 600;
-      letter-spacing: 0.08em;
-      font-size: 10.5px;
+      letter-spacing: 0.04em;
+      font-size: 11px;
+      text-transform: uppercase;
     }
 
-    /* ==================== КНОПКИ ==================== */
+    /* ==================== КНОПКИ (Apple pill) ==================== */
     .btn {
-      background: linear-gradient(180deg, #4f7dff, #3461e6);
-      color: #fff;
-      padding: 10px 16px;
-      border-radius: 10px;
-      font-weight: 600;
-      border: 1px solid rgba(255,255,255,.08);
+      background: var(--accent);
+      color: #ffffff;
+      padding: 10px 20px;
+      min-height: 36px;
+      border-radius: 980px; /* pill */
+      font-weight: 500;
+      font-size: 14px;
+      letter-spacing: -0.01em;
+      border: 1px solid transparent;
       cursor: pointer;
-      transition: transform .15s ease, box-shadow .25s ease, filter .2s ease;
-      box-shadow: 0 6px 16px -8px rgba(52,97,230,.7), 0 1px 0 rgba(255,255,255,.18) inset;
+      display: inline-flex; align-items: center; gap: 8px;
+      transition: background var(--t-fast) var(--ease-apple),
+                  filter var(--t-fast) var(--ease-apple),
+                  transform var(--t-fast) var(--ease-apple);
+      box-shadow: none;
     }
-    .btn:hover:not(:disabled) { filter: brightness(1.08); transform: translateY(-1px); }
-    .btn:active:not(:disabled) { transform: translateY(0); }
-    .btn:disabled { background: #2b3350; color: #8b95b5; cursor: not-allowed; box-shadow: none; }
+    .btn:hover:not(:disabled) { background: var(--accent-strong); }
+    .btn:active:not(:disabled) { background: var(--accent-press); transform: scale(.98); }
+    .btn:disabled {
+      background: var(--surface-thin);
+      color: var(--text-faint);
+      cursor: not-allowed;
+      box-shadow: none;
+    }
+    /* Вторичная кнопка: текст + бордер */
+    .btn.btn-secondary,
+    .btn[style*="#475569"] { /* совместимость с inline-стилем "Обновить" */
+      background: transparent !important;
+      color: var(--accent) !important;
+      border: 1px solid var(--border-strong) !important;
+    }
+    .btn.btn-secondary:hover,
+    .btn[style*="#475569"]:hover { background: var(--accent-soft) !important; }
 
     /* ==================== ТАБЫ ==================== */
-    #tabBar { gap: 4px; border-bottom: 1px solid var(--border); padding-bottom: 0; }
+    #tabBar { gap: 2px; border-bottom: 1px solid var(--border); padding-bottom: 0; }
     .tab-btn {
       padding: 10px 16px;
-      font-weight: 600;
+      font-weight: 500;
+      font-size: 14px;
+      letter-spacing: -0.01em;
       border: none;
+      background: transparent;
+      color: var(--text-dim);
       cursor: pointer;
-      border-radius: 12px 12px 0 0;
-      transition: background .25s ease, color .25s ease, transform .2s ease;
+      border-radius: 0;
+      transition: color var(--t-fast) var(--ease-apple);
       position: relative;
+      min-height: 40px;
     }
-    .tab-btn.active {
-      background: linear-gradient(180deg, rgba(91,140,255,.18), rgba(91,140,255,.06));
-      color: #fff;
-    }
+    .tab-btn.active { background: transparent; color: var(--text); }
     .tab-btn.active::after {
-      content: ""; position: absolute; left: 14px; right: 14px; bottom: -1px; height: 2px;
-      background: linear-gradient(90deg, var(--accent), var(--accent-2));
+      content: ""; position: absolute; left: 12px; right: 12px; bottom: -1px; height: 2px;
+      background: var(--accent);
       border-radius: 2px;
+      transition: all var(--t-base) var(--ease-apple);
     }
-    .tab-btn:not(.active) { background: transparent; color: var(--text-faint); }
-    .tab-btn:hover:not(.active) { color: var(--text); background: rgba(255,255,255,.04); }
+    .tab-btn:not(.active):hover { color: var(--text); }
     .tab-content { display: none; }
-    .tab-content.active { display: block; animation: tabIn .35s cubic-bezier(.2,.7,.2,1) both; }
-    @keyframes tabIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+    .tab-content.active { display: block; animation: tabIn var(--t-base) var(--ease-apple) both; }
+    @keyframes tabIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 
     /* ==================== ТАБЛИЦЫ ==================== */
-    table th, table td { padding: 11px 12px; border-bottom: 1px solid var(--border); text-align: left; }
-    table th { color: var(--text-dim); text-transform: uppercase; font-size: 10.5px; letter-spacing: 0.06em; font-weight: 600; }
-    table th.text-right, table td.text-right { text-align: right; font-feature-settings: "tnum" 1, "lnum" 1; }
-    .matrix-table th, .matrix-table td { border: 1px solid var(--border); padding: 8px 12px; font-size: 13px; }
-    .matrix-table th { background: rgba(91,140,255,.12); color: #cdd9ff; font-weight: 600; }
-    .matrix-table tr:hover { background: rgba(91,140,255,.06); }
-    .sort-th { cursor: pointer; user-select: none; transition: color .15s ease; }
+    table { border-collapse: collapse; }
+    table th, table td {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--border);
+      text-align: left;
+      font-size: 14px;
+    }
+    /* Никаких вертикальных границ, никакой зебры */
+    table tr { background: transparent !important; }
+    table th {
+      color: var(--text-dim);
+      text-transform: uppercase;
+      font-size: 11px;
+      letter-spacing: 0.06em;
+      font-weight: 600;
+      background: transparent;
+    }
+    table th.text-right, table td.text-right {
+      text-align: right;
+      font-feature-settings: "tnum" 1, "lnum" 1;
+    }
+    /* Hover-строка — едва заметный фон */
+    table tbody tr { transition: background var(--t-fast) var(--ease-apple); }
+    [data-theme="dark"] table tbody tr:hover { background: rgba(255,255,255,.03) !important; }
+    [data-theme="light"] table tbody tr:hover { background: rgba(0,0,0,.025) !important; }
+
+    .matrix-table th, .matrix-table td {
+      border: 1px solid var(--border);
+      padding: 10px 14px;
+      font-size: 13px;
+    }
+    .matrix-table th { background: var(--surface-thin); color: var(--text); font-weight: 600; }
+    .matrix-table tr:hover { background: var(--accent-soft); }
+    .sort-th { cursor: pointer; user-select: none; transition: color var(--t-fast) var(--ease-apple); }
     .sort-th:hover { color: var(--text); }
-    .overflow-auto table thead th { position: sticky; top: 0; z-index: 2; background: rgba(20,26,46,.95); backdrop-filter: blur(10px); }
-    .matrix-table thead th { position: sticky; top: 0; z-index: 2; }
+    /* Sticky-заголовок */
+    .overflow-auto table thead th {
+      position: sticky; top: 0; z-index: 2;
+      background: var(--surface-solid);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+    }
+    .matrix-table thead th { position: sticky; top: 0; z-index: 2; background: var(--surface-solid); }
 
     /* ==================== ИНДИКАТОРЫ ==================== */
     .auto-refresh-indicator { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ok); }
-    .auto-refresh-indicator .dot { width: 8px; height: 8px; background: var(--ok); border-radius: 50%; animation: pulse 2s infinite; box-shadow: 0 0 0 0 rgba(52,211,153,.55); }
+    .auto-refresh-indicator .dot {
+      width: 6px; height: 6px; background: var(--ok); border-radius: 50%;
+      animation: pulse 2s infinite;
+      box-shadow: 0 0 0 0 rgba(48,209,88,.55);
+    }
 
     /* ==================== ВКЛАДКИ: горизонтальный скролл ==================== */
-    #tabBar { overflow-x: auto; flex-wrap: nowrap; scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.18) transparent; -webkit-overflow-scrolling: touch; }
-    #tabBar::-webkit-scrollbar { height: 6px; }
-    #tabBar::-webkit-scrollbar-thumb { background: rgba(255,255,255,.16); border-radius: 3px; }
+    #tabBar { overflow-x: auto; flex-wrap: nowrap; scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; -webkit-overflow-scrolling: touch; }
+    #tabBar::-webkit-scrollbar { height: 4px; }
+    #tabBar::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 2px; }
     .tab-btn { flex: 0 0 auto; white-space: nowrap; position: relative; }
 
     /* ==================== БЕЙДЖИ ==================== */
-    .tab-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px; padding: 0 5px; margin-left: 6px; font-size: 11px; font-weight: 700; line-height: 1; color: #fff; background: var(--bad); border-radius: 9px; vertical-align: middle; }
+    .tab-badge {
+      display: inline-flex; align-items: center; justify-content: center;
+      min-width: 18px; height: 18px; padding: 0 6px; margin-left: 6px;
+      font-size: 11px; font-weight: 600; line-height: 1;
+      color: #fff; background: var(--bad);
+      border-radius: 980px; vertical-align: middle;
+    }
     .tab-dot { margin-left: 6px; font-size: 10px; vertical-align: middle; }
     .tab-dot.ok { color: var(--ok); }
     .tab-dot.off { color: var(--warn); }
 
-    /* ==================== БЫСТРЫЕ ДИАПАЗОНЫ ==================== */
+    /* ==================== БЫСТРЫЕ ДИАПАЗОНЫ (segmented chips) ==================== */
     .quick-range-btn {
-      background: rgba(255,255,255,.03);
+      background: var(--surface-thin);
       color: var(--text-dim);
       border: 1px solid var(--border);
-      padding: 6px 12px;
-      border-radius: 999px;
-      font-size: 12px;
-      font-weight: 600;
+      padding: 6px 14px;
+      min-height: 32px;
+      border-radius: 980px;
+      font-size: 13px;
+      font-weight: 500;
       cursor: pointer;
-      transition: background .2s ease, color .2s ease, border-color .2s ease, transform .15s ease;
+      transition: background var(--t-fast) var(--ease-apple),
+                  color var(--t-fast) var(--ease-apple),
+                  border-color var(--t-fast) var(--ease-apple);
     }
-    .quick-range-btn:hover { background: rgba(255,255,255,.07); color: var(--text); border-color: var(--border-strong); }
+    .quick-range-btn:hover { color: var(--text); border-color: var(--border-strong); }
     .quick-range-btn.active {
-      background: linear-gradient(180deg, var(--accent), var(--accent-2));
-      border-color: transparent;
+      background: var(--accent);
+      border-color: var(--accent);
       color: #fff;
-      box-shadow: 0 6px 16px -8px rgba(91,140,255,.6);
+      box-shadow: none;
     }
 
     /* ==================== INPUTS ==================== */
     input[type="date"], input[type="text"], input[type="search"], input[type="number"], select, textarea {
-      transition: border-color .2s ease, box-shadow .2s ease, background .2s ease;
+      transition: border-color var(--t-fast) var(--ease-apple),
+                  box-shadow var(--t-fast) var(--ease-apple),
+                  background var(--t-fast) var(--ease-apple);
     }
-    input[type="text"]:focus, input[type="search"]:focus, input[type="number"]:focus, input[type="date"]:focus, select:focus, textarea:focus {
+    input[type="text"]:focus, input[type="search"]:focus, input[type="number"]:focus,
+    input[type="date"]:focus, select:focus, textarea:focus {
       outline: none;
       border-color: var(--accent) !important;
-      box-shadow: 0 0 0 3px rgba(91,140,255,.18);
+      box-shadow: 0 0 0 4px var(--accent-ring);
+    }
+    /* Глобальный focus-ring */
+    :focus-visible { outline: none; box-shadow: 0 0 0 4px var(--accent-ring); border-radius: 8px; }
+    button:focus-visible, .btn:focus-visible, .tab-btn:focus-visible, .quick-range-btn:focus-visible {
+      box-shadow: 0 0 0 4px var(--accent-ring);
     }
 
     /* ==================== Range pickers ==================== */
     .apple-range-input {
-      background: rgba(255,255,255,.04);
+      background: var(--surface-thin);
       border: 1px solid var(--border);
       color: var(--text);
-      border-radius: 10px;
+      border-radius: var(--r-input);
       padding: 9px 14px 9px 36px;
       font-size: 13px;
       font-weight: 500;
       min-width: 240px;
+      min-height: 36px;
       cursor: pointer;
-      background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%239aa3bf' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><rect x='3' y='4' width='18' height='18' rx='3'/><line x1='16' y1='2' x2='16' y2='6'/><line x1='8' y1='2' x2='8' y2='6'/><line x1='3' y1='10' x2='21' y2='10'/></svg>");
+      background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23A1A1A6' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'><rect x='3' y='4' width='18' height='18' rx='3'/><line x1='16' y1='2' x2='16' y2='6'/><line x1='8' y1='2' x2='8' y2='6'/><line x1='3' y1='10' x2='21' y2='10'/></svg>");
       background-repeat: no-repeat;
       background-position: 12px center;
     }
-    .apple-range-input:hover { border-color: var(--border-strong); background-color: rgba(255,255,255,.06); }
+    .apple-range-input:hover { border-color: var(--border-strong); }
 
-    /* flatpickr dark refinement */
+    /* flatpickr — приглушённая Apple-стилистика */
     .flatpickr-calendar {
-      background: #141a30 !important;
+      background: var(--surface-solid) !important;
       border: 1px solid var(--border-strong) !important;
-      box-shadow: 0 30px 60px -20px rgba(0,0,0,.6) !important;
-      border-radius: 14px !important;
-      font-family: inherit;
+      box-shadow: var(--shadow-pop) !important;
+      border-radius: var(--r-input) !important;
+      font-family: var(--font-ui);
     }
-    .flatpickr-calendar.arrowTop:before, .flatpickr-calendar.arrowTop:after { border-bottom-color: #141a30 !important; }
-    .flatpickr-months .flatpickr-month, .flatpickr-current-month, .flatpickr-monthDropdown-months, .flatpickr-weekdays, span.flatpickr-weekday {
+    .flatpickr-calendar.arrowTop:before, .flatpickr-calendar.arrowTop:after { border-bottom-color: var(--surface-solid) !important; }
+    .flatpickr-months .flatpickr-month, .flatpickr-current-month, .flatpickr-monthDropdown-months,
+    .flatpickr-weekdays, span.flatpickr-weekday {
       color: var(--text) !important; background: transparent !important; fill: var(--text) !important;
     }
     .flatpickr-day { color: var(--text-dim) !important; border-radius: 8px !important; }
     .flatpickr-day.today { border-color: var(--accent) !important; color: var(--text) !important; }
-    .flatpickr-day.selected, .flatpickr-day.startRange, .flatpickr-day.endRange, .flatpickr-day.selected.inRange, .flatpickr-day.startRange.inRange, .flatpickr-day.endRange.inRange,
+    .flatpickr-day.selected, .flatpickr-day.startRange, .flatpickr-day.endRange,
+    .flatpickr-day.selected.inRange, .flatpickr-day.startRange.inRange, .flatpickr-day.endRange.inRange,
     .flatpickr-day.selected:focus, .flatpickr-day.startRange:focus, .flatpickr-day.endRange:focus,
     .flatpickr-day.selected:hover, .flatpickr-day.startRange:hover, .flatpickr-day.endRange:hover,
     .flatpickr-day.selected.prevMonthDay, .flatpickr-day.startRange.prevMonthDay, .flatpickr-day.endRange.prevMonthDay,
     .flatpickr-day.selected.nextMonthDay, .flatpickr-day.startRange.nextMonthDay, .flatpickr-day.endRange.nextMonthDay {
-      background: linear-gradient(180deg, var(--accent), var(--accent-2)) !important;
+      background: var(--accent) !important;
       border-color: transparent !important;
       color: #fff !important;
       box-shadow: -10px 0 0 transparent;
     }
-    .flatpickr-day.inRange { background: rgba(91,140,255,.18) !important; border-color: transparent !important; color: var(--text) !important; box-shadow: none !important; }
-    .flatpickr-day:hover:not(.selected):not(.startRange):not(.endRange) { background: rgba(255,255,255,.06) !important; color: var(--text) !important; }
+    .flatpickr-day.inRange { background: var(--accent-soft) !important; border-color: transparent !important; color: var(--text) !important; box-shadow: none !important; }
+    .flatpickr-day:hover:not(.selected):not(.startRange):not(.endRange) { background: var(--surface-thin) !important; color: var(--text) !important; }
     .flatpickr-prev-month, .flatpickr-next-month { color: var(--text-dim) !important; fill: var(--text-dim) !important; }
     .flatpickr-prev-month:hover svg, .flatpickr-next-month:hover svg { fill: var(--text) !important; }
     .numInputWrapper:hover { background: transparent !important; }
 
+    /* ==================== STICKY ХЕДЕР ==================== */
+    .app-header {
+      position: sticky; top: 0; z-index: 40;
+      margin: -32px -16px 24px;
+      padding: 16px;
+      background: transparent;
+      transition: background var(--t-base) var(--ease-apple),
+                  border-color var(--t-base) var(--ease-apple),
+                  backdrop-filter var(--t-base) var(--ease-apple);
+      border-bottom: 1px solid transparent;
+    }
+    .app-header.scrolled {
+      background: var(--surface);
+      backdrop-filter: saturate(180%) blur(20px);
+      -webkit-backdrop-filter: saturate(180%) blur(20px);
+      border-bottom-color: var(--border);
+    }
+
+    /* Иконочная кнопка для тогла темы и т.п. */
+    .icon-btn {
+      width: 36px; height: 36px;
+      display: inline-flex; align-items: center; justify-content: center;
+      border-radius: 980px;
+      background: var(--surface-thin);
+      color: var(--text);
+      border: 1px solid var(--border);
+      cursor: pointer;
+      transition: background var(--t-fast) var(--ease-apple), border-color var(--t-fast) var(--ease-apple);
+    }
+    .icon-btn:hover { border-color: var(--border-strong); background: var(--surface-hi); }
+    .icon-btn svg { width: 18px; height: 18px; stroke-width: 1.5; }
+
     /* ==================== АНИМАЦИИ ==================== */
     .chart-wrap { height: 340px; position: relative; }
-    @keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.45; transform: scale(0.92); } }
+    @keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.5; transform: scale(0.9); } }
 
     /* Лёгкий «вход» KPI и карточек при первом рендере */
-    @keyframes riseIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+    @keyframes riseIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
     #kpiCards > .card, #bannerKpiCards > .card, #compareKpiGrid > .card {
-      animation: riseIn .45s cubic-bezier(.2,.7,.2,1) both;
+      animation: riseIn var(--t-slow) var(--ease-apple) both;
     }
     #kpiCards > .card:nth-child(1) { animation-delay: .02s; }
     #kpiCards > .card:nth-child(2) { animation-delay: .06s; }
@@ -262,22 +465,56 @@
     #kpiCards > .card:nth-child(5) { animation-delay: .18s; }
     #kpiCards > .card:nth-child(6) { animation-delay: .22s; }
 
-    /* Заголовок */
+    /* Заголовок приложения — нейтрально, без фиолетового градиента */
     .app-title {
-      font-weight: 800;
-      font-size: 30px;
-      letter-spacing: -0.03em;
-      background: linear-gradient(180deg, #ffffff 0%, #c8d2ee 100%);
-      -webkit-background-clip: text;
-      background-clip: text;
-      color: transparent;
+      font-weight: 600;
+      font-size: 24px;
+      letter-spacing: -0.022em;
+      color: var(--text);
+      background: none;
+      -webkit-background-clip: initial;
+      background-clip: initial;
     }
 
-    /* Прокрутка для тёмной темы */
-    *::-webkit-scrollbar { width: 10px; height: 10px; }
-    *::-webkit-scrollbar-thumb { background: rgba(255,255,255,.10); border-radius: 6px; }
-    *::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,.18); }
+    /* Прокрутка */
+    *::-webkit-scrollbar { width: 8px; height: 8px; }
+    *::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 4px; }
+    *::-webkit-scrollbar-thumb:hover { background: var(--text-faint); }
 
+    /* ==================== TOAST ==================== */
+    .toast-stack {
+      position: fixed; right: 20px; bottom: 20px; z-index: 100;
+      display: flex; flex-direction: column; gap: 10px; pointer-events: none;
+    }
+    .toast {
+      pointer-events: auto;
+      background: var(--surface);
+      backdrop-filter: blur(20px) saturate(180%);
+      -webkit-backdrop-filter: blur(20px) saturate(180%);
+      border: 1px solid var(--border-strong);
+      color: var(--text);
+      padding: 12px 16px;
+      border-radius: 980px;
+      box-shadow: var(--shadow-pop);
+      font-size: 14px;
+      animation: toastIn var(--t-base) var(--ease-apple) both;
+    }
+    @keyframes toastIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
+    /* ==================== СВЕТЛАЯ ТЕМА: компенсация Tailwind dark utility ==================== */
+    [data-theme="light"] .text-slate-200 { color: #1D1D1F !important; }
+    [data-theme="light"] .text-slate-300 { color: #1D1D1F !important; }
+    [data-theme="light"] .text-slate-400 { color: var(--text-dim) !important; }
+    [data-theme="light"] .text-slate-500 { color: var(--text-faint) !important; }
+    [data-theme="light"] .text-slate-600 { color: var(--text-faint) !important; }
+    [data-theme="light"] .text-white { color: var(--text) !important; }
+    [data-theme="light"] .bg-slate-700 { background: #F5F5F7 !important; }
+    [data-theme="light"] .bg-slate-800 { background: #FFFFFF !important; }
+    [data-theme="light"] .bg-slate-900 { background: var(--surface-solid) !important; }
+    [data-theme="light"] .border-slate-700,
+    [data-theme="light"] .border-slate-800 { border-color: var(--border) !important; }
+
+    /* ==================== A11y: reduced motion ==================== */
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after { animation-duration: .001ms !important; transition-duration: .001ms !important; }
     }
@@ -286,10 +523,16 @@
 <body>
 <div class="max-w-7xl mx-auto px-4 py-8 space-y-6">
   <!-- Header -->
-  <div class="flex flex-col lg:flex-row gap-4 lg:items-center lg:justify-between">
-    <div>
-      <h1 class="app-title text-white">Leads.su Dashboard</h1>
-      <p class="text-slate-400 text-sm mt-1">PRO Analytics Edition</p>
+  <div class="app-header flex flex-col lg:flex-row gap-4 lg:items-center lg:justify-between">
+    <div class="flex items-center gap-3">
+      <div>
+        <h1 class="app-title text-white">Leads.su Dashboard</h1>
+        <p class="text-slate-400 text-sm mt-1">PRO Analytics Edition</p>
+      </div>
+      <button id="themeToggle" type="button" class="icon-btn ml-2" title="Сменить тему" aria-label="Сменить тему" onclick="toggleTheme()">
+        <svg id="themeIconMoon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79Z"/></svg>
+        <svg id="themeIconSun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="display:none"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+      </button>
     </div>
     <div>
       <div class="flex flex-wrap gap-3 items-center">
@@ -920,6 +1163,38 @@
 </div>
 
 <script>
+// ========================== ТЕМА (Apple light/dark) ==========================
+const THEME_KEY = 'leadsTheme';
+function applyTheme(t) {
+  const theme = (t === 'light' || t === 'dark') ? t : 'dark';
+  document.documentElement.setAttribute('data-theme', theme);
+  document.body && document.body.setAttribute('data-theme', theme);
+  const moon = document.getElementById('themeIconMoon');
+  const sun  = document.getElementById('themeIconSun');
+  if (moon && sun) {
+    moon.style.display = theme === 'dark' ? '' : 'none';
+    sun.style.display  = theme === 'dark' ? 'none' : '';
+  }
+  try { localStorage.setItem(THEME_KEY, theme); } catch (_) {}
+}
+function toggleTheme() {
+  const cur = document.documentElement.getAttribute('data-theme') || 'dark';
+  applyTheme(cur === 'dark' ? 'light' : 'dark');
+}
+(function initThemeEarly(){
+  let saved = null;
+  try { saved = localStorage.getItem(THEME_KEY); } catch (_) {}
+  applyTheme(saved || 'dark');
+})();
+
+// ========================== STICKY ХЕДЕР: scrolled state ==========================
+window.addEventListener('scroll', () => {
+  const h = document.querySelector('.app-header');
+  if (!h) return;
+  if (window.scrollY > 8) h.classList.add('scrolled');
+  else h.classList.remove('scrolled');
+}, { passive: true });
+
 // ========================== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ==========================
 const API_BASE = './leads-proxy.php';
 const HARDCODED_TOKEN = '2104ce6ccd2ce95458a53926597416eb';
@@ -957,10 +1232,34 @@ const daysOfWeek = ['Вс','Пн','Вт','Ср','Чт','Пт','Сб'];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const colorPalette = ['#3b82f6','#10b981','#f59e0b','#ef4444','#8b5cf6','#ec4899','#14b8a6','#f97316','#06b6d4','#6366f1'];
 
+// Chart.js глобальные дефолты в Apple-стиле: SF Pro, нейтральная сетка, плавные линии.
+if (typeof Chart !== 'undefined') {
+  Chart.defaults.font.family = '-apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", Inter, system-ui, sans-serif';
+  Chart.defaults.font.size = 12;
+  Chart.defaults.color = '#A1A1A6';
+  Chart.defaults.borderColor = 'rgba(255,255,255,0.06)';
+  if (Chart.defaults.elements && Chart.defaults.elements.line) {
+    Chart.defaults.elements.line.tension = 0.35;
+    Chart.defaults.elements.line.borderWidth = 2;
+  }
+  if (Chart.defaults.elements && Chart.defaults.elements.point) {
+    Chart.defaults.elements.point.radius = 0;
+    Chart.defaults.elements.point.hoverRadius = 5;
+    Chart.defaults.elements.point.hitRadius = 12;
+  }
+  if (Chart.defaults.elements && Chart.defaults.elements.bar) {
+    Chart.defaults.elements.bar.borderRadius = 6;
+    Chart.defaults.elements.bar.borderSkipped = 'bottom';
+  }
+}
+
 const sharedTooltipConfig = {
   mode: 'index', intersect: false,
-  backgroundColor: 'rgba(15,23,42,0.95)', titleColor: '#ffffff', bodyColor: '#f1f5f9',
-  borderColor: '#334155', borderWidth: 1, padding: 12, displayColors: true, caretSize: 6
+  backgroundColor: 'rgba(28,28,30,0.92)', titleColor: '#ffffff', bodyColor: '#f5f5f7',
+  borderColor: 'rgba(255,255,255,0.10)', borderWidth: 1,
+  padding: 10, displayColors: true, caretSize: 6, cornerRadius: 12,
+  titleFont: { family: '-apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, system-ui, sans-serif', size: 12, weight: '600' },
+  bodyFont:  { family: '-apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, system-ui, sans-serif', size: 12, weight: '500' }
 };
 
 // ========================== TAB NAVIGATION ==========================
@@ -2185,6 +2484,14 @@ function renderMatrixAnalytics() {
   const months=[...new Set(globalRawData.map(r=>r.month))].sort();
   const totalRevAll=globalRawData.reduce((s,r)=>s+r.revenue,0);
 
+  // Динамика доли выручки: сравниваем долю источника в последнем месяце периода
+  // с долей в предыдущем месяце (в процентных пунктах).
+  const lastMonth = months[months.length - 1];
+  const prevMonth = months.length >= 2 ? months[months.length - 2] : null;
+  const monthRevTotal = m => globalRawData.filter(r => r.month === m).reduce((s,r) => s + r.revenue, 0);
+  const lastMonthRevTotal = lastMonth ? monthRevTotal(lastMonth) : 0;
+  const prevMonthRevTotal = prevMonth ? monthRevTotal(prevMonth) : 0;
+
   // Pre-calculate all values for sorting
   const sourceRows = sources.map(src => {
     const srcData = globalRawData.filter(r => r.source === src);
@@ -2210,7 +2517,13 @@ function renderMatrixAnalytics() {
       const tr = srcData.reduce((s,r) => s + r.revenue, 0);
       total = tc > 0 ? tr / tc : 0;
     }
-    return { name: src, monthValues, total, revenue: srcRevenue, share: srcShare };
+    // Доля выручки источника в последнем и предыдущем месяце периода
+    const lastRev = lastMonth ? srcData.filter(r => r.month === lastMonth).reduce((s,r) => s + r.revenue, 0) : 0;
+    const prevRev = prevMonth ? srcData.filter(r => r.month === prevMonth).reduce((s,r) => s + r.revenue, 0) : 0;
+    const lastShare = lastMonthRevTotal > 0 ? (lastRev / lastMonthRevTotal * 100) : 0;
+    const prevShare = prevMonthRevTotal > 0 ? (prevRev / prevMonthRevTotal * 100) : 0;
+    const shareDelta = prevMonth ? (lastShare - prevShare) : null; // null => нет данных для сравнения
+    return { name: src, monthValues, total, revenue: srcRevenue, share: srcShare, lastShare, prevShare, shareDelta };
   });
 
   // Sort
@@ -2221,6 +2534,14 @@ function renderMatrixAnalytics() {
     else if (sf === 'total') { va = a.total; vb = b.total; }
     else if (sf === 'revenue') { va = a.revenue; vb = b.revenue; }
     else if (sf === 'share') { va = a.share; vb = b.share; }
+    else if (sf === 'shareDelta') {
+      // null (нет данных для сравнения) опускаем в конец независимо от направления сортировки
+      const an = a.shareDelta === null, bn = b.shareDelta === null;
+      if (an && bn) return 0;
+      if (an) return 1;
+      if (bn) return -1;
+      va = a.shareDelta; vb = b.shareDelta;
+    }
     else { va = a.monthValues[sf] || 0; vb = b.monthValues[sf] || 0; }
     if (typeof va === 'string') return matrixSortState.desc ? vb.localeCompare(va) : va.localeCompare(vb);
     return matrixSortState.desc ? vb - va : va - vb;
@@ -2231,13 +2552,30 @@ function renderMatrixAnalytics() {
     +months.map(m=>`<th class="sort-th text-right" onclick="sortMatrix('${m}')">${m} ↕</th>`).join('')
     +`<th class="sort-th text-right font-bold" onclick="sortMatrix('total')">Итого ↕</th>`
     +`<th class="sort-th text-right font-bold text-emerald-400" onclick="sortMatrix('revenue')">Выручка (₽) ↕</th>`
-    +`<th class="sort-th text-right font-bold text-emerald-400" onclick="sortMatrix('share')">Доля выручки ↕</th>`;
+    +`<th class="sort-th text-right font-bold text-emerald-400" onclick="sortMatrix('share')">Доля выручки ↕</th>`
+    +`<th class="sort-th text-right font-bold" onclick="sortMatrix('shareDelta')" title="Изменение доли выручки источника в последнем месяце периода относительно предыдущего месяца, в процентных пунктах">Δ доли (мес) ↕</th>`;
 
   const fmtVal = (val) => metric==='revenue'?`${Math.round(val).toLocaleString('ru-RU')} ₽`:metric==='epc'?`${val.toFixed(2)} ₽`:val.toLocaleString('ru-RU');
 
+  // Форматирование Δ доли выручки (pp). null — нет данных для сравнения.
+  const fmtShareDelta = (delta, lastShare, prevShare) => {
+    if (delta === null) {
+      return `<td class="text-right text-slate-500" title="Нужно минимум 2 месяца в выбранном периоде">—</td>`;
+    }
+    const eps = 0.05; // меньше 0.05 pp считаем «без изменений»
+    let arrow, cls;
+    if (delta > eps)       { arrow = '▲'; cls = 'text-emerald-400'; }
+    else if (delta < -eps) { arrow = '▼'; cls = 'text-red-400'; }
+    else                   { arrow = '▬'; cls = 'text-slate-400'; }
+    const sign = delta > 0 ? '+' : (delta < 0 ? '−' : '');
+    const tip  = `Доля в ${lastMonth}: ${lastShare.toFixed(1)}% · Доля в ${prevMonth}: ${prevShare.toFixed(1)}%`;
+    return `<td class="text-right font-semibold ${cls}" title="${tip}">${arrow} ${sign}${Math.abs(delta).toFixed(1)} pp</td>`;
+  };
+
   const bodyRows=sourceRows.map(row=>{
     const cells=months.map(m=>`<td class="text-right">${fmtVal(row.monthValues[m]||0)}</td>`).join('');
-    return `<tr class="hover:bg-slate-800"><td class="font-semibold">${escapeHtml(row.name)}</td>${cells}<td class="text-right font-bold">${fmtVal(row.total)}</td><td class="text-right text-emerald-400 font-semibold">${Math.round(row.revenue).toLocaleString('ru-RU')} ₽</td><td class="text-right text-emerald-400 font-semibold">${row.share.toFixed(1)}%</td></tr>`;
+    const deltaCell = fmtShareDelta(row.shareDelta, row.lastShare, row.prevShare);
+    return `<tr class="hover:bg-slate-800"><td class="font-semibold">${escapeHtml(row.name)}</td>${cells}<td class="text-right font-bold">${fmtVal(row.total)}</td><td class="text-right text-emerald-400 font-semibold">${Math.round(row.revenue).toLocaleString('ru-RU')} ₽</td><td class="text-right text-emerald-400 font-semibold">${row.share.toFixed(1)}%</td>${deltaCell}</tr>`;
   });
 
   let grandCells=months.map(m=>{
@@ -2249,7 +2587,7 @@ function renderMatrixAnalytics() {
   let gt=0;
   if(metric==='epc'){const tc=globalRawData.reduce((s,r)=>s+r.clicks,0);const tr=globalRawData.reduce((s,r)=>s+r.revenue,0);gt=tc>0?tr/tc:0;}
   else gt=globalRawData.reduce((s,r)=>s+r[metric],0);
-  document.getElementById('matrixSourceBody').innerHTML=bodyRows.join('')+`<tr class="border-t-2 border-blue-500"><td class="font-bold text-blue-400">ИТОГО</td>${grandCells}<td class="text-right font-bold text-blue-400">${fmtVal(gt)}</td><td class="text-right font-bold text-emerald-400">${Math.round(totalRevAll).toLocaleString('ru-RU')} ₽</td><td class="text-right font-bold text-emerald-400">100%</td></tr>`;
+  document.getElementById('matrixSourceBody').innerHTML=bodyRows.join('')+`<tr class="border-t-2 border-blue-500"><td class="font-bold text-blue-400">ИТОГО</td>${grandCells}<td class="text-right font-bold text-blue-400">${fmtVal(gt)}</td><td class="text-right font-bold text-emerald-400">${Math.round(totalRevAll).toLocaleString('ru-RU')} ₽</td><td class="text-right font-bold text-emerald-400">100%</td><td class="text-right text-slate-500">—</td></tr>`;
 
   renderMonthlyShareTable(sources,months);
   renderMatrixShareChart(sources,months);
