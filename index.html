@@ -2185,6 +2185,14 @@ function renderMatrixAnalytics() {
   const months=[...new Set(globalRawData.map(r=>r.month))].sort();
   const totalRevAll=globalRawData.reduce((s,r)=>s+r.revenue,0);
 
+  // Динамика доли выручки: сравниваем долю источника в последнем месяце периода
+  // с долей в предыдущем месяце (в процентных пунктах).
+  const lastMonth = months[months.length - 1];
+  const prevMonth = months.length >= 2 ? months[months.length - 2] : null;
+  const monthRevTotal = m => globalRawData.filter(r => r.month === m).reduce((s,r) => s + r.revenue, 0);
+  const lastMonthRevTotal = lastMonth ? monthRevTotal(lastMonth) : 0;
+  const prevMonthRevTotal = prevMonth ? monthRevTotal(prevMonth) : 0;
+
   // Pre-calculate all values for sorting
   const sourceRows = sources.map(src => {
     const srcData = globalRawData.filter(r => r.source === src);
@@ -2210,7 +2218,13 @@ function renderMatrixAnalytics() {
       const tr = srcData.reduce((s,r) => s + r.revenue, 0);
       total = tc > 0 ? tr / tc : 0;
     }
-    return { name: src, monthValues, total, revenue: srcRevenue, share: srcShare };
+    // Доля выручки источника в последнем и предыдущем месяце периода
+    const lastRev = lastMonth ? srcData.filter(r => r.month === lastMonth).reduce((s,r) => s + r.revenue, 0) : 0;
+    const prevRev = prevMonth ? srcData.filter(r => r.month === prevMonth).reduce((s,r) => s + r.revenue, 0) : 0;
+    const lastShare = lastMonthRevTotal > 0 ? (lastRev / lastMonthRevTotal * 100) : 0;
+    const prevShare = prevMonthRevTotal > 0 ? (prevRev / prevMonthRevTotal * 100) : 0;
+    const shareDelta = prevMonth ? (lastShare - prevShare) : null; // null => нет данных для сравнения
+    return { name: src, monthValues, total, revenue: srcRevenue, share: srcShare, lastShare, prevShare, shareDelta };
   });
 
   // Sort
@@ -2221,6 +2235,14 @@ function renderMatrixAnalytics() {
     else if (sf === 'total') { va = a.total; vb = b.total; }
     else if (sf === 'revenue') { va = a.revenue; vb = b.revenue; }
     else if (sf === 'share') { va = a.share; vb = b.share; }
+    else if (sf === 'shareDelta') {
+      // null (нет данных для сравнения) опускаем в конец независимо от направления сортировки
+      const an = a.shareDelta === null, bn = b.shareDelta === null;
+      if (an && bn) return 0;
+      if (an) return 1;
+      if (bn) return -1;
+      va = a.shareDelta; vb = b.shareDelta;
+    }
     else { va = a.monthValues[sf] || 0; vb = b.monthValues[sf] || 0; }
     if (typeof va === 'string') return matrixSortState.desc ? vb.localeCompare(va) : va.localeCompare(vb);
     return matrixSortState.desc ? vb - va : va - vb;
@@ -2231,13 +2253,30 @@ function renderMatrixAnalytics() {
     +months.map(m=>`<th class="sort-th text-right" onclick="sortMatrix('${m}')">${m} ↕</th>`).join('')
     +`<th class="sort-th text-right font-bold" onclick="sortMatrix('total')">Итого ↕</th>`
     +`<th class="sort-th text-right font-bold text-emerald-400" onclick="sortMatrix('revenue')">Выручка (₽) ↕</th>`
-    +`<th class="sort-th text-right font-bold text-emerald-400" onclick="sortMatrix('share')">Доля выручки ↕</th>`;
+    +`<th class="sort-th text-right font-bold text-emerald-400" onclick="sortMatrix('share')">Доля выручки ↕</th>`
+    +`<th class="sort-th text-right font-bold" onclick="sortMatrix('shareDelta')" title="Изменение доли выручки источника в последнем месяце периода относительно предыдущего месяца, в процентных пунктах">Δ доли (мес) ↕</th>`;
 
   const fmtVal = (val) => metric==='revenue'?`${Math.round(val).toLocaleString('ru-RU')} ₽`:metric==='epc'?`${val.toFixed(2)} ₽`:val.toLocaleString('ru-RU');
 
+  // Форматирование Δ доли выручки (pp). null — нет данных для сравнения.
+  const fmtShareDelta = (delta, lastShare, prevShare) => {
+    if (delta === null) {
+      return `<td class="text-right text-slate-500" title="Нужно минимум 2 месяца в выбранном периоде">—</td>`;
+    }
+    const eps = 0.05; // меньше 0.05 pp считаем «без изменений»
+    let arrow, cls;
+    if (delta > eps)       { arrow = '▲'; cls = 'text-emerald-400'; }
+    else if (delta < -eps) { arrow = '▼'; cls = 'text-red-400'; }
+    else                   { arrow = '▬'; cls = 'text-slate-400'; }
+    const sign = delta > 0 ? '+' : (delta < 0 ? '−' : '');
+    const tip  = `Доля в ${lastMonth}: ${lastShare.toFixed(1)}% · Доля в ${prevMonth}: ${prevShare.toFixed(1)}%`;
+    return `<td class="text-right font-semibold ${cls}" title="${tip}">${arrow} ${sign}${Math.abs(delta).toFixed(1)} pp</td>`;
+  };
+
   const bodyRows=sourceRows.map(row=>{
     const cells=months.map(m=>`<td class="text-right">${fmtVal(row.monthValues[m]||0)}</td>`).join('');
-    return `<tr class="hover:bg-slate-800"><td class="font-semibold">${escapeHtml(row.name)}</td>${cells}<td class="text-right font-bold">${fmtVal(row.total)}</td><td class="text-right text-emerald-400 font-semibold">${Math.round(row.revenue).toLocaleString('ru-RU')} ₽</td><td class="text-right text-emerald-400 font-semibold">${row.share.toFixed(1)}%</td></tr>`;
+    const deltaCell = fmtShareDelta(row.shareDelta, row.lastShare, row.prevShare);
+    return `<tr class="hover:bg-slate-800"><td class="font-semibold">${escapeHtml(row.name)}</td>${cells}<td class="text-right font-bold">${fmtVal(row.total)}</td><td class="text-right text-emerald-400 font-semibold">${Math.round(row.revenue).toLocaleString('ru-RU')} ₽</td><td class="text-right text-emerald-400 font-semibold">${row.share.toFixed(1)}%</td>${deltaCell}</tr>`;
   });
 
   let grandCells=months.map(m=>{
@@ -2249,7 +2288,7 @@ function renderMatrixAnalytics() {
   let gt=0;
   if(metric==='epc'){const tc=globalRawData.reduce((s,r)=>s+r.clicks,0);const tr=globalRawData.reduce((s,r)=>s+r.revenue,0);gt=tc>0?tr/tc:0;}
   else gt=globalRawData.reduce((s,r)=>s+r[metric],0);
-  document.getElementById('matrixSourceBody').innerHTML=bodyRows.join('')+`<tr class="border-t-2 border-blue-500"><td class="font-bold text-blue-400">ИТОГО</td>${grandCells}<td class="text-right font-bold text-blue-400">${fmtVal(gt)}</td><td class="text-right font-bold text-emerald-400">${Math.round(totalRevAll).toLocaleString('ru-RU')} ₽</td><td class="text-right font-bold text-emerald-400">100%</td></tr>`;
+  document.getElementById('matrixSourceBody').innerHTML=bodyRows.join('')+`<tr class="border-t-2 border-blue-500"><td class="font-bold text-blue-400">ИТОГО</td>${grandCells}<td class="text-right font-bold text-blue-400">${fmtVal(gt)}</td><td class="text-right font-bold text-emerald-400">${Math.round(totalRevAll).toLocaleString('ru-RU')} ₽</td><td class="text-right font-bold text-emerald-400">100%</td><td class="text-right text-slate-500">—</td></tr>`;
 
   renderMonthlyShareTable(sources,months);
   renderMatrixShareChart(sources,months);
