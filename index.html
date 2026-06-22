@@ -451,6 +451,21 @@
 
     /* ==================== АНИМАЦИИ ==================== */
     .chart-wrap { height: 340px; position: relative; }
+    .analysis-mode-btn {
+      padding: 7px 10px; border-radius: 999px; border: 1px solid var(--border);
+      background: var(--surface-thin); color: var(--text-muted); font-size: 12px;
+      transition: background var(--t-fast) var(--ease-apple), color var(--t-fast) var(--ease-apple), border-color var(--t-fast) var(--ease-apple);
+    }
+    .analysis-mode-btn:hover { border-color: var(--border-strong); color: var(--text); }
+    .analysis-mode-btn.active { background: rgba(59,130,246,.18); border-color: rgba(96,165,250,.55); color: #dbeafe; }
+    .analysis-chip, .relation-chip {
+      background: var(--surface-thin); border: 1px solid var(--border); border-radius: 16px; padding: 10px 12px;
+    }
+    .analysis-chip .label { color: var(--text-faint); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+    .analysis-chip .value { color: var(--text); font-weight: 800; margin-top: 2px; }
+    .chart-heatmap { display: grid; gap: 2px; height: 14px; margin-top: 10px; }
+    .chart-heatmap-cell { border-radius: 3px; min-width: 4px; }
+    .chart-heatmap-caption { color: var(--text-faint); font-size: 11px; margin-top: 4px; }
     @keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.5; transform: scale(0.9); } }
 
     /* Лёгкий «вход» KPI и карточек при первом рендере */
@@ -659,9 +674,12 @@
     <div id="problemZones" class="card hidden"></div>
     <div class="grid grid-cols-1 xl:grid-cols-3 gap-6">
       <div class="card xl:col-span-2">
-        <div class="flex flex-wrap gap-3 justify-between items-center mb-4">
-          <h2 class="text-white font-bold">Динамика</h2>
-          <div class="flex gap-2">
+        <div class="flex flex-wrap gap-3 justify-between items-start mb-4">
+          <div>
+            <h2 class="text-white font-bold">Динамика</h2>
+            <p id="chartModeHint" class="text-xs text-slate-500 mt-1">Чистый факт без дополнительных слоёв.</p>
+          </div>
+          <div class="flex flex-wrap gap-2 justify-end">
             <select id="chartGrouping" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm focus:outline-none" onchange="refreshChart()">
               <option value="date">По дням</option><option value="week">По неделям</option><option value="month">По месяцам</option>
             </select>
@@ -676,7 +694,25 @@
             </select>
           </div>
         </div>
+        <div id="chartAnalysisModes" class="flex flex-wrap gap-2 mb-3">
+          <button class="analysis-mode-btn active" data-mode="fact" onclick="setChartAnalysisMode('fact')">Факт</button>
+          <button class="analysis-mode-btn" data-mode="trend" onclick="setChartAnalysisMode('trend')">Тренд</button>
+          <button class="analysis-mode-btn" data-mode="compare" onclick="setChartAnalysisMode('compare')">Сравнение</button>
+          <button class="analysis-mode-btn" data-mode="anomalies" onclick="setChartAnalysisMode('anomalies')">Аномалии</button>
+          <button class="analysis-mode-btn" data-mode="dependencies" onclick="setChartAnalysisMode('dependencies')">Зависимости</button>
+        </div>
+        <div id="chartInsightCards" class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3 hidden"></div>
         <div class="chart-wrap"><canvas id="trendChart"></canvas></div>
+        <div id="chartHeatmap" class="hidden"></div>
+        <div id="dependencyPanel" class="hidden mt-4">
+          <div class="flex items-start justify-between gap-3 mb-2">
+            <div>
+              <h3 class="text-sm text-slate-300 font-semibold">Scatter Plot: связь объёма и результата</h3>
+              <p id="dependencySummary" class="text-xs text-slate-500 mt-1"></p>
+            </div>
+          </div>
+          <div class="chart-wrap" style="height:260px"><canvas id="dependencyScatterChart"></canvas></div>
+        </div>
       </div>
       <div class="card">
         <h2 class="text-white font-bold mb-4">Воронка</h2>
@@ -1329,6 +1365,8 @@ let epcLineChart = null;
 let epcWeekdayChart = null;
 let epcMonthChartInstance = null;
 let trendChartInstance = null;
+let dependencyScatterChartInstance = null;
+let chartAnalysisMode = 'fact';
 let donutChartInstance = null;
 let barChartInstance = null;
 let bannerConvChart = null;
@@ -2843,53 +2881,314 @@ async function refreshMarketData() {
   }
 }
 
+
+function setChartAnalysisMode(mode) {
+  chartAnalysisMode = mode || 'fact';
+  document.querySelectorAll('#chartAnalysisModes .analysis-mode-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.mode === chartAnalysisMode);
+  });
+  refreshChart();
+}
+
+function chartModeHint(mode) {
+  return {
+    fact: 'Чистый факт без дополнительных слоёв.',
+    trend: 'Скользящие средние, линия тренда и накопительный итог показывают направление без дневного шума.',
+    compare: 'Пунктир прошлого периода и горизонтальный KPI помогают сразу понять, где факт выше или ниже ориентира.',
+    anomalies: 'Коридор нормы, выбросы, минимум и максимум подсвечивают дни, требующие внимания.',
+    dependencies: 'Dual axis, индекс 100% и scatter plot показывают, как метрики связаны между собой.'
+  }[mode] || '';
+}
+
+function movingAverage(values, windowSize) {
+  return values.map((_, i) => {
+    const start = Math.max(0, i - windowSize + 1);
+    const slice = values.slice(start, i + 1).filter(v => isFinite(Number(v)));
+    return slice.length ? slice.reduce((s, v) => s + Number(v), 0) / slice.length : null;
+  });
+}
+
+function cumulative(values) {
+  let sum = 0;
+  return values.map(v => (sum += Number(v) || 0));
+}
+
+function linearTrend(values) {
+  const pts = values.map((v, i) => [i, Number(v)]).filter(p => isFinite(p[1]));
+  const n = pts.length;
+  if (n < 2) return values.map(() => null);
+  const sx = pts.reduce((s, p) => s + p[0], 0);
+  const sy = pts.reduce((s, p) => s + p[1], 0);
+  const sxy = pts.reduce((s, p) => s + p[0] * p[1], 0);
+  const sx2 = pts.reduce((s, p) => s + p[0] * p[0], 0);
+  const den = n * sx2 - sx * sx;
+  const slope = den ? (n * sxy - sx * sy) / den : 0;
+  const intercept = (sy - slope * sx) / n;
+  return values.map((_, i) => intercept + slope * i);
+}
+
+function stddev(values) {
+  const clean = values.map(Number).filter(v => isFinite(v));
+  if (clean.length < 2) return 0;
+  const avg = clean.reduce((s, v) => s + v, 0) / clean.length;
+  return Math.sqrt(clean.reduce((s, v) => s + Math.pow(v - avg, 2), 0) / clean.length);
+}
+
+function indexedTo100(values) {
+  const base = values.find(v => Number(v) > 0) || 0;
+  return values.map(v => base ? Number(v) / base * 100 : 0);
+}
+
+function metricValueFromGroup(g, metricType, secondary = false) {
+  if (!g) return 0;
+  if (metricType === 'absolute') return secondary ? g.clicks : g.rev;
+  if (metricType === 'conversion') return secondary ? (g.conv ? g.app / g.conv * 100 : 0) : (g.clicks ? g.conv / g.clicks * 100 : 0);
+  if (metricType === 'epc') return g.clicks ? g.rev / g.clicks : 0;
+  if (metricType === 'traffic') return secondary ? g.conv : g.clicks;
+  return g.rev || 0;
+}
+
+function metricLabels(metricType) {
+  if (metricType === 'absolute') return { primary: 'Доход (₽)', secondary: 'Клики', unit: '₽' };
+  if (metricType === 'conversion') return { primary: 'CR (%)', secondary: 'Approve (%)', unit: '%' };
+  if (metricType === 'epc') return { primary: 'EPC (₽)', secondary: '', unit: '₽' };
+  if (metricType === 'traffic') return { primary: 'Клики', secondary: 'Лиды', unit: '' };
+  return { primary: 'Метрика', secondary: '', unit: '' };
+}
+
+function buildGroupedRows(data, grouping) {
+  const grouped = {};
+  for (const row of data || []) {
+    const key = periodKeyFromRow(row, grouping);
+    if (!key) continue;
+    if (!grouped[key]) grouped[key] = { clicks:0, conv:0, app:0, rev:0 };
+    grouped[key].clicks += Number(row.clicks) || 0;
+    grouped[key].conv += Number(row.conversions) || 0;
+    grouped[key].app += Number(row.approved) || 0;
+    grouped[key].rev += Number(row.revenue) || 0;
+  }
+  return grouped;
+}
+
+function buildTargetValue(metricType, labels, data, baseline) {
+  const source = baseline && baseline.length ? baseline : data;
+  const totals = sumLeadRows(source || []);
+  const periods = Math.max(1, labels.length || new Set((source || []).map(r => periodKeyFromRow(r, (document.getElementById('chartGrouping') || {}).value || 'date'))).size || 1);
+  if (metricType === 'absolute') return totals.revenue / periods;
+  if (metricType === 'conversion') return totals.clicks ? totals.conversions / totals.clicks * 100 : 0;
+  if (metricType === 'epc') return totals.clicks ? totals.revenue / totals.clicks : 0;
+  if (metricType === 'traffic') return totals.clicks / periods;
+  return 0;
+}
+
+function chartEventGroups(labels, grouping) {
+  const byLabel = {};
+  for (const e of lastEventsData || []) {
+    const key = periodKeyFromDate(e.event_date, grouping);
+    if (!labels.includes(key)) continue;
+    if (!byLabel[key]) byLabel[key] = [];
+    byLabel[key].push(e);
+  }
+  return byLabel;
+}
+
+const eventMarkerPlugin = {
+  id: 'eventMarkerPlugin',
+  afterDatasetsDraw(chart, args, opts) {
+    const events = (opts && opts.events) || {};
+    const xScale = chart.scales.x;
+    const area = chart.chartArea;
+    if (!xScale || !area) return;
+    for (const [label, list] of Object.entries(events)) {
+      const idx = chart.data.labels.indexOf(formatPeriodLabel(label, (opts && opts.grouping) || 'date'));
+      if (idx < 0) continue;
+      const x = xScale.getPixelForValue(idx);
+      const ctx = chart.ctx;
+      ctx.save();
+      ctx.strokeStyle = 'rgba(250,204,21,.72)';
+      ctx.setLineDash([4, 5]);
+      ctx.beginPath(); ctx.moveTo(x, area.top); ctx.lineTo(x, area.bottom); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = 'rgba(250,204,21,.95)';
+      ctx.font = '12px sans-serif';
+      ctx.fillText((list[0].severity || '').toLowerCase() === 'critical' ? '⚠' : '●', x + 4, area.top + 12);
+      ctx.restore();
+    }
+  }
+};
+
+function renderChartInsightCards(items) {
+  const el = document.getElementById('chartInsightCards');
+  if (!el) return;
+  if (!items || !items.length) { el.classList.add('hidden'); el.innerHTML = ''; return; }
+  el.classList.remove('hidden');
+  el.innerHTML = items.map(i => `<div class="analysis-chip"><div class="label">${escapeHtml(i.label)}</div><div class="value ${i.cls || ''}">${escapeHtml(i.value)}</div><div class="text-xs text-slate-500 mt-1">${escapeHtml(i.hint || '')}</div></div>`).join('');
+}
+
+function renderChartHeatmap(labels, grouped, grouping) {
+  const el = document.getElementById('chartHeatmap');
+  if (!el) return;
+  if (!labels.length || chartAnalysisMode === 'fact') { el.classList.add('hidden'); el.innerHTML = ''; return; }
+  const bounceByKey = {};
+  for (const b of bouncesData || []) {
+    const key = periodKeyFromDate(b.date || b.event_date, grouping);
+    if (!key) continue;
+    bounceByKey[key] = (bounceByKey[key] || 0) + (Number(b.bounces || b.visits || b.clicks || b.count) || 0);
+  }
+  const values = labels.map(l => bounceByKey[l] || (grouped[l] ? grouped[l].clicks : 0));
+  const max = Math.max(...values, 1);
+  const cells = labels.map((l, i) => {
+    const alpha = Math.max(.08, values[i] / max * .85);
+    const title = `${formatPeriodLabel(l, grouping)}: ${Math.round(values[i]).toLocaleString('ru-RU')}`;
+    return `<div class="chart-heatmap-cell" title="${escapeHtml(title)}" style="background:rgba(249,115,22,${alpha.toFixed(2)})"></div>`;
+  }).join('');
+  el.classList.remove('hidden');
+  el.innerHTML = `<div class="chart-heatmap" style="grid-template-columns:repeat(${Math.max(1, labels.length)}, minmax(4px,1fr))">${cells}</div><div class="chart-heatmap-caption">Тепловая полоса: интенсивность ${Object.keys(bounceByKey).length ? 'отказов' : 'кликов'} по периодам.</div>`;
+}
+
+function hideDependencyPanel() {
+  const panel = document.getElementById('dependencyPanel');
+  if (panel) panel.classList.add('hidden');
+  if (dependencyScatterChartInstance) { dependencyScatterChartInstance.destroy(); dependencyScatterChartInstance = null; }
+}
+
+function renderDependencyScatter(labels, grouped) {
+  const panel = document.getElementById('dependencyPanel');
+  const canvas = document.getElementById('dependencyScatterChart');
+  if (!panel || !canvas) return;
+  panel.classList.remove('hidden');
+  const points = labels.map(l => ({ x: grouped[l].clicks || 0, y: grouped[l].rev || 0, label: formatPeriodLabel(l, (document.getElementById('chartGrouping') || {}).value || 'date') }));
+  const corr = pearsonCorrelation(points.map(p => p.x), points.map(p => p.y));
+  const summary = document.getElementById('dependencySummary');
+  if (summary) summary.textContent = `Клики → доход: r=${corr === null ? '—' : corr.toFixed(2)} (${relationLabel(corr)}).`;
+  if (dependencyScatterChartInstance) dependencyScatterChartInstance.destroy();
+  dependencyScatterChartInstance = new Chart(canvas, {
+    type: 'scatter',
+    data: { datasets: [{ label: 'Клики → доход', data: points, backgroundColor: 'rgba(59,130,246,.72)', borderColor: '#93c5fd', pointRadius: 5, pointHoverRadius: 7 }] },
+    options: { responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { labels: { color: '#cbd5e1' } }, tooltip: { ...sharedTooltipConfig, callbacks: { label: ctx => ` ${ctx.raw.label}: ${Math.round(ctx.raw.x).toLocaleString('ru-RU')} кликов → ${Math.round(ctx.raw.y).toLocaleString('ru-RU')} ₽` } } },
+      scales: { x: { title: { display: true, text: 'Клики', color: '#94a3b8' }, ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } }, y: { title: { display: true, text: 'Доход ₽', color: '#94a3b8' }, ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } } }
+    }
+  });
+}
+
 function refreshChart() {
   const grouping = document.getElementById('chartGrouping').value;
   const metricType = document.getElementById('chartMetric').value;
   const sf = document.getElementById('chartSourceFilter').value;
   const sub1f = document.getElementById('chartSub1Filter').value;
+  const mode = chartAnalysisMode || 'fact';
+  const hint = document.getElementById('chartModeHint');
+  if (hint) hint.textContent = chartModeHint(mode);
+  document.querySelectorAll('#chartAnalysisModes .analysis-mode-btn').forEach(btn => btn.classList.toggle('active', btn.dataset.mode === mode));
+
   let data = [...globalRawData];
   if (sf !== 'all') data = data.filter(r => r.source === sf);
   if (sub1f !== 'all') data = data.filter(r => r.sub1 === sub1f);
-  const grouped = {};
-  for (const row of data) {
-    const key = row[grouping];
-    if (!grouped[key]) grouped[key] = {clicks:0,conv:0,app:0,rev:0};
-    grouped[key].clicks+=row.clicks; grouped[key].conv+=row.conversions; grouped[key].app+=row.approved; grouped[key].rev+=row.revenue;
-  }
+  let baseline = [...planBaselineData];
+  if (sf !== 'all') baseline = baseline.filter(r => r.source === sf);
+  if (sub1f !== 'all') baseline = baseline.filter(r => r.sub1 === sub1f);
+
+  const grouped = buildGroupedRows(data, grouping);
   const labels = Object.keys(grouped).sort();
-  let datasets = [], scalesConfig = {};
+  const displayLabels = labels.map(l => formatPeriodLabel(l, grouping));
+  const names = metricLabels(metricType);
+  const primary = labels.map(l => metricValueFromGroup(grouped[l], metricType));
+  const secondary = labels.map(l => metricValueFromGroup(grouped[l], metricType, true));
+  const targetValue = buildTargetValue(metricType, labels, data, baseline);
+  const eventGroups = chartEventGroups(labels, grouping);
+  let datasets = [], scalesConfig = {}, chartType = 'line', insightCards = [];
+
+  const primaryDataset = { label: names.primary, data: primary, borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,.12)', fill: metricType !== 'conversion', yAxisID: 'y', tension:0.3, pointRadius:3, pointBackgroundColor:'#10b981' };
   if (metricType === 'absolute') {
-    datasets = [
-      {label:'Доход (₽)',data:labels.map(l=>grouped[l].rev),borderColor:'#10b981',backgroundColor:'rgba(16,185,129,.12)',fill:true,yAxisID:'y',tension:0.3,pointRadius:3,pointBackgroundColor:'#10b981'},
-      {label:'Клики',data:labels.map(l=>grouped[l].clicks),borderColor:'#38bdf8',borderDash:[5,5],yAxisID:'y1',tension:0.3,pointRadius:3}
-    ];
-    scalesConfig = {y:{ticks:{color:'#94a3b8'},grid:{color:'#1e293b'}},y1:{display:true,position:'right',ticks:{color:'#94a3b8'},grid:{drawOnChartArea:false}}};
+    datasets = [primaryDataset, { label: names.secondary, data: secondary, borderColor:'#38bdf8', borderDash:[5,5], yAxisID:'y1', tension:0.3, pointRadius:3 }];
+    scalesConfig = { y:{ticks:{color:'#94a3b8'},grid:{color:'#1e293b'}}, y1:{display:true,position:'right',ticks:{color:'#94a3b8'},grid:{drawOnChartArea:false}} };
   } else if (metricType === 'conversion') {
-    datasets = [
-      {label:'CR (%)',data:labels.map(l=>grouped[l].clicks?(grouped[l].conv/grouped[l].clicks*100):0),borderColor:'#f59e0b',tension:0.3,pointRadius:3},
-      {label:'Approve (%)',data:labels.map(l=>grouped[l].conv?(grouped[l].app/grouped[l].conv*100):0),borderColor:'#10b981',tension:0.3,pointRadius:3}
-    ];
-    scalesConfig = {y:{ticks:{color:'#94a3b8'},grid:{color:'#1e293b'}}};
+    primaryDataset.borderColor = '#f59e0b'; primaryDataset.backgroundColor = 'rgba(245,158,11,.08)'; primaryDataset.fill = false;
+    datasets = [primaryDataset, { label:names.secondary, data:secondary, borderColor:'#10b981', tension:0.3, pointRadius:3 }];
+    scalesConfig = { y:{ticks:{color:'#94a3b8', callback:v=>v+'%'},grid:{color:'#1e293b'}} };
   } else if (metricType === 'epc') {
-    datasets = [{label:'EPC (₽)',data:labels.map(l=>grouped[l].clicks?(grouped[l].rev/grouped[l].clicks):0),borderColor:'#f59e0b',backgroundColor:'rgba(245,158,11,.1)',fill:true,tension:0.3,pointRadius:3}];
-    scalesConfig = {y:{ticks:{color:'#94a3b8'},grid:{color:'#1e293b'}}};
+    primaryDataset.borderColor = '#f59e0b'; primaryDataset.backgroundColor = 'rgba(245,158,11,.1)';
+    datasets = [primaryDataset];
+    scalesConfig = { y:{ticks:{color:'#94a3b8'},grid:{color:'#1e293b'}} };
   } else if (metricType === 'traffic') {
-    datasets = [
-      {label:'Клики',data:labels.map(l=>grouped[l].clicks),borderColor:'#3b82f6',backgroundColor:'rgba(59,130,246,.15)',fill:true,tension:0.3,pointRadius:3},
-      {label:'Лиды',data:labels.map(l=>grouped[l].conv),borderColor:'#10b981',backgroundColor:'rgba(16,185,129,.1)',fill:true,tension:0.3,pointRadius:3}
-    ];
-    scalesConfig = {y:{ticks:{color:'#94a3b8'},grid:{color:'#1e293b'}}};
+    primaryDataset.borderColor = '#3b82f6'; primaryDataset.backgroundColor = 'rgba(59,130,246,.15)';
+    datasets = [primaryDataset, { label:names.secondary, data:secondary, borderColor:'#10b981', backgroundColor:'rgba(16,185,129,.1)', fill:true, tension:0.3, pointRadius:3 }];
+    scalesConfig = { y:{ticks:{color:'#94a3b8'},grid:{color:'#1e293b'}} };
   }
+
+  if (mode === 'trend') {
+    const ma7 = movingAverage(primary, Math.min(7, Math.max(2, primary.length)));
+    const ma30 = movingAverage(primary, Math.min(30, Math.max(2, primary.length)));
+    datasets.push({ label:'MA 7', data:ma7, borderColor:'#22d3ee', borderWidth:4, pointRadius:0, tension:.35, yAxisID:'y' });
+    datasets.push({ label:'MA 30', data:ma30, borderColor:'#a78bfa', borderWidth:3, pointRadius:0, tension:.35, yAxisID:'y' });
+    datasets.push({ label:'Линия тренда', data:linearTrend(primary), borderColor:'#facc15', borderDash:[7,5], pointRadius:0, fill:false, yAxisID:'y' });
+    datasets.push({ label:'Накопительный итог', data:cumulative(primary), borderColor:'#fb7185', borderDash:[2,4], pointRadius:0, fill:false, yAxisID:'y1' });
+    scalesConfig.y1 = { display:true, position:'right', ticks:{color:'#94a3b8'}, grid:{drawOnChartArea:false} };
+    const slope = linearTrend(primary); const delta = slope.length > 1 ? slope[slope.length - 1] - slope[0] : 0;
+    insightCards = [{ label:'Направление', value:delta > 0 ? 'Рост' : delta < 0 ? 'Снижение' : 'Стагнация', cls:delta >= 0 ? 'text-emerald-400' : 'text-red-400', hint:'по линии тренда' }];
+  } else if (mode === 'compare') {
+    const baselineGrouped = buildGroupedRows(baseline, grouping);
+    const baselineLabels = Object.keys(baselineGrouped).sort();
+    const prev = labels.map((_, i) => metricValueFromGroup(baselineGrouped[baselineLabels[i]], metricType));
+    datasets.push({ label:'Прошлый период', data:prev, borderColor:'rgba(148,163,184,.75)', borderDash:[6,6], pointRadius:0, fill:false, yAxisID:'y' });
+    datasets.push({ label:baseline.length ? 'План / KPI' : 'Норматив (среднее)', data:labels.map(()=>targetValue), borderColor:'#facc15', borderDash:[10,4], pointRadius:0, fill:false, yAxisID:'y' });
+    const abovePlan = primary.filter(v => v >= targetValue).length;
+    const prevTotal = prev.reduce((s,v)=>s+(Number(v)||0),0);
+    const factTotal = primary.reduce((s,v)=>s+(Number(v)||0),0);
+    insightCards = [
+      { label:'План', value:`${abovePlan}/${labels.length || 0} выше`, cls:abovePlan >= labels.length / 2 ? 'text-emerald-400' : 'text-amber-400', hint:'точек выше KPI' },
+      { label:'Прошлый период', value:factTotal >= prevTotal ? 'Лучше' : 'Хуже', cls:factTotal >= prevTotal ? 'text-emerald-400' : 'text-red-400', hint:'по сумме видимых точек' }
+    ];
+  } else if (mode === 'anomalies') {
+    const ma = movingAverage(primary, Math.min(7, Math.max(2, primary.length)));
+    const sd = stddev(primary);
+    const upper = ma.map(v => v === null ? null : v + sd * 1.6);
+    const lower = ma.map(v => v === null ? null : Math.max(0, v - sd * 1.6));
+    const anomalies = primary.map((v, i) => v > upper[i] || v < lower[i]);
+    const min = Math.min(...primary), max = Math.max(...primary);
+    datasets[0].pointRadius = primary.map((v, i) => anomalies[i] || v === min || v === max ? 6 : 2);
+    datasets[0].pointBackgroundColor = primary.map((v, i) => anomalies[i] ? '#f97316' : v === max ? '#22c55e' : v === min ? '#ef4444' : '#10b981');
+    datasets.push({ label:'Нижняя граница нормы', data:lower, borderColor:'rgba(148,163,184,.18)', pointRadius:0, fill:false, yAxisID:'y' });
+    datasets.push({ label:'Коридор нормы', data:upper, borderColor:'rgba(148,163,184,.18)', backgroundColor:'rgba(148,163,184,.14)', pointRadius:0, fill:'-1', yAxisID:'y' });
+    datasets.push({ label:'MA 7', data:ma, borderColor:'#22d3ee', borderWidth:3, pointRadius:0, yAxisID:'y' });
+    insightCards = [
+      { label:'Аномалии', value:String(anomalies.filter(Boolean).length), cls:anomalies.some(Boolean) ? 'text-orange-400' : 'text-emerald-400', hint:'выходы за коридор' },
+      { label:'Максимум', value:(max || 0).toFixed(names.unit ? 2 : 0) + (names.unit ? ' ' + names.unit : ''), cls:'text-emerald-400', hint:displayLabels[primary.indexOf(max)] || '' },
+      { label:'Минимум', value:(min || 0).toFixed(names.unit ? 2 : 0) + (names.unit ? ' ' + names.unit : ''), cls:'text-red-400', hint:displayLabels[primary.indexOf(min)] || '' }
+    ];
+  } else if (mode === 'dependencies') {
+    datasets = [
+      { label:'Клики', data:labels.map(l=>grouped[l].clicks), borderColor:'#38bdf8', backgroundColor:'rgba(56,189,248,.10)', fill:true, tension:.35, pointRadius:2, yAxisID:'y' },
+      { label:'Доход ₽', data:labels.map(l=>grouped[l].rev), borderColor:'#10b981', backgroundColor:'rgba(16,185,129,.08)', fill:true, tension:.35, pointRadius:2, yAxisID:'y1' },
+      { label:'Клики, индекс 100%', data:indexedTo100(labels.map(l=>grouped[l].clicks)), borderColor:'#93c5fd', borderDash:[3,4], pointRadius:0, fill:false, yAxisID:'y2' },
+      { label:'Доход, индекс 100%', data:indexedTo100(labels.map(l=>grouped[l].rev)), borderColor:'#86efac', borderDash:[3,4], pointRadius:0, fill:false, yAxisID:'y2' }
+    ];
+    scalesConfig = { y:{ticks:{color:'#94a3b8'},grid:{color:'#1e293b'}}, y1:{display:true,position:'right',ticks:{color:'#94a3b8'},grid:{drawOnChartArea:false}}, y2:{display:false,min:0} };
+    renderDependencyScatter(labels, grouped);
+    const corr = pearsonCorrelation(labels.map(l=>grouped[l].clicks), labels.map(l=>grouped[l].rev));
+    insightCards = [{ label:'Связь', value:corr === null ? '—' : corr.toFixed(2), cls:corr !== null && Math.abs(corr) >= .4 ? 'text-emerald-400' : 'text-amber-400', hint:relationLabel(corr) }];
+  }
+
+  if (mode !== 'dependencies') hideDependencyPanel();
+  renderChartInsightCards(insightCards);
+  renderChartHeatmap(labels, grouped, grouping);
+
   if (trendChartInstance) trendChartInstance.destroy();
   trendChartInstance = new Chart(document.getElementById('trendChart'), {
-    type:'line', data:{labels,datasets},
+    type:chartType, data:{labels:displayLabels,datasets}, plugins:[eventMarkerPlugin],
     options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
-      plugins:{legend:{labels:{color:'#cbd5e1'}},tooltip:{...sharedTooltipConfig,callbacks:{label:function(ctx){
+      plugins:{legend:{labels:{color:'#cbd5e1'}},eventMarkerPlugin:{events:eventGroups,grouping},tooltip:{...sharedTooltipConfig,callbacks:{label:function(ctx){
         const v=Number(ctx.raw);
         if(ctx.dataset.label.includes('₽'))return ` ${ctx.dataset.label}: ${v.toFixed(2)} ₽`;
         if(ctx.dataset.label.includes('%'))return ` ${ctx.dataset.label}: ${v.toFixed(2)}%`;
         return ` ${ctx.dataset.label}: ${v.toLocaleString('ru-RU')}`;
+      },afterBody:function(items){
+        const item = items && items[0];
+        if (!item) return '';
+        const rawKey = labels[item.dataIndex];
+        const list = eventGroups[rawKey] || [];
+        return list.length ? ['События:', ...list.slice(0,3).map(e => `• ${e.title || e.event_type || 'событие'}`)] : '';
       }}}},
       scales:{x:{ticks:{color:'#94a3b8'},grid:{color:'#1e293b'}},...scalesConfig}
     }
