@@ -687,13 +687,21 @@
       <div class="card"><h2 class="text-white font-bold mb-4">Доли площадок (Доход ₽)</h2><div class="chart-wrap flex justify-center"><canvas id="donutChart"></canvas></div></div>
       <div class="card"><h2 class="text-white font-bold mb-4">Топ-5 Офферов по EPC (от 100 кликов)</h2><div class="chart-wrap"><canvas id="barChart"></canvas></div></div>
     </div>
-    <div class="card"><h2 class="text-white font-bold mb-4">📊 Доходность по площадкам (помесячно)</h2><div class="chart-wrap" style="height:400px"><canvas id="revenueByPlatformChart"></canvas></div></div>
-    <div class="card"><h2 class="text-white font-bold mb-4">🚀 Объём трафика по площадкам (помесячно)</h2><div class="chart-wrap" style="height:400px"><canvas id="trafficByPlatformChart"></canvas></div></div>
+    <div class="card">
+      <div class="flex flex-wrap gap-3 justify-between items-center mb-4">
+        <h2 class="text-white font-bold">📊 Доходность по площадкам</h2>
+        <select id="platformChartGrouping" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm focus:outline-none" onchange="renderPlatformCharts()">
+          <option value="date">По дням</option><option value="week">По неделям</option><option value="month">По месяцам</option>
+        </select>
+      </div>
+      <div class="chart-wrap" style="height:400px"><canvas id="revenueByPlatformChart"></canvas></div>
+    </div>
+    <div class="card"><h2 class="text-white font-bold mb-4">🚀 Объём трафика по площадкам</h2><div class="chart-wrap" style="height:400px"><canvas id="trafficByPlatformChart"></canvas></div></div>
     <div class="card">
       <div class="flex flex-wrap gap-3 justify-between items-start mb-4">
         <div>
-          <h2 class="text-white font-bold">🔄 Отказники ↔ выручка</h2>
-          <p class="text-xs text-slate-500 mt-1">Показывает, как изменение объёма отказников связано с выручкой и монетизацией отказного трафика.</p>
+          <h2 class="text-white font-bold">🔄 Показы баннера ↔ выручка</h2>
+          <p class="text-xs text-slate-500 mt-1">Сопоставляет показы баннера с выручкой и считает силу зависимости; отказники добавляются как дополнительный сигнал, если есть данные.</p>
         </div>
         <div id="rejectRevenueSummary" class="grid grid-cols-2 md:grid-cols-4 gap-3 w-full xl:w-auto"></div>
       </div>
@@ -1473,10 +1481,24 @@ async function updateHealthBadge() {
   try {
     const json = await fetchJsonSafe(buildApiUrl({ action: 'health' }));
     const ok = json.status === 'success' && json.db && json.db.ok;
-    if (dot) dot.style.background = ok ? 'var(--ok)' : 'var(--warn)';
-    if (text) text.textContent = ok ? 'Health: OK' : 'Health: check';
+    const integrations = json.integrations || {};
+    const ymOk = !!(integrations.yandex_metrika && integrations.yandex_metrika.token_present && integrations.yandex_metrika.last_banner_date);
+    const marketOk = !!(integrations.offers_market && integrations.offers_market.last_update);
+    const aiOk = !!(json.ai && json.ai.api_key_present);
+    const allOk = ok && ymOk && marketOk && aiOk;
+    if (dot) dot.style.background = allOk ? 'var(--ok)' : (ok ? 'var(--warn)' : 'var(--bad)');
+    if (text) text.textContent = allOk ? 'Health: OK' : (ok ? 'Health: partial' : 'Health: fail');
     const tokenTxt = json.leads_token?.present ? `Leads token: ${json.leads_token.source}` : 'Leads token: не задан';
-    el.title = `${tokenTxt}; строк: ${json.db?.daily_rows ?? 0}; последняя дата: ${json.db?.last_stats_date || '—'}`;
+    const ymTxt = integrations.yandex_metrika
+      ? `Метрика: ${integrations.yandex_metrika.token_present ? 'токен есть' : 'нет токена'}, баннер до ${integrations.yandex_metrika.last_banner_date || '—'}`
+      : 'Метрика: —';
+    const marketTxt = integrations.offers_market
+      ? `Market EPC: ${integrations.offers_market.offers_cached || 0} офферов, ${integrations.offers_market.last_update || '—'}`
+      : 'Market EPC: —';
+    const tgTxt = integrations.telegram
+      ? `Telegram: ${integrations.telegram.configured ? 'настроен' : 'не настроен'}`
+      : 'Telegram: —';
+    el.title = `${tokenTxt}; строк: ${json.db?.daily_rows ?? 0}; последняя дата: ${json.db?.last_stats_date || '—'}; ${ymTxt}; ${marketTxt}; AI: ${aiOk ? 'ключ есть' : 'нет ключа'}; ${tgTxt}`;
   } catch (e) {
     if (dot) dot.style.background = 'var(--bad)';
     if (text) text.textContent = 'Health: fail';
@@ -1585,6 +1607,51 @@ function metricsFromTotals(t) {
     cr: t.clicks ? t.conversions / t.clicks * 100 : 0,
     approveRate: t.conversions ? t.approved / t.conversions * 100 : 0
   };
+}
+
+function periodKeyFromDate(date, grouping = 'date') {
+  const d = String(date || '');
+  if (!d) return '';
+  if (grouping === 'month') return d.slice(0, 7);
+  if (grouping === 'week') return getWeekNumber(new Date(d));
+  return d;
+}
+
+function periodKeyFromRow(row, grouping = 'date') {
+  if (!row) return '';
+  if (grouping === 'month') return row.month || periodKeyFromDate(row.date, grouping);
+  if (grouping === 'week') return row.week || periodKeyFromDate(row.date, grouping);
+  return row.date || '';
+}
+
+function formatPeriodLabel(key, grouping = 'date') {
+  const s = String(key || '');
+  if (!s) return '';
+  if (grouping === 'date' && /^\d{4}-\d{2}-\d{2}$/.test(s)) return s.slice(8, 10) + '.' + s.slice(5, 7);
+  return s;
+}
+
+function pearsonCorrelation(xs, ys) {
+  const pairs = xs.map((x, i) => [Number(x) || 0, Number(ys[i]) || 0])
+    .filter(([x, y]) => isFinite(x) && isFinite(y));
+  const n = pairs.length;
+  if (n < 2) return null;
+  const mx = pairs.reduce((s, p) => s + p[0], 0) / n;
+  const my = pairs.reduce((s, p) => s + p[1], 0) / n;
+  let num = 0, dx = 0, dy = 0;
+  for (const [x, y] of pairs) {
+    const ax = x - mx, ay = y - my;
+    num += ax * ay; dx += ax * ax; dy += ay * ay;
+  }
+  return dx > 0 && dy > 0 ? num / Math.sqrt(dx * dy) : null;
+}
+
+function relationLabel(r) {
+  if (r === null || !isFinite(r)) return 'нет данных';
+  const a = Math.abs(r);
+  const strength = a >= 0.7 ? 'сильная' : a >= 0.4 ? 'средняя' : a >= 0.2 ? 'слабая' : 'нет явной';
+  const sign = r >= 0 ? 'прямая' : 'обратная';
+  return `${strength}, ${sign}`;
 }
 
 function planFromRows(rows, periodDays) {
@@ -2433,64 +2500,43 @@ function renderRejectRevenueAnalysis(data, sourceFilter = 'all') {
   const summaryEl = document.getElementById('rejectRevenueSummary');
   const canvas = document.getElementById('rejectRevenueChart');
   if (!summaryEl || !canvas) return;
-  const sourceBounces = bouncesData.filter(r => sourceFilter === 'all' || r.source === sourceFilter);
   const periodMode = ((document.getElementById('chartGrouping') || {}).value || 'date');
-  const keyForDate = (date) => {
-    if (periodMode === 'month') return String(date || '').slice(0, 7);
-    if (periodMode === 'week') return getWeekNumber(new Date(date));
-    return date;
-  };
-  const grouped = {};
-  for (const r of data) {
-    const key = periodMode === 'date' ? r.date : (periodMode === 'month' ? r.month : r.week);
-    if (!grouped[key]) grouped[key] = { bounces: 0, revenue: 0, clicks: 0 };
-    grouped[key].revenue += Number(r.revenue) || 0;
-    grouped[key].clicks += Number(r.clicks) || 0;
-  }
-  for (const r of sourceBounces) {
-    if (!r.date) continue;
-    const key = keyForDate(r.date);
-    if (!grouped[key]) grouped[key] = { bounces: 0, revenue: 0, clicks: 0 };
-    grouped[key].bounces += Number(r.bounces) || 0;
-  }
-  const labels = Object.keys(grouped).filter(Boolean).sort();
-  const totalBounces = labels.reduce((s, l) => s + grouped[l].bounces, 0);
-  const totalRevenue = labels.reduce((s, l) => s + grouped[l].revenue, 0);
-  const totalClicks = labels.reduce((s, l) => s + grouped[l].clicks, 0);
-  const revenuePerReject = totalBounces ? totalRevenue / totalBounces : 0;
-  const rejectToClick = totalBounces ? totalClicks / totalBounces * 100 : 0;
-  const split = Math.max(1, Math.floor(labels.length / 2));
-  const prevLabels = labels.slice(0, split);
-  const curLabels = labels.slice(split);
-  const sumFor = (arr, field) => arr.reduce((s, l) => s + grouped[l][field], 0);
-  const prevBounces = sumFor(prevLabels, 'bounces');
-  const curBounces = sumFor(curLabels.length ? curLabels : labels, 'bounces');
-  const prevRevenue = sumFor(prevLabels, 'revenue');
-  const curRevenue = sumFor(curLabels.length ? curLabels : labels, 'revenue');
-  const deltaPct = (cur, prev) => prev > 0 ? ((cur - prev) / prev * 100) : null;
-  const bounceDelta = deltaPct(curBounces, prevBounces);
-  const revenueDelta = deltaPct(curRevenue, prevRevenue);
-  const fmtDelta = (v) => v === null ? '—' : `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`;
+  const relation = buildBannerRevenueRelation(data, sourceFilter, periodMode);
+  const labels = relation.labels;
+  const grouped = relation.grouped;
+  const totalBounces = relation.totals.bounces;
+  const totalRevenue = relation.totals.revenue;
+  const totalImpressions = relation.totals.impressions;
+  const totalBannerClicks = relation.totals.banner_clicks;
+  const rpm = totalImpressions ? totalRevenue / totalImpressions * 1000 : 0;
+  const bannerCtr = totalImpressions ? totalBannerClicks / totalImpressions * 100 : 0;
+  const corr = relation.correlation;
+  const corrCls = corr === null ? 'text-slate-300' : (Math.abs(corr) >= 0.4 ? 'text-emerald-400' : 'text-amber-400');
   summaryEl.innerHTML = `
-    <div class="relation-chip"><div class="label">Отказники</div><div class="value">${Math.round(totalBounces).toLocaleString('ru-RU')}</div><div class="text-xs text-slate-500 mt-1">доля кликов: ${rejectToClick.toFixed(1)}%</div></div>
-    <div class="relation-chip"><div class="label">Выручка</div><div class="value">${Math.round(totalRevenue).toLocaleString('ru-RU')} ₽</div><div class="text-xs text-slate-500 mt-1">на 1 отказ: ${revenuePerReject.toFixed(2)} ₽</div></div>
-    <div class="relation-chip"><div class="label">Δ отказников</div><div class="value ${bounceDelta !== null && bounceDelta < 0 ? 'text-emerald-400' : 'text-amber-400'}">${fmtDelta(bounceDelta)}</div><div class="text-xs text-slate-500 mt-1">2-я половина к 1-й</div></div>
-    <div class="relation-chip"><div class="label">Δ выручки</div><div class="value ${revenueDelta !== null && revenueDelta >= 0 ? 'text-emerald-400' : 'text-red-400'}">${fmtDelta(revenueDelta)}</div><div class="text-xs text-slate-500 mt-1">сверяем с отказами</div></div>`;
+    <div class="relation-chip"><div class="label">Показы баннера</div><div class="value">${Math.round(totalImpressions).toLocaleString('ru-RU')}</div><div class="text-xs text-slate-500 mt-1">CTR цели: ${bannerCtr.toFixed(2)}%</div></div>
+    <div class="relation-chip"><div class="label">Выручка</div><div class="value">${Math.round(totalRevenue).toLocaleString('ru-RU')} ₽</div><div class="text-xs text-slate-500 mt-1">RPM: ${rpm.toFixed(2)} ₽ / 1000 показов</div></div>
+    <div class="relation-chip"><div class="label">Связь r</div><div class="value ${corrCls}">${corr === null ? '—' : corr.toFixed(2)}</div><div class="text-xs text-slate-500 mt-1">${escapeHtml(relationLabel(corr))}</div></div>
+    <div class="relation-chip"><div class="label">Отказники</div><div class="value">${Math.round(totalBounces).toLocaleString('ru-RU')}</div><div class="text-xs text-slate-500 mt-1">${totalBounces ? 'добавлены на график' : 'нет загруженных данных'}</div></div>`;
   if (rejectRevenueChartInstance) rejectRevenueChartInstance.destroy();
-  if (!labels.length) {
-    summaryEl.innerHTML = '<div class="col-span-full text-sm text-slate-500">Нет данных по отказникам или выручке за выбранный период.</div>';
+  if (!labels.length || (!totalImpressions && !totalRevenue && !totalBounces)) {
+    summaryEl.innerHTML = '<div class="col-span-full text-sm text-slate-500">Нет данных по показам баннера или выручке за выбранный период.</div>';
     return;
+  }
+  const datasets = [
+    { label: 'Показы баннера', data: labels.map(l => grouped[l].impressions), borderColor: '#38bdf8', backgroundColor: 'rgba(56,189,248,.10)', fill: true, tension: .35, pointRadius: 2, yAxisID: 'y' },
+    { label: 'Выручка ₽', data: labels.map(l => grouped[l].revenue), borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,.08)', fill: true, tension: .35, pointRadius: 2, yAxisID: 'y1' }
+  ];
+  if (totalBounces > 0) {
+    datasets.push({ label: 'Отказники', data: labels.map(l => grouped[l].bounces), borderColor: '#f97316', borderDash: [5, 5], fill: false, tension: .35, pointRadius: 2, yAxisID: 'y' });
   }
   rejectRevenueChartInstance = new Chart(canvas, {
     type: 'line',
-    data: { labels, datasets: [
-      { label: 'Отказники', data: labels.map(l => grouped[l].bounces), borderColor: '#f97316', backgroundColor: 'rgba(249,115,22,.10)', fill: true, tension: .35, pointRadius: 3, yAxisID: 'y' },
-      { label: 'Выручка ₽', data: labels.map(l => grouped[l].revenue), borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,.08)', fill: true, tension: .35, pointRadius: 3, yAxisID: 'y1' }
-    ] },
+    data: { labels: labels.map(l => formatPeriodLabel(l, periodMode)), datasets },
     options: { responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false },
       plugins: { legend: { labels: { color: '#cbd5e1' } }, tooltip: { ...sharedTooltipConfig, callbacks: { label: ctx => {
         const v = Number(ctx.raw) || 0;
-        return ctx.dataset.label.includes('₽') ? ` ${ctx.dataset.label}: ${Math.round(v).toLocaleString('ru-RU')} ₽` : ` ${ctx.dataset.label}: ${Math.round(v).toLocaleString('ru-RU')}`;
+        if (ctx.dataset.label.includes('₽')) return ` ${ctx.dataset.label}: ${Math.round(v).toLocaleString('ru-RU')} ₽`;
+        return ` ${ctx.dataset.label}: ${Math.round(v).toLocaleString('ru-RU')}`;
       }}}},
       scales: {
         x: { ticks: { color: '#94a3b8' }, grid: { display: false } },
@@ -2499,6 +2545,90 @@ function renderRejectRevenueAnalysis(data, sourceFilter = 'all') {
       }
     }
   });
+}
+
+function buildBannerRevenueRelation(data, sourceFilter = 'all', grouping = 'date') {
+  const grouped = {};
+  const ensure = key => {
+    if (!key) return null;
+    if (!grouped[key]) grouped[key] = { impressions: 0, banner_clicks: 0, bounces: 0, revenue: 0, clicks: 0 };
+    return grouped[key];
+  };
+  for (const r of data || []) {
+    const key = periodKeyFromRow(r, grouping);
+    const g = ensure(key);
+    if (!g) continue;
+    g.revenue += Number(r.revenue) || 0;
+    g.clicks += Number(r.clicks) || 0;
+  }
+  for (const d of bannerData || []) {
+    const key = periodKeyFromDate(d.date, grouping);
+    const g = ensure(key);
+    if (!g) continue;
+    g.impressions += Number(d.impressions) || 0;
+    g.banner_clicks += Number(d.clicks) || 0;
+  }
+  for (const r of (bouncesData || []).filter(x => sourceFilter === 'all' || x.source === sourceFilter)) {
+    const key = periodKeyFromDate(r.date, grouping);
+    const g = ensure(key);
+    if (!g) continue;
+    g.bounces += Number(r.bounces) || 0;
+  }
+  const labels = Object.keys(grouped).filter(Boolean).sort();
+  const impressions = labels.map(l => grouped[l].impressions);
+  const revenue = labels.map(l => grouped[l].revenue);
+  const totals = labels.reduce((a, l) => {
+    a.impressions += grouped[l].impressions;
+    a.banner_clicks += grouped[l].banner_clicks;
+    a.bounces += grouped[l].bounces;
+    a.revenue += grouped[l].revenue;
+    a.clicks += grouped[l].clicks;
+    return a;
+  }, { impressions: 0, banner_clicks: 0, bounces: 0, revenue: 0, clicks: 0 });
+  const labelsWithSignal = labels.filter(l => grouped[l].impressions > 0 || grouped[l].revenue > 0);
+  return {
+    grouping,
+    labels: labelsWithSignal,
+    grouped,
+    totals,
+    correlation: pearsonCorrelation(impressions, revenue),
+    rpm: totals.impressions ? totals.revenue / totals.impressions * 1000 : 0,
+    banner_ctr_pct: totals.impressions ? totals.banner_clicks / totals.impressions * 100 : 0,
+    note: sourceFilter !== 'all'
+      ? 'Выручка отфильтрована по площадке, показы баннера из Яндекс.Метрики доступны общей суммой.'
+      : 'Показы баннера сопоставлены с общей выручкой за те же периоды.'
+  };
+}
+
+function buildClientIntegrationHealth(rows) {
+  const dates = [...new Set((rows || []).map(r => r.date).filter(Boolean))].sort();
+  const warnings = [];
+  if (!rows || !rows.length) warnings.push('Нет строк Leads.su за выбранный период');
+  if (!bannerData.length) warnings.push('Нет баннерных данных Яндекс.Метрики за выбранный период');
+  if (!Object.keys(offerMarketMap || {}).length && !Object.keys(offerMarketByName || {}).length) warnings.push('Нет кэша рыночных EPC офферов');
+  if (!bouncesData.length) warnings.push('Нет данных по отказникам');
+  return {
+    leads_su: {
+      rows: (rows || []).length,
+      from: dates[0] || '',
+      to: dates[dates.length - 1] || '',
+      has_revenue: (rows || []).some(r => (Number(r.revenue) || 0) > 0),
+    },
+    yandex_metrika: {
+      banner_rows: bannerData.length,
+      impressions: bannerData.reduce((s, d) => s + (Number(d.impressions) || 0), 0),
+      clicks: bannerData.reduce((s, d) => s + (Number(d.clicks) || 0), 0),
+    },
+    offers_market: {
+      cached_by_id: Object.keys(offerMarketMap || {}).length,
+      cached_by_name: Object.keys(offerMarketByName || {}).length,
+    },
+    rejects: {
+      rows: bouncesData.length,
+      total_bounces: bouncesData.reduce((s, d) => s + (Number(d.bounces) || 0), 0),
+    },
+    warnings,
+  };
 }
 
 function aggregateBy(field, sourceFilter) {
@@ -2797,23 +2927,69 @@ function drawExtraCharts() {
 // ========================== PLATFORM CHARTS ==========================
 function renderPlatformCharts() {
   if(!globalRawData.length) return;
-  const sources=[...new Set(globalRawData.map(r=>r.source))].sort();
-  const months=[...new Set(globalRawData.map(r=>r.month))].sort();
-  const revDS=sources.map((src,i)=>({label:src,data:months.map(m=>globalRawData.filter(r=>r.source===src&&r.month===m).reduce((s,r)=>s+r.revenue,0)),borderColor:colorPalette[i%colorPalette.length],backgroundColor:colorPalette[i%colorPalette.length]+'22',fill:false,tension:.35,pointRadius:3}));
+  const grouping = ((document.getElementById('platformChartGrouping') || {}).value || 'date');
+  const periods = [...new Set(globalRawData.map(r => periodKeyFromRow(r, grouping)).filter(Boolean))].sort();
+  const sourceTotals = {};
+  const bySourcePeriod = {};
+  for (const r of globalRawData) {
+    const src = r.source || 'Unknown';
+    const p = periodKeyFromRow(r, grouping);
+    if (!p) continue;
+    if (!sourceTotals[src]) sourceTotals[src] = { revenue: 0, clicks: 0 };
+    if (!bySourcePeriod[src]) bySourcePeriod[src] = {};
+    if (!bySourcePeriod[src][p]) bySourcePeriod[src][p] = { revenue: 0, clicks: 0 };
+    sourceTotals[src].revenue += Number(r.revenue) || 0;
+    sourceTotals[src].clicks += Number(r.clicks) || 0;
+    bySourcePeriod[src][p].revenue += Number(r.revenue) || 0;
+    bySourcePeriod[src][p].clicks += Number(r.clicks) || 0;
+  }
+  const buildDatasets = (metric) => {
+    const ranked = Object.entries(sourceTotals)
+      .filter(([, v]) => (Number(v[metric]) || 0) > 0)
+      .sort((a, b) => (b[1][metric] || 0) - (a[1][metric] || 0));
+    const top = ranked.slice(0, 6).map(([name]) => name);
+    const other = ranked.slice(6).map(([name]) => name);
+    const datasets = top.map((src, i) => ({
+      label: src,
+      data: periods.map(p => (bySourcePeriod[src]?.[p]?.[metric]) || 0),
+      borderColor: colorPalette[i % colorPalette.length],
+      backgroundColor: colorPalette[i % colorPalette.length] + '22',
+      fill: false,
+      tension: .35,
+      pointRadius: periods.length > 45 ? 0 : 2,
+      pointHoverRadius: 5
+    }));
+    if (other.length) {
+      datasets.push({
+        label: 'Другие',
+        data: periods.map(p => other.reduce((s, src) => s + ((bySourcePeriod[src]?.[p]?.[metric]) || 0), 0)),
+        borderColor: '#94a3b8',
+        backgroundColor: 'rgba(148,163,184,.10)',
+        borderDash: [4, 4],
+        fill: false,
+        tension: .35,
+        pointRadius: periods.length > 45 ? 0 : 2,
+        pointHoverRadius: 5
+      });
+    }
+    return datasets;
+  };
+  const labels = periods.map(p => formatPeriodLabel(p, grouping));
+  const revDS = buildDatasets('revenue');
   if(revenueByPlatformChartInstance)revenueByPlatformChartInstance.destroy();
   revenueByPlatformChartInstance=new Chart(document.getElementById('revenueByPlatformChart'),{
-    type:'line',data:{labels:months,datasets:revDS},
+    type:'line',data:{labels,datasets:revDS},
     options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
       plugins:{legend:{labels:{color:'#cbd5e1'}},tooltip:{...sharedTooltipConfig,callbacks:{label:ctx=>` ${ctx.dataset.label}: ${Math.round(ctx.raw).toLocaleString('ru-RU')} ₽`}}},
-      scales:{x:{ticks:{color:'#94a3b8'},grid:{display:false}},y:{ticks:{color:'#94a3b8'},grid:{color:'#1e293b'}}}}
+      scales:{x:{ticks:{color:'#94a3b8',maxRotation:0,autoSkip:true},grid:{display:false}},y:{ticks:{color:'#94a3b8'},grid:{color:'#1e293b'}}}}
   });
-  const trafDS=sources.map((src,i)=>({label:src,data:months.map(m=>globalRawData.filter(r=>r.source===src&&r.month===m).reduce((s,r)=>s+r.clicks,0)),borderColor:colorPalette[i%colorPalette.length],backgroundColor:colorPalette[i%colorPalette.length]+'22',fill:false,tension:.35,pointRadius:3}));
+  const trafDS = buildDatasets('clicks');
   if(trafficByPlatformChartInstance)trafficByPlatformChartInstance.destroy();
   trafficByPlatformChartInstance=new Chart(document.getElementById('trafficByPlatformChart'),{
-    type:'line',data:{labels:months,datasets:trafDS},
+    type:'line',data:{labels,datasets:trafDS},
     options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
       plugins:{legend:{labels:{color:'#cbd5e1'}},tooltip:{...sharedTooltipConfig,callbacks:{label:ctx=>` ${ctx.dataset.label}: ${ctx.raw.toLocaleString('ru-RU')} кликов`}}},
-      scales:{x:{ticks:{color:'#94a3b8'},grid:{display:false}},y:{ticks:{color:'#94a3b8'},grid:{color:'#1e293b'}}}}
+      scales:{x:{ticks:{color:'#94a3b8',maxRotation:0,autoSkip:true},grid:{display:false}},y:{ticks:{color:'#94a3b8'},grid:{color:'#1e293b'}}}}
   });
 }
 
@@ -4083,6 +4259,8 @@ function buildAIPayload() {
   // Pre-detect аномалий и просадок (точка роста №4): фронт уже знает «что
   // сломано», AI задача — объяснить и предложить план, а не переоткрыть.
   const anomaliesDetected = detectAnomalies(rows);
+  const bannerRevenueRelation = buildBannerRevenueRelation(rows, 'all', 'date');
+  const integrationHealth = buildClientIntegrationHealth(rows);
 
   return {
     period: { from: dateFrom, to: dateTo, days: new Set(dates).size },
@@ -4107,6 +4285,31 @@ function buildAIPayload() {
     epc_drops_signals: epcDropsSignals,
     traffic_sources_breakdown: trafficSourcesBreakdown,
     reject_funnel: rejectFunnel,
+    banner_revenue_relation: {
+      grouping: bannerRevenueRelation.grouping,
+      periods: bannerRevenueRelation.labels.slice(-30).map(l => ({
+        period: l,
+        impressions: bannerRevenueRelation.grouped[l].impressions,
+        banner_clicks: bannerRevenueRelation.grouped[l].banner_clicks,
+        revenue: _r(bannerRevenueRelation.grouped[l].revenue, 2),
+        bounces: bannerRevenueRelation.grouped[l].bounces,
+      })),
+      totals: {
+        impressions: bannerRevenueRelation.totals.impressions,
+        banner_clicks: bannerRevenueRelation.totals.banner_clicks,
+        revenue: _r(bannerRevenueRelation.totals.revenue, 2),
+        bounces: bannerRevenueRelation.totals.bounces,
+        rpm: _r(bannerRevenueRelation.rpm, 2),
+        banner_ctr_pct: _r(bannerRevenueRelation.banner_ctr_pct, 2),
+      },
+      correlation: bannerRevenueRelation.correlation === null ? null : _r(bannerRevenueRelation.correlation, 3),
+      note: bannerRevenueRelation.note,
+    },
+    integration_health: integrationHealth,
+    dashboard_ux_context: {
+      visible_charts: ['trend', 'platform_revenue', 'platform_traffic', 'banner_revenue_relation', 'funnel', 'market_epc', 'ai_analysis'],
+      improvement_focus: ['числовые зависимости', 'понятная причинно-следственная связь', 'меньше визуального шума', 'быстрые действия из рекомендаций'],
+    },
     forecast_baseline: forecastBaseline,
     anomalies_detected: anomaliesDetected,
     // ⚙️ Настройки оператора. Сервер их нормализует, прокидывает в [CONTROL
@@ -4755,6 +4958,24 @@ function renderDeepAIResult(d) {
       </div>
     </div>` : '';
 
+  const ux = Array.isArray(d.dashboard_ux_suggestions) ? d.dashboard_ux_suggestions : [];
+  const uxHtml = ux.length ? `
+    <div>
+      <h3 class="text-white font-bold mb-3">🧭 Что усилить в цифрах и UX/UI</h3>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
+        ${ux.map(u => `
+          <div class="border border-slate-700 rounded p-3 bg-slate-900/50">
+            <div class="flex flex-wrap gap-2 items-center mb-1">
+              <span class="px-2 py-0.5 rounded text-xs bg-purple-500/20 text-purple-300 font-semibold">${escapeHtml(String(u.area || 'dashboard'))}</span>
+              ${u.metric ? `<span class="text-xs text-slate-400">${escapeHtml(String(u.metric))}</span>` : ''}
+            </div>
+            <div class="font-semibold text-white text-sm">${escapeHtml(String(u.suggestion || ''))}</div>
+            ${u.rationale ? `<div class="text-xs text-slate-400 mt-1">${escapeHtml(String(u.rationale))}</div>` : ''}
+            ${u.expected_effect ? `<div class="text-xs text-emerald-300 mt-1">Эффект: ${escapeHtml(String(u.expected_effect))}</div>` : ''}
+          </div>`).join('')}
+      </div>
+    </div>` : '';
+
   // Helpers объявлены выше (перед gpHtml), чтобы избежать TDZ-ошибки.
 
   const recs = Array.isArray(d.recommendations) ? d.recommendations : [];
@@ -4840,7 +5061,7 @@ function renderDeepAIResult(d) {
       </div>
     </div>` : '';
 
-  const tab3 = [kapHtml, gpHtml, usHtml, recsHtml, kdHtml].filter(Boolean).join('<div class="h-1"></div>')
+  const tab3 = [kapHtml, gpHtml, usHtml, uxHtml, recsHtml, kdHtml].filter(Boolean).join('<div class="h-1"></div>')
     || '<div class="text-sm text-slate-400">Нет данных для блока «Точки роста».</div>';
 
   // ============== ВКЛАДКА 4: Анализ офферов и площадок ==============

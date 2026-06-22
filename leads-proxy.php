@@ -70,7 +70,7 @@ $limit      = (int)($_GET['limit']  ?? 500);
 
 // Yandex Metrika config
 $YM_CLIENT_ID  = 'afb919b40a0d4963bd37a931829c8f34';
-$YM_CLIENT_SECRET = '5311f2a8dd9543138ea4730bf25e7a06';
+$YM_CLIENT_SECRET = getenv('YM_CLIENT_SECRET') ?: '';
 $YM_COUNTER_ID = '19405381';
 $YM_IMPRESSION_GOAL_ID = 468033799; // Показы
 $YM_CLICK_GOAL_ID     = 468033800; // Клики
@@ -1154,6 +1154,9 @@ function aiBuildSignature() {
             'Помочь принять ключевые решения, влияющие на рост выручки.',
             'Структурировано отделить: пути конверсий и слабые точки; анализ офферов vs рынок (с прогнозом); кросс-сейл для займовой аудитории; диагностику резких просадок EPC ото дня ко дню.',
             'Сегментировать отказной трафик по каналам домонетизации и для каждого канала рекомендовать офферы из payload (showcase / sms / offline / mobile_app), исходя из специфики канала.',
+            'Оценивать зависимость между показами баннера и выручкой через banner_revenue_relation: корреляция, RPM и периоды, где рост показов не дал рост выручки.',
+            'Проверять качество интеграций по integration_health и явно учитывать пробелы данных в рисках и рекомендациях.',
+            'Давать короткие UX/UI-рекомендации по самому дашборду, которые улучшают понимание цифр и скорость принятия решений.',
             'Указать точки роста и проседающие сегменты с числовыми метриками и планом действий.',
             'Составить конкретный пошаговый план достижения KPI (control.kpi_targets): какие шаги, в каком порядке, на какой канал/оффер и с каким числовым вкладом закрывают разрыв до целевых EPC/выручки.',
         ],
@@ -1168,7 +1171,7 @@ function aiBuildSignature() {
             // Пустые/общие формулировки (без target и без числового expected_impact.delta_pct)
             // в UI помечаются как low-quality и сворачиваются — поэтому модели нет смысла их
             // выдавать.
-            'recommendations' => 'array<{title:string, target:{type:"offer"|"platform"|"sub1"|"channel"|"global", name:string}, action_type:string (one of allowed_action_types), action:string, implementation_steps:array<string> (2-5 шагов «что нажать / кому позвонить»), expected_impact:{metric:"epc"|"revenue"|"cr"|"ar"|"approved"|"clicks", current:number, target:number, delta_abs:number, delta_pct:number, horizon_days:7|30, confidence:"low"|"medium"|"high"}, evidence:{source:"daily_recent"|"weekly_trend"|"monthly_trend"|"market_compare"|"sub1_anomalies"|"offers_top"|"offers_underperforming"|"offers_daily_epc"|"top_platforms"|"traffic_sources_breakdown"|"forecast_baseline"|"anomalies_detected"|"epc_drops_signals"|"reject_funnel"|"kpi", fields:array<string>, values:object, note:string}, time_window:{from:string, to:string}, data_points_used:number, revoke_if:string (короткое условие отмены, ≤140 chars), priority:"high"|"medium"|"low"}> — 3-7 конкретных рекомендаций. ОГРАНИЧЕНИЯ: target.name (если type≠"global"|"channel") ОБЯЗАН быть из allowed_entities соответствующего типа; action_type ОБЯЗАН быть из allowed_action_types; expected_impact.delta_pct — обязательно ненулевое число; evidence.fields должны существовать в evidence.source-блоке payload.',
+            'recommendations' => 'array<{title:string, target:{type:"offer"|"platform"|"sub1"|"channel"|"global", name:string}, action_type:string (one of allowed_action_types), action:string, implementation_steps:array<string> (2-5 шагов «что нажать / кому позвонить»), expected_impact:{metric:"epc"|"revenue"|"cr"|"ar"|"approved"|"clicks", current:number, target:number, delta_abs:number, delta_pct:number, horizon_days:7|30, confidence:"low"|"medium"|"high"}, evidence:{source:"daily_recent"|"weekly_trend"|"monthly_trend"|"market_compare"|"sub1_anomalies"|"offers_top"|"offers_underperforming"|"offers_daily_epc"|"top_platforms"|"traffic_sources_breakdown"|"forecast_baseline"|"anomalies_detected"|"epc_drops_signals"|"reject_funnel"|"banner_revenue_relation"|"integration_health"|"kpi", fields:array<string>, values:object, note:string}, time_window:{from:string, to:string}, data_points_used:number, revoke_if:string (короткое условие отмены, ≤140 chars), priority:"high"|"medium"|"low"}> — 3-7 конкретных рекомендаций. ОГРАНИЧЕНИЯ: target.name (если type≠"global"|"channel") ОБЯЗАН быть из allowed_entities соответствующего типа; action_type ОБЯЗАН быть из allowed_action_types; expected_impact.delta_pct — обязательно ненулевое число; evidence.fields должны существовать в evidence.source-блоке payload.',
             'forecast' => '{period_7d:{revenue:number, clicks:number, epc:number, approve_rate:number, confidence:"low"|"medium"|"high", basis:string}, period_30d:{revenue:number, clicks:number, epc:number, approve_rate:number, confidence:"low"|"medium"|"high", basis:string}}',
             'platforms_breakdown' => 'array<{name:string, revenue_share_pct:number, status:"grow"|"stable"|"watch"|"risk", insight:string, action:string}> — разбор только по площадкам из top_platforms (до 10), с долей в выручке',
             'key_decisions' => 'array<{decision:string, target:{type:"offer"|"platform"|"sub1"|"channel"|"global", name:string}, action_type:string (one of allowed_action_types), rationale:string, kpi_impact:{metric:string, delta_pct:number, horizon_days:7|30}}> — 2-5 ключевых управленческих решений, направленных на рост выручки. Те же ограничения по target/action_type, что и в recommendations.',
@@ -1183,6 +1186,7 @@ function aiBuildSignature() {
             'reject_monetization_strategy' => '{showcase_optimization:array<{offer_name:string, action:"add"|"promote"|"remove", reasoning:string}>, sms_campaigns:array<{offer_name:string, trigger_message_idea:string, expected_epc_uplift:number}>, offline_routing:array<{offer_name:string, reasoning:string}>, mobile_app_retention:array<{offer_name:string, placement_strategy:string}>, summary:string} — стратегия домонетизации отказного трафика по 4 каналам. По 2-5 офферов в каждом подмассиве. Все offer_name ОБЯЗАНЫ быть из allowed_entities.offers. Подбор: showcase = AR > control.thresholds.ar_floor% И CR > control.thresholds.cr_floor% (горячий трафик после отказа); sms = высокий EPC + высокий CR + триггер 0%/одобрение всем; offline = высокая выплата за лид + низкий CR (сложные офферы для дожима оператором); mobile_app = долгосрочные/LTV-офферы (карты, рассрочка, длинные займы).',
             'growth_points' => 'array<{dimension:string, target:{type:"offer"|"platform"|"sub1"|"channel"|"global", name:string}, action_type:string (one of allowed_action_types), current_metric:string, target_metric:string, expected_impact:{metric:"epc"|"revenue"|"cr"|"ar"|"approved"|"clicks", current:number, target:number, delta_abs:number, delta_pct:number, horizon_days:7|30, confidence:"low"|"medium"|"high"}, action_plan:string}> — 3-6 точек роста с числовыми текущими и целевыми метриками. dimension — например «Увеличение CR в SMS», «Рост EPC на витрине ЛК», «Снижение CPL в оффлайне».',
             'underperforming_segments' => 'array<{segment:"showcase"|"sms"|"offline"|"app"|"web", issue:string, solution:string}> — 2-5 проседающих сегментов отказного трафика. issue должен содержать конкретные числа из traffic_sources_breakdown.',
+            'dashboard_ux_suggestions' => 'array<{area:"chart"|"kpi"|"filter"|"alert"|"ai"|"integration", metric:string, suggestion:string, rationale:string, expected_effect:string}> — 3-6 лаконичных улучшений UX/UI дашборда и цифр. Опирайся на dashboard_ux_context, integration_health и banner_revenue_relation; без кода, только продуктовые улучшения.',
             // reasoning_log вынесен в самый конец схемы (см. комментарий выше).
             // Описание укорочено: одна короткая строка на фазу, без раздувания.
             'reasoning_log' => 'array<string> — РОВНО 5 коротких пунктов (≤200 символов каждый), английский: "PHASE 1 DATA SANITY: ...", "PHASE 2 FRAUD DETECTION: ...", "PHASE 3 MARKET & DROPS: ...", "PHASE 4 ROUTING: ...", "PHASE 5 SELF-CHECK: ...". По одной ключевой цифре на пункт, без длинных рассуждений. PHASE 5 — самопроверка: для каждой recommendation подтвердить, что target.name есть в allowed_entities и evidence.values сходятся с payload.',
@@ -1276,7 +1280,7 @@ Mentally execute these phases BEFORE you start writing JSON. Then write the JSON
 - PHASE 1 — DATA SANITY: Check for logical impossibilities (e.g. conversions > clicks, approved > conversions, negative revenue). Note any payload defects.
 - PHASE 2 — FRAUD DETECTION: Scan sub1_anomalies for clicks > control.thresholds.fraud_clicks_threshold (default 300) with AR < 2% or CR < 1%. Flag suspicious sub1 values with their numbers.
 - PHASE 3 — MARKET & DROPS: Walk market_compare and epc_drops_signals. Compute lost-revenue potential = sum(clicks * |delta|) for negative deltas.
-- PHASE 4 — ROUTING: Apply [REJECT TRAFFIC ROUTING LOGIC] to top offers. For each routed offer name explicitly cite AR/CR/CPA/EPC values from the payload and which channel it goes to and why.
+- PHASE 4 — ROUTING: Apply [REJECT TRAFFIC ROUTING LOGIC] to top offers. For each routed offer name explicitly cite AR/CR/CPA/EPC values from the payload and which channel it goes to and why. Also check banner_revenue_relation.correlation/RPM: if impressions grow without revenue growth, route or test offers accordingly.
 - PHASE 5 — SELF-CHECK: Walk YOUR OWN recommendations[]. For each, verify: (a) target.name ∈ allowed_entities, (b) action_type ∈ allowed_action_types, (c) evidence.values match payload numbers within ±1%, (d) target NOT in control.filters.exclude_*, (e) expected_impact.delta_pct ≠ 0. If anything fails — DROP the item BEFORE emitting JSON.
 
 [KPI ACHIEVEMENT PLAN — BUILD A CONCRETE, SEQUENCED ROADMAP]
@@ -1300,6 +1304,9 @@ G. growth_points — 3-6 items with numeric current_metric and target_metric and
 H. underperforming_segments — 2-5 items with segment ∈ {showcase, sms, offline, app, web}, issue with payload numbers, solution.
 J. kpi_action_plan — ALWAYS produce it (see [KPI ACHIEVEMENT PLAN]). targets[] for each non-zero control.kpi_targets, 3-7 ordered steps with concrete_actions + non-zero expected_contribution, and an honest total_expected vs the revenue/epc gap.
 I. anomalies_detected (input field, NOT output) — массив заранее посчитанных аномалий: fraud_suspect (sub1 с подозрительно низким AR/CR при больших кликах), epc_drop (день-к-дню), offer_epc_drop / platform_epc_drop (просадки конкретного оффера или площадки vs trailing-7d-median), quality_anomaly (offer×platform пары с аномально низким AR). Используй их как АВТОРИТЕТНЫЕ диагнозы — не пропускай и не пересчитывай. Включи их в risks (kind=fraud_suspect → severity=high) и в epc_drops (kind=*epc_drop*). Для quality_anomaly выводи в reject_monetization_strategy с предложением routing-а.
+K. banner_revenue_relation — если correlation слабая/отрицательная или RPM низкий, объясни где показы не монетизируются, добавь рекомендацию с evidence.source="banner_revenue_relation" и предложи проверку офферов/маршрута.
+L. integration_health — если есть warnings или пустые кэши (banner/market/rejects), включи это в risks и dashboard_ux_suggestions, но не выдумывай данные вместо отсутствующих.
+M. dashboard_ux_suggestions — 3-6 коротких предложений по улучшению цифр и интерфейса: какие KPI/фильтры/алерты/графики добавить или упростить, и какой эффект это даст оператору.
 
 [OUTPUT SCHEMA]
 Return ONLY a single JSON object exactly matching this schema (keys and types):
@@ -1311,7 +1318,7 @@ function aiBuildUserPrompt($payload, $sig) {
     // По новому ТЗ user prompt должен быть максимально коротким — вся логика
     // и схема уже вшиты в system prompt. Здесь просто доставляем payload.
     $data = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
-    return "Analyze the following performance snapshot according to your system instructions. Mentally walk the 4 phases, then output the final JSON. Place the reasoning_log array LAST in the JSON (it is the final key) with ≤200 chars per phase entry.\n\n### PAYLOAD JSON ###\n{$data}\n### END PAYLOAD ###";
+    return "Analyze the following performance snapshot according to your system instructions. Mentally walk the 5 phases, then output the final JSON. Place the reasoning_log array LAST in the JSON (it is the final key) with ≤200 chars per phase entry.\n\n### PAYLOAD JSON ###\n{$data}\n### END PAYLOAD ###";
 }
 
 function aiTrimPayload($p) {
@@ -1342,6 +1349,10 @@ function aiTrimPayload($p) {
             }
         }
         unset($o);
+    }
+    if (isset($p['banner_revenue_relation']['periods']) && is_array($p['banner_revenue_relation']['periods'])
+        && count($p['banner_revenue_relation']['periods']) > 30) {
+        $p['banner_revenue_relation']['periods'] = array_slice($p['banner_revenue_relation']['periods'], -30);
     }
     // traffic_sources_breakdown: гарантируем, что top_offers внутри каждого
     // канала не более 5 — этого достаточно AI, чтобы сформировать
@@ -1376,7 +1387,7 @@ function aiValidateOutput($obj, $sig) {
     }
     // Мягкая проверка типов прочих блоков (не роняем ответ, если просто отсутствуют).
     foreach (['recommendations', 'platforms_breakdown', 'key_decisions', 'growth_points',
-             'underperforming_segments', 'reasoning_log'] as $opt) {
+             'underperforming_segments', 'dashboard_ux_suggestions', 'reasoning_log'] as $opt) {
         if (array_key_exists($opt, $obj) && !is_array($obj[$opt])) {
             return "{$opt} must be an array";
         }
@@ -1396,7 +1407,7 @@ function aiBackfillOutput($obj) {
     if (!is_array($obj)) return $obj;
     // Опциональные массивы верхнего уровня.
     foreach (['recommendations', 'platforms_breakdown', 'key_decisions',
-             'growth_points', 'underperforming_segments', 'reasoning_log', 'risks'] as $k) {
+             'growth_points', 'underperforming_segments', 'dashboard_ux_suggestions', 'reasoning_log', 'risks'] as $k) {
         if (!array_key_exists($k, $obj) || !is_array($obj[$k])) $obj[$k] = [];
     }
     // Опциональные объекты верхнего уровня.
@@ -3148,15 +3159,26 @@ if ($action === 'get_settings') {
 if ($action === 'health') {
     $dailyCount = (int)@$db->querySingle('SELECT COUNT(*) FROM daily_stats');
     $maxDate = (string)@$db->querySingle('SELECT MAX(date) FROM daily_stats');
+    $bannerCount = (int)@$db->querySingle('SELECT COUNT(*) FROM banner_stats');
     $lastBannerDate = (string)@$db->querySingle('SELECT MAX(date) FROM banner_stats');
+    $bounceCount = (int)@$db->querySingle('SELECT COUNT(*) FROM bounce_stats');
+    $lastBounceDate = (string)@$db->querySingle('SELECT MAX(date) FROM bounce_stats');
+    $offersCached = (int)@$db->querySingle('SELECT COUNT(*) FROM offers_cache');
     $lastMarketAt = (string)@$db->querySingle('SELECT MAX(updated_at) FROM offers_cache');
+    $eventsCount = (int)@$db->querySingle('SELECT COUNT(*) FROM notifications_log');
+    $lastEventDate = (string)@$db->querySingle('SELECT MAX(event_date) FROM notifications_log');
+    $ymTokenPresent = (bool)@$db->querySingle("SELECT COUNT(*) FROM ym_settings WHERE key = 'oauth_token' AND value != ''");
+    $tgConfigured = settingGet($db, 'tg_bot_token') !== '' && settingGet($db, 'tg_chat_id') !== '';
     echo json_encode([
         'status' => 'success',
         'db' => [
             'ok' => true,
             'daily_rows' => $dailyCount,
             'last_stats_date' => $maxDate ?: null,
+            'banner_rows' => $bannerCount,
             'last_banner_date' => $lastBannerDate ?: null,
+            'bounce_rows' => $bounceCount,
+            'last_bounce_date' => $lastBounceDate ?: null,
             'last_market_update' => $lastMarketAt ?: null,
         ],
         'leads_token' => [
@@ -3166,6 +3188,31 @@ if ($action === 'health') {
         'ai' => [
             'api_key_present' => aiEffectiveApiKey() !== '',
             'api_key_source' => aiApiKeySource(),
+        ],
+        'integrations' => [
+            'yandex_metrika' => [
+                'token_present' => $ymTokenPresent,
+                'counter_id' => $YM_COUNTER_ID,
+                'impression_goal_id' => $YM_IMPRESSION_GOAL_ID,
+                'click_goal_id' => $YM_CLICK_GOAL_ID,
+                'banner_rows' => $bannerCount,
+                'last_banner_date' => $lastBannerDate ?: null,
+            ],
+            'offers_market' => [
+                'offers_cached' => $offersCached,
+                'last_update' => $lastMarketAt ?: null,
+            ],
+            'rejects' => [
+                'rows' => $bounceCount,
+                'last_date' => $lastBounceDate ?: null,
+            ],
+            'notifications' => [
+                'rows' => $eventsCount,
+                'last_event_date' => $lastEventDate ?: null,
+            ],
+            'telegram' => [
+                'configured' => $tgConfigured,
+            ],
         ],
     ], JSON_UNESCAPED_UNICODE);
     exit;
