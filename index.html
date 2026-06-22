@@ -158,7 +158,38 @@
       position: relative;
       padding: 20px 22px;
       overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      min-height: 168px;
     }
+    /* Заголовок-капшен (Клики/Доход/…): фиксированная зона сверху */
+    #kpiCards .card > .text-xs:first-child,
+    #compareKpiGrid .card > .text-xs:first-child,
+    #bannerKpiCards .card > .text-xs:first-child {
+      min-height: 16px;
+    }
+    /* Большая цифра — растягиваемая центральная зона, цифра центрируется по вертикали */
+    #kpiCards .card > .kpi-value,
+    #compareKpiGrid .card > .kpi-value,
+    #bannerKpiCards .card > .kpi-value {
+      flex: 1 1 auto;
+      display: flex;
+      align-items: center;
+      min-height: 56px;
+      word-break: break-word;
+      overflow-wrap: anywhere;
+    }
+    /* План/факт-зона — всегда внизу, занимает всю ширину */
+    #kpiCards .card > .kpi-pf,
+    #compareKpiGrid .card > .kpi-pf,
+    #bannerKpiCards .card > .kpi-pf {
+      flex: 0 0 auto;
+      width: 100%;
+    }
+    #kpiCards .card .pf-bars,
+    #compareKpiGrid .card .pf-bars,
+    #bannerKpiCards .card .pf-bars { min-width: 0; width: 100%; }
     /* Тончайший индикатор-полоска вместо градиента; видна на hover */
     #kpiCards .card::after,
     #compareKpiGrid .card::after,
@@ -173,12 +204,12 @@
     #compareKpiGrid .card:hover::after,
     #bannerKpiCards .card:hover::after { opacity: .7; }
 
-    /* Большая цифра — SF Pro Semibold 40px */
+    /* Большая цифра — SF Pro Semibold, адаптивная под ширину карточки */
     #kpiCards .text-3xl, #bannerKpiCards .text-3xl, #compareKpiGrid .text-2xl {
       font-weight: 600;
       font-feature-settings: "tnum" 1, "lnum" 1;
       letter-spacing: -0.03em;
-      font-size: 40px;
+      font-size: clamp(22px, 5.2vw, 40px);
       line-height: 1.05;
       color: var(--text);
     }
@@ -570,6 +601,7 @@
       font-feature-settings: "tnum" 1, "lnum" 1;
     }
     .pf-bars { min-width: 130px; }
+    .pf-bars.pf-empty { display: flex; align-items: center; justify-content: center; min-height: 30px; }
     .pf-plan .pf-fill { background: rgba(142,142,147,.45); }
     .pf-fact.ok .pf-fill { background: var(--ok); }
     .pf-fact.bad .pf-fill { background: var(--bad); }
@@ -599,6 +631,50 @@
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after { animation-duration: .001ms !important; transition-duration: .001ms !important; }
     }
+
+    /* ==================== MOBILE ==================== */
+    @media (max-width: 640px) {
+      #kpiCards .card,
+      #compareKpiGrid .card,
+      #bannerKpiCards .card {
+        padding: 14px 14px;
+        min-height: 148px;
+      }
+      #kpiCards .text-3xl, #bannerKpiCards .text-3xl, #compareKpiGrid .text-2xl {
+        font-size: clamp(20px, 7.5vw, 32px);
+      }
+      .chart-wrap { height: 280px; }
+      .analysis-mode-btn, .layer-toggle, .series-toggle { padding: 6px 9px; font-size: 11px; }
+      .pf-bars { min-width: 0; }
+    }
+    @media (max-width: 420px) {
+      #kpiCards .card,
+      #compareKpiGrid .card,
+      #bannerKpiCards .card { min-height: 132px; padding: 12px; }
+      #kpiCards .text-3xl, #bannerKpiCards .text-3xl, #compareKpiGrid .text-2xl {
+        font-size: clamp(18px, 8.5vw, 28px);
+      }
+    }
+
+    /* ==================== Переключатели серий графика ==================== */
+    #chartSeriesToggles {
+      display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px;
+      padding-top: 10px; border-top: 1px dashed var(--border);
+    }
+    .series-toggle {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 5px 10px; border-radius: 999px; border: 1px solid var(--border);
+      background: var(--surface-thin); color: var(--text-muted); font-size: 12px;
+      cursor: pointer;
+      transition: background var(--t-fast) var(--ease-apple), color var(--t-fast) var(--ease-apple), border-color var(--t-fast) var(--ease-apple), opacity var(--t-fast) var(--ease-apple);
+    }
+    .series-toggle:hover { border-color: var(--border-strong); color: var(--text); }
+    .series-toggle .swatch {
+      width: 10px; height: 10px; border-radius: 3px; display: inline-block;
+      box-shadow: inset 0 0 0 1px rgba(0,0,0,.15);
+    }
+    .series-toggle.off { opacity: .45; text-decoration: line-through; }
+    .series-toggle.off .swatch { background: transparent !important; box-shadow: inset 0 0 0 1px currentColor; }
   </style>
 </head>
 <body>
@@ -696,13 +772,15 @@
         </div>
         <div id="chartAnalysisModes" class="flex flex-wrap gap-2 mb-3" aria-label="Слои графика">
           <button class="analysis-mode-btn active" data-mode="fact" aria-pressed="true" onclick="setChartAnalysisMode('fact')">Без слоёв</button>
-          <button class="analysis-mode-btn" data-mode="trend" aria-pressed="false" onclick="setChartAnalysisMode('trend')">Тренд</button>
+          <button class="analysis-mode-btn" data-mode="trend" aria-pressed="false" onclick="setChartAnalysisMode('trend')" title="Линия тренда, скользящие средние (MA) и накопительный итог">Тренд</button>
           <button class="analysis-mode-btn" data-mode="compare" aria-pressed="false" onclick="setChartAnalysisMode('compare')">Сравнение</button>
           <button class="analysis-mode-btn" data-mode="anomalies" aria-pressed="false" onclick="setChartAnalysisMode('anomalies')">Аномалии</button>
           <button class="analysis-mode-btn" data-mode="dependencies" aria-pressed="false" onclick="setChartAnalysisMode('dependencies')">Зависимости</button>
         </div>
         <div id="chartInsightCards" class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3 hidden"></div>
         <div class="chart-wrap"><canvas id="trendChart"></canvas></div>
+        <div id="chartSeriesToggles" aria-label="Отображаемые серии графика"></div>
+        <p class="text-[11px] text-slate-500 mt-2">Совет: нажмите на ярлык серии (Доход, Клики, MA и др.), чтобы скрыть или показать её. <span class="text-slate-400">MA — скользящая средняя (moving average), сглаживает колебания за N точек.</span></p>
         <div id="chartHeatmap" class="hidden"></div>
         <div id="dependencyPanel" class="hidden mt-4">
           <div class="flex items-start justify-between gap-3 mb-2">
@@ -1373,6 +1451,7 @@ let trendChartInstance = null;
 let dependencyScatterChartInstance = null;
 let chartAnalysisMode = 'fact';
 let chartAnalysisLayers = new Set();
+let hiddenChartSeries = new Set();
 let bannerRelationLayers = new Set(['trend', 'ma', 'bounces']);
 let donutChartInstance = null;
 let barChartInstance = null;
@@ -1714,7 +1793,7 @@ function planFromRows(rows, periodDays) {
 }
 
 function planFactBar(fact, plan, fmt = v => Math.round(v).toLocaleString('ru-RU')) {
-  if (!plan || plan <= 0) return '<span class="text-slate-500">—</span>';
+  if (!plan || plan <= 0) return '<div class="pf-bars pf-empty text-slate-500 text-[11px]">План не задан</div>';
   const factPct = Math.min(100, Math.max(0, fact / plan * 100));
   const ok = fact >= plan;
   return `<div class="pf-bars">
@@ -2445,8 +2524,8 @@ function renderUI() {
   const plan = planFromRows(baseline, planFactState.days || 1);
   const kpiCard = (title, valueHtml, fact, planValue, fmt) => `<div class="card">
     <div class="text-slate-400 text-xs uppercase">${title}</div>
-    <div class="text-3xl font-black mt-2">${valueHtml}</div>
-    <div class="mt-3">${planFactBar(fact, planValue, fmt)}</div>
+    <div class="kpi-value"><div class="text-3xl font-black mt-2">${valueHtml}</div></div>
+    <div class="kpi-pf mt-3">${planFactBar(fact, planValue, fmt)}</div>
   </div>`;
   const noDataHint = !globalRawData.length ? '<div class="col-span-full text-center text-slate-500 text-sm py-2">Нет данных за выбранный период. Нажмите « Загрузить из кабинета» для загрузки.</div>' : '';
   document.getElementById('kpiCards').innerHTML = noDataHint + `
@@ -2934,14 +3013,14 @@ function setChartAnalysisMode(mode) {
 
 function chartModeHint(modes) {
   const active = Array.isArray(modes) ? modes : (modes && modes !== 'fact' ? String(modes).split(',').filter(Boolean) : []);
-  if (!active.length) return 'Чистый факт без дополнительных слоёв.';
+  if (!active.length) return 'Чистый факт без дополнительных слоёв. Кликните по ярлыку серии под графиком, чтобы скрыть/показать её.';
   const labels = {
-    trend: 'тренды',
+    trend: 'тренды и MA (скользящие средние)',
     compare: 'сравнение',
-    anomalies: 'аномалии',
+    anomalies: 'аномалии и MA',
     dependencies: 'зависимости'
   };
-  return `Активные слои: ${active.map(m => labels[m] || m).join(', ')}. Слои можно включать и скрывать независимо.`;
+  return `Активные слои: ${active.map(m => labels[m] || m).join(', ')}. MA — moving average (скользящая средняя), сглаживает колебания за N точек. Серии можно скрывать кликом по ярлыку.`;
 }
 
 function updateBannerRelationLayerButtons() {
@@ -3184,8 +3263,8 @@ function refreshChart() {
   if (hasChartLayer('trend')) {
     const ma7 = movingAverage(primary, Math.min(7, Math.max(2, primary.length)));
     const ma30 = movingAverage(primary, Math.min(30, Math.max(2, primary.length)));
-    datasets.push({ label:'MA 7', data:ma7, borderColor:'#22d3ee', borderWidth:4, pointRadius:0, tension:.35, yAxisID:'y' });
-    datasets.push({ label:'MA 30', data:ma30, borderColor:'#a78bfa', borderWidth:3, pointRadius:0, tension:.35, yAxisID:'y' });
+    datasets.push({ label:'MA 7 (скользящая средняя, 7 точек)', data:ma7, borderColor:'#22d3ee', borderWidth:4, pointRadius:0, tension:.35, yAxisID:'y' });
+    datasets.push({ label:'MA 30 (скользящая средняя, 30 точек)', data:ma30, borderColor:'#a78bfa', borderWidth:3, pointRadius:0, tension:.35, yAxisID:'y' });
     datasets.push({ label:'Линия тренда', data:linearTrend(primary), borderColor:'#facc15', borderDash:[7,5], pointRadius:0, fill:false, yAxisID:'y' });
     datasets.push({ label:'Накопительный итог', data:cumulative(primary), borderColor:'#fb7185', borderDash:[2,4], pointRadius:0, fill:false, yAxisID:'y1' });
     scalesConfig.y1 = { display:true, position:'right', ticks:{color:'#94a3b8'}, grid:{drawOnChartArea:false} };
@@ -3221,7 +3300,7 @@ function refreshChart() {
     }
     datasets.push({ label:'Нижняя граница нормы', data:lower, borderColor:'rgba(148,163,184,.18)', pointRadius:0, fill:false, yAxisID:'y' });
     datasets.push({ label:'Коридор нормы', data:upper, borderColor:'rgba(148,163,184,.18)', backgroundColor:'rgba(148,163,184,.14)', pointRadius:0, fill:'-1', yAxisID:'y' });
-    datasets.push({ label:'MA 7', data:ma, borderColor:'#22d3ee', borderWidth:3, pointRadius:0, yAxisID:'y' });
+    datasets.push({ label:'MA 7 (скользящая средняя, 7 точек)', data:ma, borderColor:'#22d3ee', borderWidth:3, pointRadius:0, yAxisID:'y' });
     insightCards.push(
       { label:'Аномалии', value:String(anomalies.filter(Boolean).length), cls:anomalies.some(Boolean) ? 'text-orange-400' : 'text-emerald-400', hint:'выходы за коридор' },
       { label:'Максимум', value:(max || 0).toFixed(names.unit ? 2 : 0) + (names.unit ? ' ' + names.unit : ''), cls:'text-emerald-400', hint:displayLabels[primary.indexOf(max)] || '' },
@@ -3245,10 +3324,21 @@ function refreshChart() {
   renderChartHeatmap(labels, grouped, grouping);
 
   if (trendChartInstance) trendChartInstance.destroy();
+  // применяем сохранённое скрытие серий (по нормализованным ключам)
+  datasets.forEach(ds => { ds.hidden = hiddenChartSeries.has(seriesKey(ds.label)); });
   trendChartInstance = new Chart(document.getElementById('trendChart'), {
     type:chartType, data:{labels:displayLabels,datasets}, plugins:[eventMarkerPlugin],
     options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
-      plugins:{legend:{labels:{color:'#cbd5e1'}},eventMarkerPlugin:{events:eventGroups,grouping},tooltip:{...sharedTooltipConfig,callbacks:{label:function(ctx){
+      plugins:{legend:{labels:{color:'#cbd5e1'},onClick:(e,item,legend)=>{
+        const idx = item.datasetIndex;
+        const ds = legend.chart.data.datasets[idx];
+        const key = seriesKey(ds && ds.label);
+        const wasHidden = legend.chart.isDatasetVisible(idx) === false;
+        legend.chart.setDatasetVisibility(idx, wasHidden);
+        if (wasHidden) hiddenChartSeries.delete(key); else hiddenChartSeries.add(key);
+        legend.chart.update();
+        renderChartSeriesToggles();
+      }},eventMarkerPlugin:{events:eventGroups,grouping},tooltip:{...sharedTooltipConfig,callbacks:{label:function(ctx){
         const v=Number(ctx.raw);
         if(ctx.dataset.label.includes('₽'))return ` ${ctx.dataset.label}: ${v.toFixed(2)} ₽`;
         if(ctx.dataset.label.includes('%'))return ` ${ctx.dataset.label}: ${v.toFixed(2)}%`;
@@ -3262,6 +3352,42 @@ function refreshChart() {
       }}}},
       scales:{x:{ticks:{color:'#94a3b8'},grid:{color:'#1e293b'}},...scalesConfig}
     }
+  });
+  renderChartSeriesToggles();
+}
+
+function seriesKey(label) {
+  return String(label || '').trim().toLowerCase();
+}
+
+function renderChartSeriesToggles() {
+  const host = document.getElementById('chartSeriesToggles');
+  if (!host) return;
+  if (!trendChartInstance || !trendChartInstance.data || !trendChartInstance.data.datasets.length) {
+    host.innerHTML = '';
+    return;
+  }
+  const html = trendChartInstance.data.datasets.map((ds, i) => {
+    const visible = trendChartInstance.isDatasetVisible(i);
+    const color = ds.borderColor || ds.backgroundColor || '#94a3b8';
+    return `<button type="button" class="series-toggle ${visible ? '' : 'off'}" data-idx="${i}" aria-pressed="${visible}" title="${visible ? 'Скрыть' : 'Показать'} серию">
+      <span class="swatch" style="background:${color}"></span>${escapeHtml(ds.label || ('Серия ' + (i + 1)))}
+    </button>`;
+  }).join('');
+  host.innerHTML = html;
+  host.querySelectorAll('.series-toggle').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const idx = Number(btn.dataset.idx);
+      if (!trendChartInstance) return;
+      const ds = trendChartInstance.data.datasets[idx];
+      if (!ds) return;
+      const key = seriesKey(ds.label);
+      const visible = trendChartInstance.isDatasetVisible(idx);
+      trendChartInstance.setDatasetVisibility(idx, !visible);
+      if (visible) hiddenChartSeries.add(key); else hiddenChartSeries.delete(key);
+      trendChartInstance.update();
+      renderChartSeriesToggles();
+    });
   });
 }
 
