@@ -6,7 +6,8 @@
  * Cron: 0 * * * * php /path/to/cron_update.php
  */
 
-$token = '2104ce6ccd2ce95458a53926597416eb';
+// Leads.su token берётся внутри leads-proxy.php из LEADS_API_TOKEN
+// или app_settings.leads_api_token. Не храним секрет в исходниках.
 
 // Определяем базовый URL (протокол + хост) для вызова leads-proxy.php
 $proxyUrl = (php_sapi_name() === 'cli')
@@ -26,7 +27,6 @@ if (php_sapi_name() === 'cli') {
 
     // 1. Обновление статистики Leads.su
     $_GET['action'] = 'update_stats';
-    $_GET['token'] = $token;
     $_GET['start_date'] = $startDate;
     $_GET['end_date'] = $endDate;
     $_GET['method'] = 'reports/summary';
@@ -61,7 +61,6 @@ if (php_sapi_name() === 'cli') {
     // 3. Обновление кэша офферов с рыночными показателями (раз в час достаточно).
     $_GET = [];
     $_GET['action'] = 'fetch_offers_market';
-    $_GET['token'] = $token;
 
     ob_start();
     include __DIR__ . '/leads-proxy.php';
@@ -74,7 +73,6 @@ if (php_sapi_name() === 'cli') {
     // 4. Подтянуть журнал событий (новые офферы, остановки, изменение выплат).
     $_GET = [];
     $_GET['action'] = 'fetch_notifications';
-    $_GET['token'] = $token;
 
     ob_start();
     include __DIR__ . '/leads-proxy.php';

@@ -611,6 +611,12 @@
           <span class="dot"></span>
           <span>Автообновление: <span id="nextRefreshTime">--:--</span></span>
         </div>
+        <span id="dataSourceBadge" class="auto-refresh-indicator" title="Источник и свежесть данных">
+          <span class="dot"></span><span>Данные: —</span>
+        </span>
+        <span id="healthBadge" class="auto-refresh-indicator" title="Диагностика API/БД">
+          <span class="dot"></span><span>Health: —</span>
+        </span>
         <span id="lastUpdatedLabel" class="text-xs text-slate-400"></span>
       </div>
       <div id="quickRangeBar" class="flex flex-wrap gap-2 mt-3" role="group" aria-label="Быстрый выбор периода">
@@ -650,6 +656,7 @@
   <!-- TAB: DASHBOARD -->
   <div id="tab-dashboard" class="tab-content active space-y-6">
     <div id="kpiCards" class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-4"></div>
+    <div id="problemZones" class="card hidden"></div>
     <div class="grid grid-cols-1 xl:grid-cols-3 gap-6">
       <div class="card xl:col-span-2">
         <div class="flex flex-wrap gap-3 justify-between items-center mb-4">
@@ -1197,6 +1204,24 @@
       </div>
     </div>
     <div class="card">
+      <h2 class="text-white font-bold text-lg mb-3">🔐 Leads.su API-токен</h2>
+      <p class="text-sm text-slate-400 mb-3">Сохраните токен на сервере, чтобы запросы к Leads.su выполнялись через backend без передачи token из браузера.</p>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
+        <div>
+          <label for="leadsApiToken" class="text-xs text-slate-400 block mb-1">API token</label>
+          <input id="leadsApiToken" type="password" autocomplete="off" placeholder="token из кабинета Leads.su" class="bg-slate-800 border border-slate-700 rounded px-3 py-2 w-full text-sm focus:outline-none focus:border-blue-500">
+        </div>
+        <div class="flex items-end">
+          <span id="leadsTokenStatus" class="text-xs text-slate-500">Статус токена неизвестен.</span>
+        </div>
+      </div>
+      <div class="flex gap-2 flex-wrap">
+        <button class="btn" onclick="saveLeadsToken()">💾 Сохранить токен</button>
+        <button class="btn" style="background:#16a34a" onclick="updateHealthBadge()">🩺 Проверить health</button>
+      </div>
+      <div id="leadsTokenMessage" class="mt-3 text-sm hidden"></div>
+    </div>
+    <div class="card">
       <h2 class="text-white font-bold text-lg mb-3">🔔 Telegram-уведомления</h2>
       <p class="text-sm text-slate-400 mb-3">Бот будет писать в указанный чат при просадке выручки &gt;20% (день к тому же дню недели), при появлении нового топ-Sub1 и при выполнении плана месяца. Защита от спама — один и тот же алерт максимум раз в сутки.</p>
       <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">
@@ -1276,7 +1301,10 @@ window.addEventListener('scroll', () => {
 
 // ========================== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ==========================
 const API_BASE = './leads-proxy.php';
-const HARDCODED_TOKEN = '2104ce6ccd2ce95458a53926597416eb';
+// Новая схема: Leads.su token хранится на сервере
+// (app_settings.leads_api_token / LEADS_API_TOKEN) и не светится в браузере.
+// Оставляем пустой legacy fallback только для локальных приватных сборок.
+const LEGACY_LEADS_TOKEN = '';
 const AUTO_REFRESH_INTERVAL_MS = 60 * 60 * 1000; // 1 час
 const LAST_REFRESH_KEY = 'leadsLastAutoRefresh';
 
@@ -1301,6 +1329,10 @@ let trafficByPlatformChartInstance = null;
 let rejectRevenueChartInstance = null;
 let matrixShareChartInstance = null;
 let autoRefreshTimer = null;
+let autoRefreshInFlight = false;
+let aggregateCache = new Map();
+let lastRefreshError = '';
+let lastDataSource = '';
 
 let tableSort = {
   sourceTable: { field: 'revenue', desc: true },
@@ -1396,6 +1428,60 @@ function parseDateSmart(rawD) {
 
 function escapeHtml(str) {
   return String(str).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#039;');
+}
+
+function buildApiUrl(params) {
+  return `${API_BASE}?${new URLSearchParams(params).toString()}`;
+}
+
+function withLeadsToken(params = {}) {
+  const out = { ...params };
+  if (!out.token && LEGACY_LEADS_TOKEN) out.token = LEGACY_LEADS_TOKEN;
+  return out;
+}
+
+async function fetchJsonSafe(url, opts = {}) {
+  const res = await fetch(url, { ...opts, headers: { Accept: 'application/json', ...(opts.headers || {}) } });
+  const text = await res.text();
+  let json = null;
+  try { json = text ? JSON.parse(text) : null; }
+  catch (_) {
+    throw new Error(`Ответ сервера не JSON. HTTP ${res.status}: ${text.slice(0, 120)}`);
+  }
+  if (!res.ok) throw new Error((json && (json.error || json.message || json.details)) || `HTTP ${res.status}`);
+  return json;
+}
+
+function setDataSource(source, error = '') {
+  lastDataSource = source || lastDataSource;
+  lastRefreshError = error || '';
+  const el = document.getElementById('dataSourceBadge');
+  if (!el) return;
+  const dot = el.querySelector('.dot');
+  const text = el.querySelector('span:last-child');
+  const labels = { api: 'API свежие', db: 'БД snapshot', cache: 'кэш', error: 'ошибка' };
+  if (text) text.textContent = `Данные: ${labels[source] || source || '—'}`;
+  if (dot) dot.style.background = error ? 'var(--bad)' : (source === 'api' ? 'var(--ok)' : 'var(--warn)');
+  el.title = error ? `Последняя ошибка: ${error}` : 'Источник последнего успешного обновления данных';
+}
+
+async function updateHealthBadge() {
+  const el = document.getElementById('healthBadge');
+  if (!el) return;
+  const dot = el.querySelector('.dot');
+  const text = el.querySelector('span:last-child');
+  try {
+    const json = await fetchJsonSafe(buildApiUrl({ action: 'health' }));
+    const ok = json.status === 'success' && json.db && json.db.ok;
+    if (dot) dot.style.background = ok ? 'var(--ok)' : 'var(--warn)';
+    if (text) text.textContent = ok ? 'Health: OK' : 'Health: check';
+    const tokenTxt = json.leads_token?.present ? `Leads token: ${json.leads_token.source}` : 'Leads token: не задан';
+    el.title = `${tokenTxt}; строк: ${json.db?.daily_rows ?? 0}; последняя дата: ${json.db?.last_stats_date || '—'}`;
+  } catch (e) {
+    if (dot) dot.style.background = 'var(--bad)';
+    if (text) text.textContent = 'Health: fail';
+    el.title = e.message;
+  }
 }
 
 // CRC32 совместимый с PHP crc32() — нужен, чтобы FE и сервер
@@ -1561,11 +1647,12 @@ async function fetchJSON(url, attempt = 0) {
   const text = await res.text();
   let json = null;
   try { json = text ? JSON.parse(text) : null; }
-  catch (e) { throw new Error(`Ответ сервера не JSON. HTTP: ${res.status}`); }
+  catch (e) { throw new Error(`Ответ сервера не JSON. HTTP ${res.status}: ${text.slice(0, 120)}`); }
   if (!res.ok) {
     let errorMsg = `HTTP ${res.status}`;
     if (json && json.error && Array.isArray(json.error.params)) errorMsg = json.error.params.map(p => p.message).join(' | ');
     else if (json && json.message) errorMsg = json.message;
+    else if (json && json.error) errorMsg = String(json.error);
     throw new Error(errorMsg);
   }
   if (json && json.status && json.status !== 'success') throw new Error(json.message || 'API error');
@@ -1575,7 +1662,7 @@ async function fetchJSON(url, attempt = 0) {
 async function fetchAll(method, params = {}) {
   let offset = 0; const limit = 500; let all = [];
   while (true) {
-    const query = new URLSearchParams({ method, ...params, offset: String(offset), limit: String(limit) });
+    const query = new URLSearchParams(withLeadsToken({ method, ...params, offset: String(offset), limit: String(limit) }));
     const json = await fetchJSON(`${API_BASE}?${query.toString()}`);
     const rows = Array.isArray(json.data) ? json.data : [];
     if (rows.length === 0) break;
@@ -1589,8 +1676,7 @@ async function fetchAll(method, params = {}) {
 
 async function fetchSavedStats(start, end) {
   try {
-    const res = await fetch(`${API_BASE}?action=get_stats&start_date=${start}&end_date=${end}`);
-    const json = await res.json();
+    const json = await fetchJsonSafe(buildApiUrl({ action: 'get_stats', start_date: start, end_date: end }));
     if (json.status === 'success' && json.data.length) return json.data;
   } catch(e) { console.warn(e); }
   return null;
@@ -1616,8 +1702,7 @@ async function fetchStatsRange(start, end) {
 
 async function fetchBouncesStats(start, end) {
   try {
-    const res = await fetch(`${API_BASE}?action=get_bounces&start_date=${start}&end_date=${end}`);
-    const json = await res.json();
+    const json = await fetchJsonSafe(buildApiUrl({ action: 'get_bounces', start_date: start, end_date: end }));
     bouncesData = (json.status === 'success' && Array.isArray(json.data)) ? json.data.map(r => ({
       date: r.date,
       source: mergeSourceName(r.source_name),
@@ -1649,7 +1734,7 @@ async function loadFromAPI(opts = {}) {
   // ВАЖНО: вся остальная логика — точно та же, что и при ручном клике, чтобы
   // передача переменных не нарушалась ни в одном месте.
   const silent = !!opts.silent;
-  const token = HARDCODED_TOKEN;
+  const token = LEGACY_LEADS_TOKEN;
   const dFrom = document.getElementById('dateFrom').value;
   const dTo = document.getElementById('dateTo').value;
   const btn = document.getElementById('btnLoadAPI');
@@ -1741,7 +1826,7 @@ async function loadFromAPI(opts = {}) {
     originalData = deduplicateData(originalData, false);
     // Save data to DB via server-side update (more reliable with source_id handling)
     try {
-      await fetch(`${API_BASE}?action=save_stats`, {
+      await fetchJsonSafe(buildApiUrl({ action: 'save_stats' }), {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ data: originalData.map(r => ({
           date: r.date, source_id: r.source_id || 'all', source_name: r.source,
@@ -1752,11 +1837,13 @@ async function loadFromAPI(opts = {}) {
       });
     } catch(e) { console.warn('Ошибка сохранения:', e); }
     // Заодно подтягиваем рыночные показатели офферов в кэш на сервере
-    try { await fetch(`${API_BASE}?action=fetch_offers_market&token=${token}`); }
+    try { await fetchJsonSafe(buildApiUrl(withLeadsToken({ action: 'fetch_offers_market' }))); }
     catch(e) { console.warn('Ошибка загрузки рыночных EPC:', e); }
     await loadOfferMarketData();
     // Refresh dashboard with loaded data
     await applyGlobalFilters();
+    setDataSource('api');
+    updateHealthBadge();
     prog(100, 'Готово!');
     if (!silent) setTimeout(() => updateProgress(0), 1500);
     return true;
@@ -1767,6 +1854,7 @@ async function loadFromAPI(opts = {}) {
       updateProgress(0);
     } else {
       console.warn('[Auto-refresh] loadFromAPI failed:', e.message);
+      setDataSource('error', e.message);
     }
     return false;
   } finally {
@@ -1790,6 +1878,10 @@ function updateProgress(percent, text) {
 let visibilityListenerAdded = false;
 
 async function runAutoRefresh(force = false) {
+  if (autoRefreshInFlight) {
+    console.log('[Auto-refresh] Уже выполняется, пропускаем повторный запуск.');
+    return;
+  }
   const dFrom = document.getElementById('dateFrom').value;
   const dTo = document.getElementById('dateTo').value;
   if (!dFrom || !dTo) return;
@@ -1803,6 +1895,7 @@ async function runAutoRefresh(force = false) {
   // расходится между ручным и авто-сценариями. Поэтому вызываем тот же
   // loadFromAPI, но в silent-режиме (без alert и без блокировки кнопки).
   let leadsOk = false;
+  autoRefreshInFlight = true;
   try {
     leadsOk = await loadFromAPI({ silent: true });
   } catch (e) {
@@ -1810,17 +1903,17 @@ async function runAutoRefresh(force = false) {
   }
   // Yandex Metrika ждёт даты вида YYYY-MM-DD без времени.
   try {
-    await fetch(`${API_BASE}?action=ym_fetch_banner&start_date=${dFrom}&end_date=${dTo}`);
+    await fetchJsonSafe(buildApiUrl({ action: 'ym_fetch_banner', start_date: dFrom, end_date: dTo }));
   } catch(e) { console.warn('[Auto-refresh] YM update error:', e); }
   // Refresh market EPC cache (на случай если loadFromAPI не дошёл до этого шага
   // из-за ошибки на стороне leads.su — рынок офферов всё равно подтягиваем).
   try {
-    await fetch(`${API_BASE}?action=fetch_offers_market&token=${HARDCODED_TOKEN}`);
+    await fetchJsonSafe(buildApiUrl(withLeadsToken({ action: 'fetch_offers_market' })));
   } catch(e) { console.warn('[Auto-refresh] Offers market update error:', e); }
   // Подтянуть журнал событий и проверить алерты в Telegram (если настроен).
-  try { await fetch(`${API_BASE}?action=fetch_notifications&token=${HARDCODED_TOKEN}`); }
+  try { await fetchJsonSafe(buildApiUrl(withLeadsToken({ action: 'fetch_notifications' }))); }
   catch(e) { console.warn('[Auto-refresh] Notifications error:', e); }
-  try { await fetch(`${API_BASE}?action=tg_check_alerts`); }
+  try { await fetchJsonSafe(buildApiUrl({ action: 'tg_check_alerts' })); }
   catch(e) { console.warn('[Auto-refresh] TG alerts error:', e); }
   localStorage.setItem(LAST_REFRESH_KEY, String(Date.now()));
   // Если loadFromAPI не сработал (сетевая ошибка/таймаут) — fallback:
@@ -1829,6 +1922,8 @@ async function runAutoRefresh(force = false) {
     try { await autoLoadSavedStats(); } catch(e) { console.warn('[Auto-refresh] autoLoadSavedStats error:', e); }
   }
   updateNextRefreshTime();
+  updateHealthBadge();
+  autoRefreshInFlight = false;
   console.log('[Auto-refresh] Готово.');
 }
 
@@ -2059,6 +2154,7 @@ async function autoLoadSavedStats() {
     // Keep existing data outside the fetched range, use DB data for the fetched range
     const kept = originalData.filter(r => r.date < dFrom || r.date > dTo);
     originalData = deduplicateData(kept.concat(dbRows), true);
+    setDataSource('db');
   }
   // Always apply filters to update dashboard (banner data may exist even without leads data)
   await applyGlobalFilters();
@@ -2067,8 +2163,7 @@ async function autoLoadSavedStats() {
 // ========================== БАННЕР ==========================
 async function fetchBannerStats(start, end) {
   try {
-    const res = await fetch(`${API_BASE}?action=get_banner_stats&start_date=${start}&end_date=${end}`);
-    const data = await res.json();
+    const data = await fetchJsonSafe(buildApiUrl({ action: 'get_banner_stats', start_date: start, end_date: end }));
     if (data.status === 'success') bannerData = data.data;
   } catch(e) { console.warn(e); }
 }
@@ -2179,6 +2274,7 @@ async function applyGlobalFilters() {
   const dFrom = document.getElementById('dateFrom').value || '2000-01-01';
   const dTo = document.getElementById('dateTo').value || '2099-01-01';
   globalRawData = originalData.filter(r => r.date >= dFrom && r.date <= dTo);
+  aggregateCache = new Map();
   const baselineTo = isoShift(dFrom, -1);
   const baselineFrom = isoShift(dFrom, -90);
   planFactState = { from: dFrom, to: dTo, baselineFrom, baselineTo, days: daysBetweenInclusive(dFrom, dTo) };
@@ -2211,7 +2307,7 @@ async function applyGlobalFilters() {
   epcOfferSelect.innerHTML = '<option value="all">Все офферы</option>' + offers.map(o => `<option value="${escapeHtml(o)}">${escapeHtml(o)}</option>`).join('');
   if (offers.includes(curOffer)) epcOfferSelect.value = curOffer;
 
-  renderUI(); renderTables(); refreshChart(); drawExtraCharts();
+  renderUI(); renderProblemZones(); renderTables(); refreshChart(); drawExtraCharts();
   renderEPCAnalytics(); renderMatrixAnalytics(); renderPlatformCharts();
   renderMarketTable();
   renderArMatrix();
@@ -2252,6 +2348,45 @@ function renderUI() {
   renderFunnel(data, sf);
   renderRejectRevenueAnalysis(data, sf);
   markDataUpdated();
+}
+
+function renderProblemZones() {
+  const el = document.getElementById('problemZones');
+  if (!el) return;
+  const minClicks = 100;
+  const totals = metricsFromTotals(sumLeadRows(globalRawData));
+  if (!globalRawData.length || totals.clicks < minClicks) {
+    el.classList.add('hidden');
+    el.innerHTML = '';
+    return;
+  }
+  const buildRows = (field, label) => Object.entries(aggregateBy(field, 'all'))
+    .map(([name, v]) => {
+      const m = metricsFromTotals({ clicks: v.clicks, conversions: v.conversions, approved: v.approved, revenue: v.revenue });
+      const epcDrop = totals.epc > 0 ? (m.epc - totals.epc) / totals.epc * 100 : 0;
+      const arDrop = totals.approveRate > 0 ? (m.approveRate - totals.approveRate) : 0;
+      const score = (m.clicks >= minClicks && (epcDrop < -25 || arDrop < -15)) ? Math.abs(Math.min(epcDrop, 0)) + Math.abs(Math.min(arDrop, 0)) : 0;
+      return { label, name, clicks: v.clicks, revenue: v.revenue, epc: m.epc, approveRate: m.approveRate, epcDrop, arDrop, score };
+    })
+    .filter(r => r.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 4);
+  const rows = buildRows('source', 'Площадка').concat(buildRows('offer', 'Оффер'), buildRows('sub1', 'Sub1'))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 6);
+  if (!rows.length) {
+    el.classList.add('hidden');
+    el.innerHTML = '';
+    return;
+  }
+  el.classList.remove('hidden');
+  el.innerHTML = `<div class="flex flex-wrap gap-3 justify-between items-start mb-3">
+    <div><h2 class="text-white font-bold">⚠️ Проблемные зоны</h2><p class="text-xs text-slate-500 mt-1">Автосигналы по сегментам с кликами от ${minClicks.toLocaleString('ru-RU')}: EPC/Approve заметно ниже среднего периода.</p></div>
+    <div class="text-xs text-slate-400">Средний EPC: ${totals.epc.toFixed(2)} ₽ · Approve: ${totals.approveRate.toFixed(1)}%</div>
+  </div>
+  <div class="overflow-auto"><table class="w-full text-sm"><thead><tr><th>Тип</th><th>Сегмент</th><th class="text-right">Клики</th><th class="text-right">Доход</th><th class="text-right">EPC</th><th class="text-right">Δ EPC</th><th class="text-right">Approve</th></tr></thead><tbody>
+    ${rows.map(r => `<tr class="hover:bg-slate-800"><td class="text-slate-400">${escapeHtml(r.label)}</td><td>${escapeHtml(r.name || '(пусто)')}</td><td class="text-right">${r.clicks.toLocaleString('ru-RU')}</td><td class="text-right">${Math.round(r.revenue).toLocaleString('ru-RU')} ₽</td><td class="text-right">${r.epc.toFixed(2)} ₽</td><td class="text-right text-red-400">${r.epcDrop.toFixed(1)}%</td><td class="text-right">${r.approveRate.toFixed(1)}%</td></tr>`).join('')}
+  </tbody></table></div>`;
 }
 
 function renderFunnel(data, sourceFilter = 'all') {
@@ -2367,6 +2502,8 @@ function renderRejectRevenueAnalysis(data, sourceFilter = 'all') {
 }
 
 function aggregateBy(field, sourceFilter) {
+  const cacheKey = `${field}|${sourceFilter}|${globalRawData.length}`;
+  if (aggregateCache.has(cacheKey)) return aggregateCache.get(cacheKey);
   const map = {};
   for (const r of globalRawData) {
     if (sourceFilter !== 'all' && r.source !== sourceFilter) continue;
@@ -2374,6 +2511,7 @@ function aggregateBy(field, sourceFilter) {
     if (!map[key]) map[key] = {clicks:0,conversions:0,approved:0,revenue:0};
     map[key].clicks+=r.clicks; map[key].conversions+=r.conversions; map[key].approved+=r.approved; map[key].revenue+=r.revenue;
   }
+  aggregateCache.set(cacheKey, map);
   return map;
 }
 
@@ -2563,8 +2701,7 @@ async function refreshMarketData() {
   const btn = event && event.target;
   if (btn) { btn.disabled = true; btn.textContent = '⏳ Загрузка...'; }
   try {
-    const res = await fetch(`${API_BASE}?action=fetch_offers_market&token=${HARDCODED_TOKEN}`);
-    const json = await res.json();
+    const json = await fetchJsonSafe(buildApiUrl(withLeadsToken({ action: 'fetch_offers_market' })));
     if (json.error) throw new Error(json.error);
     await loadOfferMarketData();
     renderMarketTable();
@@ -5384,8 +5521,7 @@ async function loadEventsLog() {
 }
 async function refreshEventsLog() {
   try {
-    const res = await fetch(`${API_BASE}?action=fetch_notifications&token=${HARDCODED_TOKEN}`);
-    const json = await res.json();
+    const json = await fetchJsonSafe(buildApiUrl(withLeadsToken({ action: 'fetch_notifications' })));
     if (json.error) alert('Ошибка: ' + (json.details || json.error));
   } catch(e) { console.warn(e); }
   await loadEventsLog();
@@ -5394,13 +5530,21 @@ async function refreshEventsLog() {
 // ========================== TELEGRAM SETTINGS ==========================
 async function loadTgSettings() {
   try {
-    const res = await fetch(`${API_BASE}?action=get_settings`);
-    const json = await res.json();
+    const json = await fetchJsonSafe(buildApiUrl({ action: 'get_settings' }));
     if (json.status !== 'success') return;
     const d = json.data || {};
     if (d.tg_bot_token === '***SET***') document.getElementById('tgBotToken').placeholder = '••• уже задан, оставьте пустым чтобы не менять';
     if (d.tg_chat_id) document.getElementById('tgChatId').value = d.tg_chat_id;
     if (d.monthly_revenue_plan) document.getElementById('monthlyRevenuePlan').value = d.monthly_revenue_plan;
+    const leadsInput = document.getElementById('leadsApiToken');
+    const leadsStatus = document.getElementById('leadsTokenStatus');
+    if (d.leads_api_token === '***SET***') {
+      if (leadsInput) leadsInput.placeholder = '••• уже задан, оставьте пустым чтобы не менять';
+      if (leadsStatus) { leadsStatus.textContent = '✅ Токен сохранён на сервере.'; leadsStatus.className = 'text-xs text-emerald-400'; }
+    } else if (leadsStatus) {
+      leadsStatus.textContent = LEGACY_LEADS_TOKEN ? '⚠️ Серверный токен не задан, используется legacy fallback из фронта.' : '⚠️ Токен не задан.';
+      leadsStatus.className = 'text-xs text-amber-400';
+    }
     const aiKeyInput = document.getElementById('aiApiKey');
     const aiKeyStatus = document.getElementById('aiKeyStatus');
     if (d.ai_api_key === '***SET***') {
@@ -5422,10 +5566,9 @@ async function saveTgSettings() {
   payload.monthly_revenue_plan = plan || '0';
   const msg = document.getElementById('tgMessage');
   try {
-    const res = await fetch(`${API_BASE}?action=save_settings`, {
+    const json = await fetchJsonSafe(buildApiUrl({ action: 'save_settings' }), {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
     });
-    const json = await res.json();
     if (json.status === 'success') {
       msg.textContent = '✅ Сохранено';
       msg.className = 'mt-3 text-sm text-emerald-400';
@@ -5435,6 +5578,34 @@ async function saveTgSettings() {
       throw new Error(json.error || 'unknown');
     }
   } catch(e) {
+    msg.textContent = '❌ Ошибка: ' + e.message;
+    msg.className = 'mt-3 text-sm text-red-400';
+  }
+  msg.classList.remove('hidden');
+  setTimeout(() => msg.classList.add('hidden'), 4000);
+}
+
+async function saveLeadsToken() {
+  const key = document.getElementById('leadsApiToken').value.trim();
+  const msg = document.getElementById('leadsTokenMessage');
+  if (!key) {
+    msg.textContent = '⚠️ Введите токен перед сохранением.';
+    msg.className = 'mt-3 text-sm text-amber-400';
+    msg.classList.remove('hidden');
+    setTimeout(() => msg.classList.add('hidden'), 4000);
+    return;
+  }
+  try {
+    const json = await fetchJsonSafe(buildApiUrl({ action: 'save_settings' }), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ leads_api_token: key })
+    });
+    if (json.status !== 'success') throw new Error(json.error || 'unknown');
+    msg.textContent = '✅ Leads.su токен сохранён на сервере.';
+    msg.className = 'mt-3 text-sm text-emerald-400';
+    document.getElementById('leadsApiToken').value = '';
+    await loadTgSettings();
+    await updateHealthBadge();
+  } catch (e) {
     msg.textContent = '❌ Ошибка: ' + e.message;
     msg.className = 'mt-3 text-sm text-red-400';
   }
@@ -5456,10 +5627,9 @@ async function saveAiKey() {
   msg.className = 'mt-3 text-sm text-blue-400';
   msg.classList.remove('hidden');
   try {
-    const res = await fetch(`${API_BASE}?action=save_settings`, {
+    const json = await fetchJsonSafe(buildApiUrl({ action: 'save_settings' }), {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ai_api_key: key })
     });
-    const json = await res.json();
     if (json.status === 'success') {
       msg.textContent = '✅ Ключ сохранён. Нажмите «🔌 Проверить связь», чтобы убедиться, что DeepSeek отвечает.';
       msg.className = 'mt-3 text-sm text-emerald-400';
@@ -5521,8 +5691,7 @@ async function checkTgAlertsNow() {
   msg.className = 'mt-3 text-sm text-blue-400';
   msg.classList.remove('hidden');
   try {
-    const res = await fetch(`${API_BASE}?action=tg_check_alerts`);
-    const json = await res.json();
+    const json = await fetchJsonSafe(buildApiUrl({ action: 'tg_check_alerts' }));
     msg.textContent = `✅ Проверено: ${json.checked || 0} · отправлено: ${json.sent || 0} · пропущено (антиспам/нет настроек): ${json.skipped || 0}`;
     msg.className = 'mt-3 text-sm text-emerald-400';
   } catch(e) {
@@ -5815,6 +5984,7 @@ window.addEventListener('DOMContentLoaded', () => {
   loadTgSettings();
   loadEventsLog();
   updateAiKeyIndicator();
+  updateHealthBadge();
   // «Обновлено N минут назад» — обновляем метку раз в минуту.
   updateLastUpdatedLabel();
   setInterval(updateLastUpdatedLabel, 60 * 1000);
