@@ -2943,11 +2943,11 @@ if ($action === 'ym_fetch_banner') {
     $impressionGoalId = $YM_IMPRESSION_GOAL_ID;
     $clickGoalId = $YM_CLICK_GOAL_ID;
 
-    // Запрос данных по обеим целям (показы и клики)
-    // Используем goalXvisits (целевые визиты) — соответствует данным в интерфейсе Яндекс.Метрики.
-    // goalXreaches считает все достижения цели (включая повторные в одном визите),
-    // а goalXvisits — количество визитов, в которых цель была достигнута хотя бы раз.
-    $metrics = "ym:s:goal{$impressionGoalId}visits,ym:s:goal{$clickGoalId}visits";
+    // Запрос данных по обеим целям (показы и клики).
+    // Используем goalXusers: уникальные целевые посетители/хосты, а не goalXvisits
+    // (целевые визиты/сессии). Это исключает повторные визиты одного пользователя
+    // из базы конверсии баннера.
+    $metrics = "ym:s:goal{$impressionGoalId}users,ym:s:goal{$clickGoalId}users";
     $apiUrl = "https://api-metrika.yandex.net/stat/v1/data"
         . "?ids={$counterId}"
         . "&metrics=" . urlencode($metrics)
@@ -2987,7 +2987,7 @@ if ($action === 'ym_fetch_banner') {
         if ($stmt->execute()) $saved++;
     }
 
-    echo json_encode(['status' => 'success', 'saved' => $saved, 'impression_goal_id' => $impressionGoalId, 'click_goal_id' => $clickGoalId]);
+    echo json_encode(['status' => 'success', 'saved' => $saved, 'metric_basis' => 'target_unique_visitors', 'impression_goal_id' => $impressionGoalId, 'click_goal_id' => $clickGoalId]);
     exit;
 }
 
