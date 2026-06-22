@@ -501,6 +501,51 @@
     }
     @keyframes toastIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 
+    /* ==================== Воронка и План/Факт ==================== */
+    .funnel-visual { display: flex; flex-direction: column; gap: 10px; }
+    .funnel-stage {
+      background: var(--surface-thin);
+      border: 1px solid var(--border);
+      border-radius: var(--r-card);
+      padding: 12px;
+      overflow: hidden;
+    }
+    .funnel-stage-bar, .pf-bar {
+      height: 8px;
+      border-radius: 980px;
+      background: var(--surface-thin);
+      overflow: hidden;
+    }
+    .funnel-stage-fill, .pf-fill {
+      height: 100%;
+      width: 0;
+      border-radius: 980px;
+      transition: width var(--t-base) var(--ease-apple);
+    }
+    .funnel-stage-fill { background: var(--accent); }
+    .funnel-badge {
+      align-self: center;
+      border-radius: 980px;
+      background: var(--accent-soft);
+      color: var(--text);
+      border: 1px solid var(--border);
+      padding: 4px 10px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+    .pf-bars { min-width: 130px; }
+    .pf-plan .pf-fill { background: rgba(142,142,147,.45); }
+    .pf-fact.ok .pf-fill { background: var(--ok); }
+    .pf-fact.bad .pf-fill { background: var(--bad); }
+    .pf-insight {
+      border-radius: var(--r-card);
+      border: 1px solid rgba(255,159,10,.28);
+      background: rgba(255,159,10,.10);
+      color: var(--text);
+      padding: 12px 14px;
+      font-size: 14px;
+    }
+
     /* ==================== СВЕТЛАЯ ТЕМА: компенсация Tailwind dark utility ==================== */
     [data-theme="light"] .text-slate-200 { color: #1D1D1F !important; }
     [data-theme="light"] .text-slate-300 { color: #1D1D1F !important; }
@@ -619,6 +664,7 @@
     <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
       <div class="card">
         <h2 class="text-white font-bold mb-4">Площадки</h2>
+        <div id="planFactInsight" class="pf-insight hidden mb-4"></div>
         <div class="overflow-auto" style="max-height:500px">
           <table class="w-full text-sm" id="sourceTable"><thead><tr>
             <th class="sort-th" onclick="sortTable('sourceTable','name')">Площадка ↕</th>
@@ -627,6 +673,7 @@
             <th class="sort-th text-right" onclick="sortTable('sourceTable','approveRate')">Approve % ↕</th>
             <th class="sort-th text-right" onclick="sortTable('sourceTable','revenue')">Доход ↕</th>
             <th class="sort-th text-right" onclick="sortTable('sourceTable','epc')">EPC ↕</th>
+            <th class="text-right">План/Факт</th>
           </tr></thead><tbody></tbody></table>
         </div>
       </div>
@@ -843,6 +890,7 @@
         <button onclick="renderCompareTab()" class="bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-semibold rounded px-4 py-1.5">Сравнить</button>
       </div>
       <p class="text-sm text-slate-400 mb-4" id="comparePeriodLabel"></p>
+      <div id="comparePlanFactInsight" class="pf-insight hidden mb-4"></div>
       <div id="compareKpiGrid" class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-4"></div>
     </div>
     <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
@@ -906,11 +954,11 @@
             <option value="month">По месяцам</option>
           </select>
           <select id="bannerChartMetric" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm focus:outline-none" onchange="renderBannerChart()">
-            <option value="all">Показы + Клики + Конверсия</option>
-            <option value="impressions">Показы</option>
-            <option value="clicks">Клики</option>
+            <option value="all">Показы + Уникальные посетители + Конверсия</option>
+            <option value="impressions">Показы (хосты)</option>
+            <option value="clicks">Уникальные посетители</option>
             <option value="conversion">Конверсия (%)</option>
-            <option value="imp_clicks">Показы + Клики</option>
+            <option value="imp_clicks">Показы + Уникальные посетители</option>
           </select>
         </div>
       </div>
@@ -918,7 +966,7 @@
     </div>
     <div class="card">
       <h2 class="text-white font-bold mb-4">🔗 Яндекс.Метрика — автозагрузка баннерной статистики</h2>
-      <p class="text-sm text-slate-400 mb-4">Подключите Яндекс.Метрику для автоматической загрузки данных по целям (Показы и Клики по баннеру).</p>
+      <p class="text-sm text-slate-400 mb-4">Подключите Яндекс.Метрику для автоматической загрузки данных по целям (Показы и уникальные посетители/хосты баннера).</p>
       <div id="ymStatusBlock" class="mb-4">
         <div id="ymNotConnected" class="flex flex-wrap gap-4 items-end">
           <div>
@@ -941,7 +989,7 @@
     </div>
     <div class="card">
       <h2 class="text-white font-bold mb-4">📊 Загрузка статистики баннера (Excel)</h2>
-      <p class="text-sm text-slate-400 mb-4">Файл должен содержать колонки: Дата (YYYY-MM-DD), Показы, Переходы</p>
+      <p class="text-sm text-slate-400 mb-4">Файл должен содержать колонки: Дата (YYYY-MM-DD), Показы, Уникальные посетители / Хосты</p>
       <div class="flex flex-wrap gap-4 items-end">
         <div class="flex-1"><input type="file" id="bannerExcelFile" accept=".xlsx, .xls, .csv" class="bg-slate-800 border border-slate-700 rounded px-3 py-2 w-full"></div>
         <button id="uploadBannerBtn" class="btn">📤 Загрузить и обновить</button>
@@ -1205,6 +1253,8 @@ let originalData = [];
 let globalRawData = [];
 let bouncesData = [];
 let bannerData = [];
+let planBaselineData = [];
+let planFactState = { from: '', to: '', baselineFrom: '', baselineTo: '', days: 0 };
 let offerMarketMap = {}; // offer_id → { name, market_epc, market_cr, market_ar, your_epc, your_cr }
 let offerMarketByName = {}; // offer_name → market data (для рядов без offer_id из старой БД)
 
@@ -1391,6 +1441,79 @@ function mergeSourceName(name) {
   return cleaned;
 }
 
+function daysBetweenInclusive(from, to) {
+  if (!from || !to) return 0;
+  return Math.max(1, Math.round((new Date(to) - new Date(from)) / 86400000) + 1);
+}
+
+function sumLeadRows(rows) {
+  return (rows || []).reduce((a, r) => {
+    a.clicks += Number(r.clicks) || 0;
+    a.conversions += Number(r.conversions) || 0;
+    a.approved += Number(r.approved) || 0;
+    a.revenue += Number(r.revenue) || 0;
+    if ((Number(r.revenue) || 0) > 0) a.issued += Number(r.approved) || 0;
+    return a;
+  }, { clicks: 0, conversions: 0, approved: 0, issued: 0, revenue: 0 });
+}
+
+function metricsFromTotals(t) {
+  return {
+    clicks: t.clicks || 0,
+    conversions: t.conversions || 0,
+    approved: t.approved || 0,
+    revenue: t.revenue || 0,
+    epc: t.clicks ? t.revenue / t.clicks : 0,
+    cr: t.clicks ? t.conversions / t.clicks * 100 : 0,
+    approveRate: t.conversions ? t.approved / t.conversions * 100 : 0
+  };
+}
+
+function planFromRows(rows, periodDays) {
+  const baselineDays = Math.max(1, new Set((rows || []).map(r => r.date)).size);
+  const totals = sumLeadRows(rows || []);
+  return {
+    clicks: totals.clicks / baselineDays * periodDays,
+    conversions: totals.conversions / baselineDays * periodDays,
+    approved: totals.approved / baselineDays * periodDays,
+    revenue: totals.revenue / baselineDays * periodDays,
+    epc: totals.clicks ? totals.revenue / totals.clicks : 0,
+    cr: totals.clicks ? totals.conversions / totals.clicks * 100 : 0,
+    approveRate: totals.conversions ? totals.approved / totals.conversions * 100 : 0
+  };
+}
+
+function planFactBar(fact, plan, fmt = v => Math.round(v).toLocaleString('ru-RU')) {
+  if (!plan || plan <= 0) return '<span class="text-slate-500">—</span>';
+  const factPct = Math.min(100, Math.max(0, fact / plan * 100));
+  const ok = fact >= plan;
+  return `<div class="pf-bars">
+    <div class="flex justify-between text-[10px] text-slate-500 mb-1"><span>План ${fmt(plan)}</span><span>Факт ${fmt(fact)}</span></div>
+    <div class="pf-bar pf-plan mb-1"><div class="pf-fill" style="width:100%"></div></div>
+    <div class="pf-bar pf-fact ${ok ? 'ok' : 'bad'}"><div class="pf-fill" style="width:${factPct.toFixed(1)}%"></div></div>
+  </div>`;
+}
+
+function buildPlanFactInsight(factRows, baselineRows) {
+  const periodDays = planFactState.days || 1;
+  const fact = metricsFromTotals(sumLeadRows(factRows));
+  const plan = planFromRows(baselineRows, periodDays);
+  if (!plan.revenue || fact.revenue >= plan.revenue) return '';
+  const sources = [...new Set(factRows.map(r => r.source).concat(baselineRows.map(r => r.source)).filter(Boolean))];
+  let worst = null;
+  for (const src of sources) {
+    const fRows = factRows.filter(r => r.source === src);
+    const bRows = baselineRows.filter(r => r.source === src);
+    const f = metricsFromTotals(sumLeadRows(fRows));
+    const p = planFromRows(bRows, periodDays);
+    const delta = f.revenue - p.revenue;
+    if (p.revenue > 0 && (!worst || delta < worst.delta)) worst = { source: src, fact: f, plan: p, delta };
+  }
+  const gapPct = plan.revenue > 0 ? (plan.revenue - fact.revenue) / plan.revenue * 100 : 0;
+  if (!worst) return `⚠️ Фактический доход ниже нормы на ${gapPct.toFixed(1)}%. Недостаточно исторических данных, чтобы выделить площадку-причину.`;
+  return `⚠️ Фактический доход ниже нормы на ${gapPct.toFixed(1)}%. Основная причина: просадка по площадке ${escapeHtml(worst.source)} (EPC упал с ${worst.plan.epc.toFixed(2)} ₽ до ${worst.fact.epc.toFixed(2)} ₽).`;
+}
+
 // ========================== ЗАГРУЗКА ДАННЫХ ИЗ LEADS.SU ==========================
 async function fetchJSON(url, attempt = 0) {
   const res = await fetch(url, { method: 'GET', headers: { Accept: 'application/json' }});
@@ -1439,6 +1562,36 @@ async function fetchSavedStats(start, end) {
     if (json.status === 'success' && json.data.length) return json.data;
   } catch(e) { console.warn(e); }
   return null;
+}
+
+async function fetchStatsRange(start, end) {
+  const rows = await fetchSavedStats(start, end);
+  if (!rows || !rows.length) return [];
+  return rows.map(row => ({
+    date: row.date,
+    offer: row.offer_name || 'Unknown',
+    offer_id: row.offer_id || '',
+    source: mergeSourceName(row.source_name),
+    source_id: row.source_id || 'all',
+    sub1: row.sub1 || '',
+    clicks: Number(row.clicks) || 0,
+    raw_clicks: Number(row.raw_clicks || row.clicks) || 0,
+    conversions: Number(row.conversions) || 0,
+    approved: Number(row.approved) || 0,
+    revenue: Number(row.revenue) || 0
+  }));
+}
+
+async function fetchBouncesStats(start, end) {
+  try {
+    const res = await fetch(`${API_BASE}?action=get_bounces&start_date=${start}&end_date=${end}`);
+    const json = await res.json();
+    bouncesData = (json.status === 'success' && Array.isArray(json.data)) ? json.data.map(r => ({
+      date: r.date,
+      source: mergeSourceName(r.source_name),
+      bounces: Number(r.bounces) || 0
+    })) : [];
+  } catch(e) { console.warn('fetchBouncesStats:', e); bouncesData = []; }
 }
 
 function processDataFromDb(rows) {
@@ -1895,8 +2048,8 @@ function renderBannerKPI() {
   const avgConv = bannerData.length ? (bannerData.reduce((s,d) => s + d.conversion_rate, 0) / bannerData.length) : 0;
   const c = document.getElementById('bannerKpiCards');
   if (c) c.innerHTML = `
-    <div class="card"><div class="text-slate-400 text-xs uppercase">Показы</div><div class="text-3xl font-black mt-2">${totalImpressions.toLocaleString('ru-RU')}</div></div>
-    <div class="card"><div class="text-slate-400 text-xs uppercase">Переходы</div><div class="text-3xl font-black mt-2">${totalClicks.toLocaleString('ru-RU')}</div></div>
+    <div class="card"><div class="text-slate-400 text-xs uppercase">Показы (хосты)</div><div class="text-3xl font-black mt-2">${totalImpressions.toLocaleString('ru-RU')}</div></div>
+    <div class="card"><div class="text-slate-400 text-xs uppercase">Уникальные посетители</div><div class="text-3xl font-black mt-2">${totalClicks.toLocaleString('ru-RU')}</div></div>
     <div class="card"><div class="text-slate-400 text-xs uppercase">Общая конверсия</div><div class="text-3xl font-black mt-2">${overallConv.toFixed(2)}%</div></div>
     <div class="card"><div class="text-slate-400 text-xs uppercase">Средняя конверсия</div><div class="text-3xl font-black mt-2">${avgConv.toFixed(2)}%</div></div>`;
 }
@@ -1936,13 +2089,13 @@ function renderBannerChart() {
   let scalesConfig = {};
   if (metric === 'impressions') {
     datasets = [{
-      label: 'Показы', data: series.map(s => s.impressions),
+      label: 'Показы (хосты)', data: series.map(s => s.impressions),
       borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,0.1)', fill: true, tension: 0.3, pointRadius: 3
     }];
     scalesConfig = { y: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } } };
   } else if (metric === 'clicks') {
     datasets = [{
-      label: 'Клики', data: series.map(s => s.clicks),
+      label: 'Уникальные посетители', data: series.map(s => s.clicks),
       borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,0.1)', fill: true, tension: 0.3, pointRadius: 3
     }];
     scalesConfig = { y: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } } };
@@ -1954,15 +2107,15 @@ function renderBannerChart() {
     scalesConfig = { y: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } } };
   } else if (metric === 'imp_clicks') {
     datasets = [
-      { label: 'Показы', data: series.map(s => s.impressions), borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,0.1)', fill: true, tension: 0.3, pointRadius: 3, yAxisID: 'y' },
-      { label: 'Клики', data: series.map(s => s.clicks), borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,0.1)', fill: true, tension: 0.3, pointRadius: 3, yAxisID: 'y' }
+      { label: 'Показы (хосты)', data: series.map(s => s.impressions), borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,0.1)', fill: true, tension: 0.3, pointRadius: 3, yAxisID: 'y' },
+      { label: 'Уникальные посетители', data: series.map(s => s.clicks), borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,0.1)', fill: true, tension: 0.3, pointRadius: 3, yAxisID: 'y' }
     ];
     scalesConfig = { y: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } } };
   } else {
     // "all" — show impressions + clicks on left axis, conversion on right axis
     datasets = [
-      { label: 'Показы', data: series.map(s => s.impressions), borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,0.08)', fill: true, tension: 0.3, pointRadius: 3, yAxisID: 'y' },
-      { label: 'Клики', data: series.map(s => s.clicks), borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,0.08)', fill: true, tension: 0.3, pointRadius: 3, yAxisID: 'y' },
+      { label: 'Показы (хосты)', data: series.map(s => s.impressions), borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,0.08)', fill: true, tension: 0.3, pointRadius: 3, yAxisID: 'y' },
+      { label: 'Уникальные посетители', data: series.map(s => s.clicks), borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,0.08)', fill: true, tension: 0.3, pointRadius: 3, yAxisID: 'y' },
       { label: 'Конверсия (%)', data: series.map(s => s.conversion_rate), borderColor: '#f97316', borderDash: [5, 5], tension: 0.3, pointRadius: 3, yAxisID: 'y1' }
     ];
     scalesConfig = {
@@ -1994,7 +2147,14 @@ async function applyGlobalFilters() {
   const dFrom = document.getElementById('dateFrom').value || '2000-01-01';
   const dTo = document.getElementById('dateTo').value || '2099-01-01';
   globalRawData = originalData.filter(r => r.date >= dFrom && r.date <= dTo);
-  await fetchBannerStats(dFrom, dTo);
+  const baselineTo = isoShift(dFrom, -1);
+  const baselineFrom = isoShift(dFrom, -90);
+  planFactState = { from: dFrom, to: dTo, baselineFrom, baselineTo, days: daysBetweenInclusive(dFrom, dTo) };
+  await Promise.all([
+    fetchBannerStats(dFrom, dTo),
+    fetchBouncesStats(dFrom, dTo),
+    fetchStatsRange(baselineFrom, baselineTo).then(rows => { planBaselineData = rows; })
+  ]);
   renderBannerKPI(); renderBannerChart();
 
   const sources = [...new Set(globalRawData.map(r => r.source))].sort();
@@ -2036,26 +2196,64 @@ function renderUI() {
   let data = [...globalRawData];
   if (sf !== 'all') data = data.filter(r => r.source === sf);
   if (sub1f !== 'all') data = data.filter(r => r.sub1 === sub1f);
-  const t = data.reduce((a,i) => { a.clicks+=i.clicks; a.conversions+=i.conversions; a.approved+=i.approved; a.revenue+=i.revenue; return a; }, {clicks:0,conversions:0,approved:0,revenue:0});
+  const t = sumLeadRows(data);
   const cr = t.clicks ? (t.conversions/t.clicks*100) : 0;
   const ar = t.conversions ? (t.approved/t.conversions*100) : 0;
   const epc = t.clicks ? (t.revenue/t.clicks) : 0;
+  let baseline = [...planBaselineData];
+  if (sf !== 'all') baseline = baseline.filter(r => r.source === sf);
+  if (sub1f !== 'all') baseline = baseline.filter(r => r.sub1 === sub1f);
+  const plan = planFromRows(baseline, planFactState.days || 1);
+  const kpiCard = (title, valueHtml, fact, planValue, fmt) => `<div class="card">
+    <div class="text-slate-400 text-xs uppercase">${title}</div>
+    <div class="text-3xl font-black mt-2">${valueHtml}</div>
+    <div class="mt-3">${planFactBar(fact, planValue, fmt)}</div>
+  </div>`;
   const noDataHint = !globalRawData.length ? '<div class="col-span-full text-center text-slate-500 text-sm py-2">Нет данных за выбранный период. Нажмите «⚡ Загрузить из кабинета» для загрузки.</div>' : '';
   document.getElementById('kpiCards').innerHTML = noDataHint + `
-    <div class="card"><div class="text-slate-400 text-xs uppercase">Клики</div><div class="text-3xl font-black mt-2">${t.clicks.toLocaleString('ru-RU')}</div></div>
-    <div class="card"><div class="text-slate-400 text-xs uppercase">Лиды</div><div class="text-3xl font-black mt-2">${t.conversions.toLocaleString('ru-RU')}</div></div>
-    <div class="card"><div class="text-slate-400 text-xs uppercase">Approve %</div><div class="text-3xl font-black mt-2">${ar.toFixed(2)}%</div></div>
-    <div class="card"><div class="text-slate-400 text-xs uppercase">Доход (₽)</div><div class="text-3xl font-black mt-2">${Math.round(t.revenue).toLocaleString('ru-RU')} ₽</div></div>
-    <div class="card"><div class="text-slate-400 text-xs uppercase">EPC</div><div class="text-3xl font-black mt-2 text-emerald-400">${epc.toFixed(2)} ₽</div></div>
-    <div class="card"><div class="text-slate-400 text-xs uppercase">CR %</div><div class="text-3xl font-black mt-2">${cr.toFixed(2)}%</div></div>`;
-  document.getElementById('funnelBox').innerHTML = `
-    <div class="flex justify-between"><span>Клики:</span><strong>${t.clicks.toLocaleString('ru-RU')}</strong></div>
-    <div class="flex justify-between"><span>Лиды:</span><strong>${t.conversions.toLocaleString('ru-RU')}</strong></div>
-    <div class="flex justify-between"><span>Approve:</span><strong>${t.approved.toLocaleString('ru-RU')}</strong></div>
-    <div class="flex justify-between"><span>CR:</span><strong>${cr.toFixed(2)}%</strong></div>
-    <div class="flex justify-between"><span>Approve Rate:</span><strong>${ar.toFixed(2)}%</strong></div>
-    <div class="flex justify-between"><span>EPC:</span><strong>${epc.toFixed(2)} ₽</strong></div>`;
+    ${kpiCard('Клики', t.clicks.toLocaleString('ru-RU'), t.clicks, plan.clicks, v => Math.round(v).toLocaleString('ru-RU'))}
+    ${kpiCard('Лиды', t.conversions.toLocaleString('ru-RU'), t.conversions, plan.conversions, v => Math.round(v).toLocaleString('ru-RU'))}
+    ${kpiCard('Approve %', ar.toFixed(2) + '%', ar, plan.approveRate, v => v.toFixed(1) + '%')}
+    ${kpiCard('Доход (₽)', Math.round(t.revenue).toLocaleString('ru-RU') + ' ₽', t.revenue, plan.revenue, v => Math.round(v).toLocaleString('ru-RU') + ' ₽')}
+    ${kpiCard('EPC', `<span class="text-emerald-400">${epc.toFixed(2)} ₽</span>`, epc, plan.epc, v => v.toFixed(2) + ' ₽')}
+    ${kpiCard('CR %', cr.toFixed(2) + '%', cr, plan.cr, v => v.toFixed(1) + '%')}`;
+  renderFunnel(data, sf);
   markDataUpdated();
+}
+
+function renderFunnel(data, sourceFilter = 'all') {
+  const box = document.getElementById('funnelBox');
+  if (!box) return;
+  const sourceBounces = bouncesData.filter(r => sourceFilter === 'all' || r.source === sourceFilter);
+  const rejectBase = sourceBounces.reduce((s, r) => s + r.bounces, 0);
+  const t = sumLeadRows(data);
+  const base = rejectBase || t.clicks;
+  const stages = [
+    { label: 'Получен отказ (база)', value: base, hint: rejectBase ? 'из базы отказов' : 'fallback: клики' },
+    { label: 'Клик по витрине/роутеру', value: t.clicks },
+    { label: 'Оформлена заявка', value: t.conversions },
+    { label: 'Одобрено (Approve)', value: t.approved },
+    { label: 'Выдано (Issue)', value: t.issued }
+  ];
+  const max = Math.max(1, stages[0].value || 0);
+  const micro = (a, b) => a > 0 ? (b / a * 100) : 0;
+  const macroApprove = base > 0 ? (t.approved / base * 100) : 0;
+  const macroIssue = base > 0 ? (t.issued / base * 100) : 0;
+  const stageHtml = stages.map((s, idx) => {
+    const width = Math.min(100, Math.max(0, s.value / max * 100));
+    const badge = idx < stages.length - 1
+      ? `<div class="funnel-badge">→ ${micro(s.value, stages[idx + 1].value).toFixed(1)}%</div>` : '';
+    return `<div class="funnel-stage">
+      <div class="flex justify-between gap-3 mb-2"><span>${escapeHtml(s.label)}</span><strong>${Math.round(s.value).toLocaleString('ru-RU')}</strong></div>
+      <div class="funnel-stage-bar"><div class="funnel-stage-fill" style="width:${width.toFixed(1)}%"></div></div>
+      ${s.hint ? `<div class="text-[10px] text-slate-500 mt-1">${escapeHtml(s.hint)}</div>` : ''}
+    </div>${badge}`;
+  }).join('');
+  box.innerHTML = `<div class="funnel-visual">${stageHtml}</div>
+    <div class="grid grid-cols-2 gap-2 mt-3 text-xs">
+      <div class="rounded-xl border border-slate-700 bg-slate-900/40 p-3"><div class="text-slate-400">CR Reject → Approve</div><div class="text-lg font-bold text-emerald-400">${macroApprove.toFixed(2)}%</div></div>
+      <div class="rounded-xl border border-slate-700 bg-slate-900/40 p-3"><div class="text-slate-400">CR Reject → Issue</div><div class="text-lg font-bold text-blue-400">${macroIssue.toFixed(2)}%</div></div>
+    </div>`;
 }
 
 function aggregateBy(field, sourceFilter) {
@@ -2089,7 +2287,11 @@ function renderTables() {
     if (typeof va==='string') return sc.desc ? vb.localeCompare(va) : va.localeCompare(vb);
     return sc.desc ? vb-va : va-vb;
   });
-  let sRows = Object.entries(srcMap).map(([n,v]) => ({name:n, clicks:v.clicks, conversions:v.conversions, approved:v.approved, revenue:v.revenue, epc:v.clicks?(v.revenue/v.clicks):0, approveRate:v.conversions?(v.approved/v.conversions*100):0}));
+  let sRows = Object.entries(srcMap).map(([n,v]) => {
+    const baseline = planBaselineData.filter(r => r.source === n);
+    const plan = planFromRows(baseline, planFactState.days || 1);
+    return {name:n, clicks:v.clicks, conversions:v.conversions, approved:v.approved, revenue:v.revenue, epc:v.clicks?(v.revenue/v.clicks):0, approveRate:v.conversions?(v.approved/v.conversions*100):0, plan};
+  });
   let oRows = Object.entries(offMap).map(([n,v]) => {
     const epc = v.clicks ? (v.revenue/v.clicks) : 0;
     const market = (v.offer_id && offerMarketMap[v.offer_id]) || offerMarketByName[n] || null;
@@ -2102,7 +2304,13 @@ function renderTables() {
   });
   doSort(sRows, tableSort.sourceTable);
   doSort(oRows, tableSort.offerTable);
-  document.querySelector('#sourceTable tbody').innerHTML = sRows.map(r => `<tr class="hover:bg-slate-800"><td>${escapeHtml(r.name)}</td><td class="text-right">${r.clicks.toLocaleString('ru-RU')}</td><td class="text-right">${r.conversions.toLocaleString('ru-RU')}</td><td class="text-right">${r.approveRate.toFixed(1)}%</td><td class="text-right">${Math.round(r.revenue).toLocaleString('ru-RU')} ₽</td><td class="text-right font-semibold">${r.epc.toFixed(2)} ₽</td></tr>`).join('');
+  const insightEl = document.getElementById('planFactInsight');
+  if (insightEl) {
+    const insight = buildPlanFactInsight(globalRawData, planBaselineData);
+    insightEl.innerHTML = insight;
+    insightEl.classList.toggle('hidden', !insight);
+  }
+  document.querySelector('#sourceTable tbody').innerHTML = sRows.map(r => `<tr class="hover:bg-slate-800"><td>${escapeHtml(r.name)}</td><td class="text-right">${r.clicks.toLocaleString('ru-RU')}</td><td class="text-right">${r.conversions.toLocaleString('ru-RU')}</td><td class="text-right">${r.approveRate.toFixed(1)}%</td><td class="text-right">${Math.round(r.revenue).toLocaleString('ru-RU')} ₽</td><td class="text-right font-semibold">${r.epc.toFixed(2)} ₽</td><td class="text-right">${planFactBar(r.revenue, r.plan.revenue, v => Math.round(v).toLocaleString('ru-RU') + ' ₽')}</td></tr>`).join('');
   document.querySelector('#offerTable tbody').innerHTML = oRows.map(r => {
     let cc='text-red-400';
     if(r.epc>=80&&r.epc<100)cc='text-yellow-400';else if(r.epc>=100&&r.epc<140)cc='text-green-500';else if(r.epc>=140)cc='text-emerald-300';
@@ -4869,15 +5077,8 @@ async function renderCompareTab() {
   // тогда originalData не содержит нужных строк, и приходится тащить через API.
   const inMemory = (from, to) => originalData.filter(r => r.date >= from && r.date <= to);
   const fetchRange = async (from, to) => {
-    try {
-      const res = await fetch(`${API_BASE}?action=get_stats&start_date=${from}&end_date=${to}`);
-      const json = await res.json();
-      if (json.status !== 'success') return [];
-      return json.data.map(row => ({
-        date: row.date, offer: row.offer_name || 'Unknown', offer_id: row.offer_id || '',
-        clicks: row.clicks, conversions: row.conversions, approved: row.approved, revenue: row.revenue
-      }));
-    } catch(e) { console.warn('Compare fetch error:', e); return []; }
+    try { return await fetchStatsRange(from, to); }
+    catch(e) { console.warn('Compare fetch error:', e); return []; }
   };
 
   const dashFrom = document.getElementById('dateFrom').value;
@@ -4885,6 +5086,11 @@ async function renderCompareTab() {
   const curInMem = dashFrom && dashTo && dFrom >= dashFrom && dTo <= dashTo;
   const cur  = curInMem ? inMemory(dFrom, dTo) : await fetchRange(dFrom, dTo);
   const prev = await fetchRange(prevFrom, prevTo);
+  const compareBaselineFrom = isoShift(dFrom, -90);
+  const compareBaselineTo = isoShift(dFrom, -1);
+  const compareBaseline = (compareBaselineFrom === planFactState.baselineFrom && compareBaselineTo === planFactState.baselineTo)
+    ? planBaselineData
+    : await fetchRange(compareBaselineFrom, compareBaselineTo);
 
   const sumKpi = arr => arr.reduce((a, r) => {
     a.clicks += r.clicks; a.conversions += r.conversions; a.approved += r.approved; a.revenue += r.revenue; return a;
@@ -4894,8 +5100,9 @@ async function renderCompareTab() {
   const pAr = p.conversions ? (p.approved / p.conversions * 100) : 0;
   const cEpc = c.clicks ? (c.revenue / c.clicks) : 0;
   const pEpc = p.clicks ? (p.revenue / p.clicks) : 0;
+  const plan = planFromRows(compareBaseline, daysBetweenInclusive(dFrom, dTo));
 
-  const card = (title, curVal, prevVal, fmt) => {
+  const card = (title, curVal, prevVal, fmt, planVal = null) => {
     const cs = fmt(curVal), ps = fmt(prevVal);
     let dPct = 0;
     if (prevVal !== 0) dPct = (curVal - prevVal) / Math.abs(prevVal) * 100;
@@ -4906,6 +5113,7 @@ async function renderCompareTab() {
       <div class="text-slate-400 text-xs uppercase">${title}</div>
       <div class="text-2xl font-black mt-2">${cs}</div>
       <div class="text-xs text-slate-500 mt-1">было: ${ps}</div>
+      ${planVal !== null ? `<div class="mt-2">${planFactBar(curVal, planVal, fmt)}</div>` : ''}
       <div class="text-sm font-semibold mt-1 ${cls}">${arrow} ${sign}${dPct.toFixed(1)}%</div>
     </div>`;
   };
@@ -4914,12 +5122,21 @@ async function renderCompareTab() {
   const fmtP = v => v.toFixed(2) + '%';
   const fmtE = v => v.toFixed(2) + ' ₽';
   document.getElementById('compareKpiGrid').innerHTML =
-    card('Доход', c.revenue, p.revenue, fmtR) +
-    card('Клики', c.clicks, p.clicks, fmtN) +
-    card('Лиды', c.conversions, p.conversions, fmtN) +
-    card('Approve %', cAr, pAr, fmtP) +
-    card('EPC', cEpc, pEpc, fmtE) +
-    card('Approved лиды', c.approved, p.approved, fmtN);
+    card('Доход', c.revenue, p.revenue, fmtR, plan.revenue) +
+    card('Клики', c.clicks, p.clicks, fmtN, plan.clicks) +
+    card('Лиды', c.conversions, p.conversions, fmtN, plan.conversions) +
+    card('Approve %', cAr, pAr, fmtP, plan.approveRate) +
+    card('EPC', cEpc, pEpc, fmtE, plan.epc) +
+    card('Approved лиды', c.approved, p.approved, fmtN, plan.approved);
+  const compareInsightEl = document.getElementById('comparePlanFactInsight');
+  if (compareInsightEl) {
+    const prevPlanState = planFactState;
+    planFactState = Object.assign({}, planFactState, { days: daysBetweenInclusive(dFrom, dTo) });
+    const insight = buildPlanFactInsight(cur, compareBaseline);
+    planFactState = prevPlanState;
+    compareInsightEl.innerHTML = insight;
+    compareInsightEl.classList.toggle('hidden', !insight);
+  }
 
   // Полная разбивка по офферам (используется и для топов, и для детальной таблицы).
   const aggOfferFull = arr => {
