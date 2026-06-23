@@ -558,6 +558,104 @@
     .info-tip:hover { color: var(--text); border-color: var(--border-strong); }
     .info-tip::before { content: "i"; }
 
+    /* ==================== HELP-КНОПКА «!» ==================== */
+    /* Кнопка-восклицательный знак рядом с заголовком графика, открывает
+       глоссарий с описанием всех терминов (EPC, CR, AR, MA, план/факт и т.д.). */
+    .help-btn {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 22px; height: 22px;
+      border-radius: 50%;
+      background: var(--accent-soft);
+      border: 1px solid rgba(0,113,227,.45);
+      color: var(--accent);
+      font-size: 13px;
+      font-weight: 700;
+      line-height: 1;
+      font-style: normal;
+      cursor: pointer;
+      margin-left: 8px;
+      transition: background var(--t-fast) var(--ease-apple), border-color var(--t-fast) var(--ease-apple), transform var(--t-fast) var(--ease-apple);
+    }
+    .help-btn:hover { background: rgba(0,113,227,.22); border-color: rgba(0,113,227,.7); transform: scale(1.05); }
+    .help-btn:focus-visible { outline: 2px solid rgba(0,113,227,.6); outline-offset: 2px; }
+    .help-btn::before { content: "!"; }
+
+    /* ==================== ГЛОССАРИЙ — МОДАЛЬНОЕ ОКНО ==================== */
+    .glossary-overlay {
+      position: fixed; inset: 0; z-index: 200;
+      background: rgba(0,0,0,.55);
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+      display: none;
+      align-items: flex-start; justify-content: center;
+      padding: 48px 16px;
+      overflow-y: auto;
+      animation: glossaryFadeIn var(--t-base) var(--ease-apple);
+    }
+    .glossary-overlay.is-open { display: flex; }
+    @keyframes glossaryFadeIn { from { opacity: 0; } to { opacity: 1; } }
+    .glossary-modal {
+      background: var(--surface);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--r-modal);
+      max-width: 720px; width: 100%;
+      box-shadow: var(--shadow-pop);
+      color: var(--text);
+      animation: glossaryRise var(--t-base) var(--ease-apple);
+    }
+    @keyframes glossaryRise { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+    .glossary-modal header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 18px 22px;
+      border-bottom: 1px solid var(--border);
+    }
+    .glossary-modal header h3 { font-size: 17px; font-weight: 700; color: var(--text); margin: 0; }
+    .glossary-modal .glossary-close {
+      width: 30px; height: 30px; border-radius: 50%;
+      background: var(--surface-thin); border: 1px solid var(--border);
+      color: var(--text-dim); cursor: pointer;
+      display: inline-flex; align-items: center; justify-content: center;
+      font-size: 16px; line-height: 1;
+      transition: background var(--t-fast) var(--ease-apple), color var(--t-fast) var(--ease-apple);
+    }
+    .glossary-modal .glossary-close:hover { background: var(--surface); color: var(--text); }
+    .glossary-body { padding: 18px 22px 22px; max-height: 70vh; overflow-y: auto; }
+    .glossary-section { margin-top: 18px; }
+    .glossary-section:first-child { margin-top: 0; }
+    .glossary-section h4 {
+      font-size: 13px; font-weight: 700; color: var(--text);
+      text-transform: uppercase; letter-spacing: .06em;
+      margin: 0 0 10px; padding-bottom: 6px;
+      border-bottom: 1px solid var(--border);
+    }
+    .glossary-section dl { margin: 0; display: grid; gap: 10px; }
+    .glossary-section dt {
+      font-weight: 600; color: var(--text);
+      display: flex; align-items: center; gap: 8px;
+    }
+    .glossary-section dt .gloss-tag {
+      display: inline-block; padding: 1px 8px; border-radius: 980px;
+      background: var(--accent-soft); color: var(--accent);
+      font-size: 10px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+    }
+    .glossary-section dd {
+      margin: 2px 0 0; padding: 0;
+      color: var(--text-dim); font-size: 13px; line-height: 1.55;
+    }
+    .glossary-section dd code {
+      background: var(--surface-thin); border: 1px solid var(--border);
+      padding: 1px 6px; border-radius: 6px;
+      color: var(--text); font-size: 12px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    .glossary-section .gloss-formula {
+      margin-top: 8px; padding: 10px 12px;
+      background: var(--surface-thin); border: 1px solid var(--border);
+      border-radius: var(--r-chip);
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px; color: var(--text); white-space: pre-wrap;
+    }
+
     /* ==================== АВТО-ИНСАЙТ ПОД ГРАФИКАМИ ==================== */
     .chart-insight {
       margin-top: 12px;
@@ -896,7 +994,7 @@
       <div class="card xl:col-span-2">
         <div class="flex flex-wrap gap-3 justify-between items-start mb-4">
           <div>
-            <h2 class="text-white font-bold">Динамика</h2>
+            <h2 class="text-white font-bold inline-flex items-center">Динамика<button type="button" class="help-btn" aria-label="Открыть глоссарий: что такое индексы, MA, план/факт и другие термины" title="Справка по терминам графика" onclick="openChartGlossary()"></button></h2>
             <p id="chartModeHint" class="text-xs text-slate-500 mt-1">Чистый факт без дополнительных слоёв.</p>
           </div>
           <div class="flex flex-wrap gap-2 justify-end">
@@ -1538,6 +1636,138 @@
         <button class="btn" style="background:#16a34a" onclick="testAiKey()">Проверить связь</button>
       </div>
       <div id="aiKeyMessage" class="mt-3 text-sm hidden"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Глоссарий: модальное окно с описанием терминов графика «Динамика». -->
+<div id="chartGlossaryOverlay" class="glossary-overlay" role="dialog" aria-modal="true" aria-labelledby="chartGlossaryTitle" onclick="onGlossaryOverlayClick(event)">
+  <div class="glossary-modal" role="document">
+    <header>
+      <h3 id="chartGlossaryTitle">Справка по графику «Динамика»</h3>
+      <button type="button" class="glossary-close" aria-label="Закрыть" onclick="closeChartGlossary()">×</button>
+    </header>
+    <div class="glossary-body">
+      <section class="glossary-section">
+        <h4>Базовые метрики</h4>
+        <dl>
+          <dt>Доход <span class="gloss-tag">₽</span></dt>
+          <dd>Сумма подтверждённой выручки по выбранному периоду, площадкам и Sub1.</dd>
+          <dt>Клики</dt>
+          <dd>Количество переходов по партнёрским ссылкам за период.</dd>
+          <dt>Лиды (конверсии)</dt>
+          <dd>Заявки/регистрации, полученные с этих кликов.</dd>
+          <dt>EPC <span class="gloss-tag">₽ / клик</span></dt>
+          <dd>Доход на один клик. <code>EPC = Доход / Клики</code>. Главный показатель монетизации трафика.</dd>
+          <dt>CR — Conversion Rate <span class="gloss-tag">%</span></dt>
+          <dd><code>CR = Лиды / Клики × 100%</code>. Доля кликов, которые превратились в заявку.</dd>
+          <dt>AR — Approve Rate <span class="gloss-tag">%</span></dt>
+          <dd><code>AR = Подтверждённые / Лиды × 100%</code>. Доля заявок, подтверждённых рекламодателем.</dd>
+          <dt>Показы баннера</dt>
+          <dd>Данные Яндекс.Метрики о показах баннера. Используются как драйвер объёма для плана.</dd>
+        </dl>
+      </section>
+
+      <section class="glossary-section">
+        <h4>Слой «Тренд»</h4>
+        <dl>
+          <dt>MA 7 / MA 30 — скользящая средняя</dt>
+          <dd>Среднее значение метрики за N последних точек. MA 7 — короткий тренд (неделя при дневной группировке), MA 30 — долгий (месяц). Когда MA 7 устойчиво выше MA 30 — краткосрочный рост опережает месячный. Пересечение снизу вверх — разворот тренда.</dd>
+          <dt>Линия тренда</dt>
+          <dd>Линейная регрессия (наименьшие квадраты) по фактическим точкам. Показывает общее направление: рост, снижение или стагнация.</dd>
+          <dt>Накопительный итог</dt>
+          <dd>Суммарное значение метрики с начала периода. Растёт всегда, важна крутизна — чем круче, тем активнее накопление.</dd>
+        </dl>
+      </section>
+
+      <section class="glossary-section">
+        <h4>Слой «План / факт»</h4>
+        <dl>
+          <dt>Плановый показатель</dt>
+          <dd>Целевое значение метрики на каждый период. Считается из плановых ставок (база — предыдущие 90 дней) и драйвера объёма (показы баннера или фактические клики). См. раздел «Как считается план» ниже.</dd>
+          <dt>Коридор плана ±10%</dt>
+          <dd>Зона мягкого выполнения: <code>[план × 0.9 ; план × 1.1]</code>. Попадание факта в коридор считается выполнением плана и засчитывается в чип «В плане».</dd>
+          <dt>Среднестатистический ориентир</dt>
+          <dd>Скользящая средняя факта. Появляется при нисходящей динамике: мы сравниваемся с тем, «как идём в среднем», а не с недостижимой ставкой.</dd>
+          <dt>Коэф. объёма</dt>
+          <dd><code>ожидаемые клики периода / средние клики базы (90 дней)</code>. ×1.00 — объём соответствует базе, ×0.80 — на 20% ниже, ×1.20 — на 20% выше.</dd>
+          <dt>Чип «В плане»</dt>
+          <dd>Сколько точек факта попали в коридор ±10%. Например, «18/30» — 18 из 30 дней в пределах плана.</dd>
+          <dt>Цвет точек факта</dt>
+          <dd>В режиме «План / факт» точки факта окрашиваются по зоне: <span style="color:#22c55e">зелёная</span> — в коридоре, <span style="color:#facc15">жёлтая</span> — недобор/перебор до 20%, <span style="color:#ef4444">красная</span> — серьёзный провал, <span style="color:#3b82f6">синяя</span> — заметное перевыполнение.</dd>
+        </dl>
+      </section>
+
+      <section class="glossary-section">
+        <h4>Как считается плановый показатель</h4>
+        <dd style="margin:0 0 10px;color:var(--text-dim);font-size:13px;line-height:1.55;">
+          План строится в два шага: сначала фиксируем плановые <b>ставки</b> по базовому периоду,
+          потом масштабируем их на <b>объём</b> текущего периода.
+        </dd>
+        <ol style="margin:0 0 0 18px;padding:0;color:var(--text-dim);font-size:13px;line-height:1.6;display:grid;gap:6px;">
+          <li><b>База — предыдущие 90 дней.</b> Считаются ставки: baseEPC, baseCR, baseAR и средние клики/лиды/доход за период.</li>
+          <li><b>Драйвер объёма.</b> Если есть показы баннера из Яндекс.Метрики — берём <code>ожидаемые клики = показы × наблюдаемый CTR</code> (CTR оценивается за период). Если показов нет — используем фактические клики периода.</li>
+          <li><b>План метрики.</b>
+            <ul style="margin:4px 0 0 18px;padding:0;">
+              <li><b>Доход</b>: <code>ожидаемые клики × baseEPC</code>.</li>
+              <li><b>Трафик</b>: ожидаемые клики (при спаде — не выше прошлого факта).</li>
+              <li><b>CR / AR</b>: фиксированная ставка <code>baseCR</code> / <code>baseAR</code>.</li>
+              <li><b>EPC</b>: фиксированная ставка <code>baseEPC</code>.</li>
+            </ul>
+          </li>
+          <li><b>Поправка при спаде.</b> Если линия тренда факта идёт вниз, план «прижимается» к среднестатистическому ориентиру: <code>plan = min(plan, 0.5·plan + 0.5·norm)</code>. Это делает план достижимым.</li>
+          <li><b>Коридор ±10%.</b> Вокруг плана строится диапазон <code>[plan × 0.9 ; plan × 1.1]</code> — попадание факта в коридор считается выполнением плана.</li>
+        </ol>
+        <div class="gloss-formula">EPC_plan      = baseEPC                                 (ставка)
+Revenue_plan  = ожидаемые_клики × baseEPC                (объём × ставка)
+Clicks_plan   = ожидаемые_клики (при спаде ≤ прошлого факта)
+CR_plan       = baseCR,   AR_plan = baseAR
+Коридор плана = [Plan × 0.9 ; Plan × 1.1]</div>
+      </section>
+
+      <section class="glossary-section">
+        <h4>Слой «Прошлый период»</h4>
+        <dl>
+          <dt>Прошлый период</dt>
+          <dd>Те же метрики за равный по длине предыдущий интервал, отрисованные на тех же координатах. Помогает увидеть «лучше/хуже, чем было».</dd>
+        </dl>
+      </section>
+
+      <section class="glossary-section">
+        <h4>Слой «Аномалии»</h4>
+        <dl>
+          <dt>Коридор нормы</dt>
+          <dd>Зона <code>MA ± 1.6 × σ</code>, где σ — стандартное отклонение факта. Точки за пределами коридора считаются аномалиями.</dd>
+          <dt>Аномалия</dt>
+          <dd>Точка выше верхней или ниже нижней границы коридора нормы. Подсвечивается оранжевым.</dd>
+          <dt>Максимум / Минимум</dt>
+          <dd>Экстремумы метрики в периоде. Зелёная точка — пик, красная — провал.</dd>
+        </dl>
+      </section>
+
+      <section class="glossary-section">
+        <h4>Слой «Зависимости»</h4>
+        <dl>
+          <dt>Индекс 100%</dt>
+          <dd>Нормализованный ряд: первая ненулевая точка приравнивается к 100%, остальные — её доля. Позволяет на одной оси сравнить ряды с разными единицами (например, «Клики» и «Доход»): расходятся — связь слабая, идут синхронно — связь сильная.</dd>
+          <dt>r — коэффициент корреляции Пирсона</dt>
+          <dd>Число от −1 до +1. <code>|r| &lt; 0.3</code> — слабая связь, <code>0.3…0.6</code> — умеренная, <code>&gt; 0.6</code> — сильная. Знак: «+» — растут вместе, «−» — движутся противоположно. r ≠ причина: показывает только синхронность.</dd>
+          <dt>Scatter plot «Клики → Доход»</dt>
+          <dd>Каждая точка — один период. По оси X — клики, по Y — доход. Чем ближе точки к прямой, тем стабильнее EPC.</dd>
+        </dl>
+      </section>
+
+      <section class="glossary-section">
+        <h4>Подсказки по работе</h4>
+        <dl>
+          <dt>Подсветка значений при наведении</dt>
+          <dd>Наведите курсор на любую часть графика — под ним появится «живой» ридаут с цифрами по всем видимым сериям на этом периоде. Серия под курсором подсвечивается отдельно.</dd>
+          <dt>Скрыть / показать серию</dt>
+          <dd>Клик по ярлыку серии (Доход, Клики, MA…) в легенде или под графиком прячет/возвращает её. Выбор сохраняется между обновлениями.</dd>
+          <dt>Слои графика</dt>
+          <dd>Кнопки «Тренд», «План / факт», «Прошлый период», «Аномалии», «Зависимости» можно включать в любых сочетаниях. «Без слоёв» — чистый факт.</dd>
+        </dl>
+      </section>
     </div>
   </div>
 </div>
@@ -3706,6 +3936,86 @@ const eventMarkerPlugin = {
   }
 };
 
+// Кроссхэйр-плагин для графика «Динамика». Рисует вертикальную линию под
+// курсором и кружок над активной серией — наведение становится «живым»
+// и наглядно подсвечивает значения вместе с ридаутом под графиком.
+const crosshairPlugin = {
+  id: 'crosshairPlugin',
+  afterDatasetsDraw(chart) {
+    const active = chart.getActiveElements ? chart.getActiveElements() : [];
+    if (!active || !active.length) return;
+    const ctx = chart.ctx;
+    const area = chart.chartArea;
+    if (!area) return;
+    const first = active[0];
+    const x = first.element && typeof first.element.x === 'number' ? first.element.x : null;
+    if (x == null) return;
+    ctx.save();
+    // Вертикальная линия под курсором.
+    ctx.strokeStyle = 'rgba(148,163,184,.55)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 4]);
+    ctx.beginPath();
+    ctx.moveTo(x, area.top);
+    ctx.lineTo(x, area.bottom);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    // Усиленные кружки для всех видимых серий на том же индексе.
+    const idx = first.index;
+    (chart.data.datasets || []).forEach((ds, di) => {
+      if (!chart.isDatasetVisible(di)) return;
+      const meta = chart.getDatasetMeta(di);
+      const pt = meta && meta.data && meta.data[idx];
+      if (!pt || typeof pt.x !== 'number' || typeof pt.y !== 'number') return;
+      const color = (typeof ds.borderColor === 'string' && ds.borderColor) || (typeof ds.backgroundColor === 'string' && ds.backgroundColor) || '#94a3b8';
+      const isHot = di === first.datasetIndex;
+      ctx.beginPath();
+      ctx.fillStyle = '#0f172a';
+      ctx.arc(pt.x, pt.y, isHot ? 6.5 : 4.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.fillStyle = color;
+      ctx.arc(pt.x, pt.y, isHot ? 4.5 : 2.8, 0, Math.PI * 2);
+      ctx.fill();
+    });
+    ctx.restore();
+  }
+};
+
+// ========================== ГЛОССАРИЙ (модальное окно) ==========================
+// Кнопка «!» в шапке графика «Динамика» открывает модальное окно с описанием
+// всех терминов: EPC, CR, AR, MA, план/факт, индексы, корреляция и т.д.
+function openChartGlossary() {
+  const ov = document.getElementById('chartGlossaryOverlay');
+  if (!ov) return;
+  ov.classList.add('is-open');
+  document.body.style.overflow = 'hidden';
+  // Esc закрывает окно. Слушатель навешиваем один раз и снимаем при закрытии.
+  if (!ov._escBound) {
+    ov._escHandler = (ev) => { if (ev.key === 'Escape') closeChartGlossary(); };
+    document.addEventListener('keydown', ov._escHandler);
+    ov._escBound = true;
+  }
+  // Фокус на кнопку закрытия для доступности.
+  const closeBtn = ov.querySelector('.glossary-close');
+  if (closeBtn) try { closeBtn.focus(); } catch (_) {}
+}
+function closeChartGlossary() {
+  const ov = document.getElementById('chartGlossaryOverlay');
+  if (!ov) return;
+  ov.classList.remove('is-open');
+  document.body.style.overflow = '';
+  if (ov._escBound && ov._escHandler) {
+    document.removeEventListener('keydown', ov._escHandler);
+    ov._escBound = false;
+    ov._escHandler = null;
+  }
+}
+function onGlossaryOverlayClick(ev) {
+  // Клик по фону (не по карточке) закрывает окно.
+  if (ev.target && ev.target.id === 'chartGlossaryOverlay') closeChartGlossary();
+}
+
 function renderChartInsightCards(items) {
   const el = document.getElementById('chartInsightCards');
   if (!el) return;
@@ -3841,12 +4151,39 @@ function refreshChart() {
         : 'Плановый показатель (плановая ставка)')
       : (baseline.length ? 'Плановый показатель' : 'Норматив (среднее)');
 
-    // Коридор плана ±10% — мягкая зона выполнения плана (заливка между low и high).
+    // Коридор плана ±10% — мягкая зона выполнения плана. Делаем заметнее,
+    // чтобы план vs факт читался без напряжения (раньше альфа 0.18 — почти невидимо).
     if (planSeries && planSeries.low && planSeries.high) {
-      datasets.push({ label:'Коридор плана (нижняя граница)', data:planSeries.low, borderColor:'rgba(250,204,21,.18)', pointRadius:0, fill:false, yAxisID:'y', tension:.3 });
-      datasets.push({ label:'Коридор плана (±10%)', data:planSeries.high, borderColor:'rgba(250,204,21,.18)', backgroundColor:'rgba(250,204,21,.10)', pointRadius:0, fill:'-1', yAxisID:'y', tension:.3 });
+      datasets.push({ label:'Коридор плана (нижняя граница)', data:planSeries.low, borderColor:'rgba(250,204,21,.45)', borderWidth:1.5, borderDash:[2,3], pointRadius:0, fill:false, yAxisID:'y', tension:.3 });
+      datasets.push({ label:'Коридор плана (±10%)', data:planSeries.high, borderColor:'rgba(250,204,21,.45)', borderWidth:1.5, borderDash:[2,3], backgroundColor:'rgba(250,204,21,.18)', pointRadius:0, fill:'-1', yAxisID:'y', tension:.3 });
     }
-    datasets.push({ label:planLabel, data:planPrimary, borderColor:'#facc15', borderDash:[10,4], borderWidth:2, pointRadius:0, fill:false, yAxisID:'y', tension:.3 });
+    // Сама плановая линия — толще и контрастнее, чтобы выделялась поверх коридора.
+    datasets.push({ label:planLabel, data:planPrimary, borderColor:'#facc15', borderDash:[10,4], borderWidth:3.5, pointRadius:0, fill:false, yAxisID:'y', tension:.3 });
+
+    // Окрашиваем точки факта по зонам относительно плана — главный
+    // визуальный сигнал «план vs факт»: зелёный — в коридоре,
+    // жёлтый — недобор/перебор до 20%, красный — провал, синий — заметный перебор.
+    if (datasets[0] && datasets[0].data && datasets[0].data.length === primary.length) {
+      const planLowArr = planSeries && planSeries.low ? planSeries.low : planPrimary.map(p => (Number(p) || 0) * 0.9);
+      const planHighArr = planSeries && planSeries.high ? planSeries.high : planPrimary.map(p => (Number(p) || 0) * 1.1);
+      const zoneColor = primary.map((v, i) => {
+        const f = Number(v) || 0;
+        const p = Number(planPrimary[i]) || 0;
+        const lo = Number(planLowArr[i]) || 0;
+        const hi = Number(planHighArr[i]) || 0;
+        if (p <= 0) return '#10b981';
+        if (f >= lo && f <= hi) return '#22c55e';   // в коридоре
+        if (f > hi)             return '#3b82f6';   // заметное перевыполнение
+        // ниже коридора: 0..20% недобор — жёлтый, ≥20% — красный
+        const drop = p > 0 ? (p - f) / p * 100 : 0;
+        return drop <= 20 ? '#facc15' : '#ef4444';
+      });
+      datasets[0].pointBackgroundColor = zoneColor;
+      datasets[0].pointBorderColor = zoneColor;
+      datasets[0].pointRadius = zoneColor.map(() => 4);
+      datasets[0].pointHoverRadius = zoneColor.map(() => 7);
+      datasets[0].borderWidth = Math.max(2, datasets[0].borderWidth || 2);
+    }
 
     // При нисходящей динамике добавляем среднестатистический ориентир —
     // «как мы идём в среднем».
@@ -3956,8 +4293,8 @@ function refreshChart() {
   // применяем сохранённое скрытие серий (по нормализованным ключам)
   datasets.forEach(ds => { ds.hidden = hiddenChartSeries.has(seriesKey(ds.label)); });
   trendChartInstance = new Chart(document.getElementById('trendChart'), {
-    type:chartType, data:{labels:displayLabels,datasets}, plugins:[eventMarkerPlugin],
-    options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
+    type:chartType, data:{labels:displayLabels,datasets}, plugins:[eventMarkerPlugin, crosshairPlugin],
+    options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false,axis:'x'},
       onHover:(e,els,chart)=>updateTrendHoverReadout(chart, els),
       plugins:{legend:{labels:{color:'#cbd5e1'},onClick:(e,item,legend)=>{
         const idx = item.datasetIndex;
