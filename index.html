@@ -53,6 +53,28 @@
       --ok:   #30D158;
       --warn: #FF9F0A;
       --bad:  #FF453A;
+
+      /* ==================== СЕМАНТИЧЕСКАЯ ПАЛИТРА МЕТРИК ====================
+         Цвет назначается по смыслу метрики, а не по конкретному графику.
+         Везде, где метрика «выручка» — один и тот же зелёный; «клики» —
+         один и тот же синий; и т.д. Это даёт «телесное» узнавание метрик
+         сквозь весь дашборд. */
+      --c-revenue:    #34D399;  /* выручка / деньги */
+      --c-revenue-2:  rgba(52,211,153,0.10);
+      --c-clicks:     #38BDF8;  /* клики / трафик */
+      --c-clicks-2:   rgba(56,189,248,0.10);
+      --c-epc:        #A78BFA;  /* EPC / эффективность */
+      --c-epc-2:      rgba(167,139,250,0.10);
+      --c-cr:         #FBBF24;  /* CR / конверсия */
+      --c-cr-2:       rgba(251,191,36,0.10);
+      --c-ar:         #2DD4BF;  /* approve rate */
+      --c-ar-2:       rgba(45,212,191,0.10);
+      --c-leads:      #818CF8;  /* лиды / конверсии */
+      --c-bounces:    #F87171;  /* отказники / потери */
+      --c-forecast:   #94A3B8;  /* прогноз / baseline */
+      --c-trend:      #F59E0B;  /* линия тренда */
+      --c-ma:         #22D3EE;  /* скользящая средняя (короткая) */
+      --c-ma-long:    #A78BFA;  /* скользящая средняя (длинная) */
     }
 
     /* ----- ТЁМНАЯ ТЕМА (по умолчанию: true black, без синевы) ----- */
@@ -490,10 +512,102 @@
     .analysis-mode-btn:hover, .layer-toggle:hover { border-color: var(--border-strong); color: var(--text); }
     .analysis-mode-btn.active, .layer-toggle.active { background: rgba(0,113,227,.16); border-color: rgba(0,113,227,.5); color: var(--text); }
     .analysis-chip, .relation-chip {
-      background: var(--surface-thin); border: 1px solid var(--border); border-radius: 16px; padding: 10px 12px;
+      background: var(--surface-thin);
+      border: 1px solid var(--border);
+      border-radius: var(--r-chip);
+      padding: 12px 14px;
+      transition: border-color var(--t-fast) var(--ease-apple), background var(--t-fast) var(--ease-apple);
     }
-    .analysis-chip .label { color: var(--text-faint); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
-    .analysis-chip .value { color: var(--text); font-weight: 800; margin-top: 2px; }
+    .analysis-chip:hover, .relation-chip:hover { border-color: var(--border-strong); }
+    .analysis-chip .label, .relation-chip .label {
+      color: var(--text-dim);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      font-weight: 600;
+      display: inline-flex; align-items: center; gap: 4px;
+    }
+    .analysis-chip .value, .relation-chip .value {
+      color: var(--text);
+      font-weight: 600;
+      font-size: 22px;
+      line-height: 1.2;
+      margin-top: 4px;
+      letter-spacing: -0.02em;
+      font-feature-settings: "tnum" 1, "lnum" 1;
+    }
+
+    /* ==================== INFO-POPOVER (ⓘ рядом с метрикой) ==================== */
+    .info-tip {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 14px; height: 14px;
+      border-radius: 50%;
+      background: var(--surface-thin);
+      border: 1px solid var(--border);
+      color: var(--text-dim);
+      font-size: 10px;
+      font-weight: 600;
+      line-height: 1;
+      font-style: normal;
+      cursor: help;
+      vertical-align: 1px;
+      margin-left: 4px;
+      transition: color var(--t-fast) var(--ease-apple), border-color var(--t-fast) var(--ease-apple);
+      user-select: none;
+    }
+    .info-tip:hover { color: var(--text); border-color: var(--border-strong); }
+    .info-tip::before { content: "i"; }
+
+    /* ==================== АВТО-ИНСАЙТ ПОД ГРАФИКАМИ ==================== */
+    .chart-insight {
+      margin-top: 12px;
+      padding: 12px 14px;
+      border-left: 2px solid var(--accent);
+      background: var(--accent-soft);
+      border-radius: 0 var(--r-chip) var(--r-chip) 0;
+      color: var(--text);
+      font-size: 13px;
+      line-height: 1.5;
+      display: flex; align-items: flex-start; gap: 10px;
+    }
+    .chart-insight.is-good { border-left-color: var(--ok); background: rgba(48,209,88,0.08); }
+    .chart-insight.is-warn { border-left-color: var(--warn); background: rgba(255,159,10,0.08); }
+    .chart-insight.is-bad  { border-left-color: var(--bad);  background: rgba(255,69,58,0.08); }
+    .chart-insight.is-mute { border-left-color: var(--border-strong); background: var(--surface-thin); color: var(--text-dim); }
+    .chart-insight .ci-icon {
+      flex: 0 0 auto;
+      width: 18px; height: 18px;
+      display: inline-flex; align-items: center; justify-content: center;
+      font-size: 13px; line-height: 1;
+    }
+    .chart-insight .ci-body { flex: 1 1 auto; }
+    .chart-insight .ci-body p { margin: 0; }
+    .chart-insight .ci-body p + p { margin-top: 4px; color: var(--text-dim); font-size: 12px; }
+    .chart-insight .ci-confidence {
+      display: inline-flex; align-items: center;
+      margin-left: 8px;
+      padding: 1px 8px;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+      border-radius: 980px;
+      background: var(--surface-thin);
+      color: var(--text-dim);
+      border: 1px solid var(--border);
+      vertical-align: 1px;
+    }
+    .chart-insight .ci-confidence.high   { color: var(--ok); border-color: rgba(48,209,88,.35); }
+    .chart-insight .ci-confidence.medium { color: var(--warn); border-color: rgba(255,159,10,.35); }
+    .chart-insight .ci-confidence.low    { color: var(--text-faint); border-color: var(--border); }
+
+    /* Табличные цифры везде, где это важно для аналитики */
+    .num-tabular,
+    #kpiCards .text-3xl, #bannerKpiCards .text-3xl, #compareKpiGrid .text-2xl,
+    .relation-chip .value, .analysis-chip .value {
+      font-variant-numeric: tabular-nums;
+      font-feature-settings: "tnum" 1, "lnum" 1;
+    }
     .chart-heatmap { display: grid; gap: 2px; height: 14px; margin-top: 10px; }
     .chart-heatmap-cell { border-radius: 3px; min-width: 4px; }
     .chart-heatmap-caption { color: var(--text-faint); font-size: 11px; margin-top: 4px; }
@@ -780,7 +894,8 @@
         <div id="chartInsightCards" class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3 hidden"></div>
         <div class="chart-wrap"><canvas id="trendChart"></canvas></div>
         <div id="chartSeriesToggles" aria-label="Отображаемые серии графика"></div>
-        <p class="text-[11px] text-slate-500 mt-2">Совет: нажмите на ярлык серии (Доход, Клики, MA и др.), чтобы скрыть или показать её. <span class="text-slate-400">MA — скользящая средняя (moving average), сглаживает колебания за N точек.</span></p>
+        <div id="trendChartInsight"></div>
+        <p class="text-[11px] text-slate-500 mt-2">Совет: нажмите на ярлык серии (Доход, Клики, MA и др.), чтобы скрыть или показать её. <span class="text-slate-400">MA — скользящая средняя<i class="info-tip" tabindex="0" role="img" aria-label="MA (moving average) — среднее N последних точек. MA7 = среднее за 7 точек (неделя при дневной группировке), MA30 = среднее за 30 точек (месячный тренд). MA7 выше MA30 — краткосрочный рост; пересечение снизу вверх — разворот тренда." title="MA (moving average) — среднее N последних точек. MA7 = среднее за 7 точек (неделя при дневной группировке), MA30 = среднее за 30 точек (месячный тренд). MA7 выше MA30 — краткосрочный рост; пересечение снизу вверх — разворот тренда."></i>, сглаживает колебания за N точек.</span></p>
         <div id="chartHeatmap" class="hidden"></div>
         <div id="dependencyPanel" class="hidden mt-4">
           <div class="flex items-start justify-between gap-3 mb-2">
@@ -811,6 +926,7 @@
         <button class="layer-toggle active" data-layer="bounces" aria-pressed="true" onclick="toggleBannerRelationLayer('bounces')">Отказники</button>
       </div>
       <div class="chart-wrap" style="height:360px"><canvas id="rejectRevenueChart"></canvas></div>
+      <div id="rejectRevenueInsight"></div>
     </div>
     <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
       <div class="card"><h2 class="text-white font-bold mb-4">Доли площадок (Доход ₽)</h2><div class="chart-wrap flex justify-center"><canvas id="donutChart"></canvas></div></div>
@@ -1478,6 +1594,122 @@ const daysOfWeek = ['Вс','Пн','Вт','Ср','Чт','Пт','Сб'];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const colorPalette = ['#3b82f6','#10b981','#f59e0b','#ef4444','#8b5cf6','#ec4899','#14b8a6','#f97316','#06b6d4','#6366f1'];
 
+// ==================== СЕМАНТИЧЕСКАЯ ПАЛИТРА ГРАФИКОВ ====================
+// Источник истины — CSS-токены (см. :root --c-*). Здесь — JS-зеркало для
+// Chart.js, плюс готовые «прозрачные» варианты для заливки area-чартов.
+// Правило: цвет назначается ПО СМЫСЛУ МЕТРИКИ, а не по конкретному графику.
+const CHART_PALETTE = {
+  revenue:  { stroke: '#34D399', fill: 'rgba(52,211,153,0.10)',  label: 'Выручка' },
+  clicks:   { stroke: '#38BDF8', fill: 'rgba(56,189,248,0.10)',  label: 'Клики' },
+  epc:      { stroke: '#A78BFA', fill: 'rgba(167,139,250,0.10)', label: 'EPC' },
+  cr:       { stroke: '#FBBF24', fill: 'rgba(251,191,36,0.10)',  label: 'CR' },
+  ar:       { stroke: '#2DD4BF', fill: 'rgba(45,212,191,0.10)',  label: 'Approve Rate' },
+  leads:    { stroke: '#818CF8', fill: 'rgba(129,140,248,0.10)', label: 'Лиды' },
+  bounces:  { stroke: '#F87171', fill: 'rgba(248,113,113,0.10)', label: 'Отказники' },
+  forecast: { stroke: '#94A3B8', fill: 'rgba(148,163,184,0.08)', label: 'Прогноз' },
+  trend:    { stroke: '#F59E0B', fill: 'rgba(245,158,11,0.08)',  label: 'Тренд' },
+  ma:       { stroke: '#22D3EE', fill: 'rgba(34,211,238,0.08)',  label: 'MA' },
+  maLong:   { stroke: '#A78BFA', fill: 'rgba(167,139,250,0.08)', label: 'MA long' },
+};
+// Парный «приглушённый» оттенок той же метрики — для MA/тренда/прогноза,
+// чтобы пунктир визуально читался как «производная» от основной линии.
+const CHART_PALETTE_MUTED = {
+  revenue: 'rgba(52,211,153,0.55)',
+  clicks:  'rgba(56,189,248,0.55)',
+  epc:     'rgba(167,139,250,0.55)',
+  cr:      'rgba(251,191,36,0.55)',
+  ar:      'rgba(45,212,191,0.55)',
+};
+
+// ==================== АВТО-ИНСАЙТЫ (narrators) ====================
+// Маленькие чистые функции: принимают числа, возвращают
+// {tone:'good|warn|bad|mute', confidence:'high|medium|low', html:'…'}.
+// Используются в подвалах графиков, чтобы «100% выводы» делались автоматически.
+function _confidenceFromN(n, weakAt = 5, strongAt = 20) {
+  if (n >= strongAt) return 'high';
+  if (n >= weakAt) return 'medium';
+  return 'low';
+}
+function narrateCorrelation(r, xLabel, yLabel, nPoints) {
+  if (r === null || !isFinite(r)) {
+    return { tone: 'mute', confidence: 'low',
+      html: `Связь между «${escapeHtml(xLabel)}» и «${escapeHtml(yLabel)}» не определена: нужно ≥ 2 точек с вариацией, сейчас ${nPoints || 0}. Расширьте период.` };
+  }
+  const a = Math.abs(r);
+  const strength = a >= 0.7 ? 'сильная' : a >= 0.4 ? 'средняя' : a >= 0.2 ? 'слабая' : 'почти отсутствует';
+  const sign = r >= 0 ? 'прямая' : 'обратная';
+  const tone = a >= 0.4 ? 'good' : a >= 0.2 ? 'warn' : 'mute';
+  const verdict = a >= 0.7
+    ? `«${escapeHtml(xLabel)}» хорошо объясняет динамику «${escapeHtml(yLabel)}» — фактор стоит масштабировать.`
+    : a >= 0.4
+      ? `«${escapeHtml(xLabel)}» заметно влияет на «${escapeHtml(yLabel)}», но не объясняет всё — есть другие драйверы.`
+      : a >= 0.2
+        ? `Связь слабая: «${escapeHtml(xLabel)}» — лишь один из факторов. Ищите дополнительные.`
+        : `«${escapeHtml(xLabel)}» практически не объясняет «${escapeHtml(yLabel)}» — динамика выручки определяется другими факторами.`;
+  return {
+    tone, confidence: _confidenceFromN(nPoints || 0, 7, 21),
+    html: `r = <b>${r.toFixed(2)}</b> — ${strength}, ${sign} связь. ${verdict}`
+  };
+}
+function narrateRpm(rpm, impressions) {
+  if (!impressions) return null;
+  const tone = rpm >= 50 ? 'good' : rpm >= 10 ? 'warn' : 'mute';
+  return {
+    tone, confidence: _confidenceFromN(impressions / 1000, 10, 100),
+    html: `RPM = <b>${rpm.toFixed(2)} ₽</b> за 1000 показов. ${rpm >= 50 ? 'Высокий уровень монетизации показов.' : rpm >= 10 ? 'Средняя монетизация — есть потенциал роста CTR/EPC.' : 'Низкая монетизация показов — пересмотрите оффер на баннере.'}`
+  };
+}
+function narrateMaCross(ma7, ma30) {
+  if (!Array.isArray(ma7) || !Array.isArray(ma30) || ma7.length < 3) return null;
+  // Ищем последнее пересечение MA7 ↔ MA30
+  let lastCross = -1, lastDir = 0;
+  for (let i = 1; i < ma7.length; i++) {
+    const a0 = ma7[i-1], a1 = ma7[i], b0 = ma30[i-1], b1 = ma30[i];
+    if (a0 == null || a1 == null || b0 == null || b1 == null) continue;
+    const s0 = Math.sign(a0 - b0), s1 = Math.sign(a1 - b1);
+    if (s0 !== 0 && s1 !== 0 && s0 !== s1) { lastCross = i; lastDir = s1; }
+  }
+  if (lastCross < 0) {
+    const last = ma7.length - 1;
+    if (ma7[last] == null || ma30[last] == null) return null;
+    const dir = ma7[last] > ma30[last] ? 'выше' : 'ниже';
+    const tone = ma7[last] > ma30[last] ? 'good' : 'warn';
+    return { tone, confidence: _confidenceFromN(ma7.length, 14, 30),
+      html: `MA7 устойчиво <b>${dir}</b> MA30 — краткосрочный тренд ${dir === 'выше' ? 'опережает месячный (восходящая динамика)' : 'отстаёт от месячного (нисходящая динамика)'}.` };
+  }
+  const ago = ma7.length - 1 - lastCross;
+  const upward = lastDir > 0;
+  return {
+    tone: upward ? 'good' : 'bad', confidence: _confidenceFromN(ma7.length, 14, 30),
+    html: `MA7 пересёк MA30 <b>${upward ? 'снизу вверх' : 'сверху вниз'}</b> ${ago === 0 ? 'на последней точке' : `${ago} ${ago === 1 ? 'точку' : 'точки'} назад`} — ${upward ? 'разворот тренда вверх' : 'тренд развернулся вниз, риск просадки'}.`
+  };
+}
+function renderInsightFooter(items) {
+  // items: массив {tone, confidence, html} или null
+  const filtered = (items || []).filter(Boolean);
+  if (!filtered.length) return '';
+  // Главный — первый с самым «горячим» тоном; остальные — приглушённые подпункты.
+  const order = { bad: 0, warn: 1, good: 2, mute: 3 };
+  filtered.sort((a, b) => (order[a.tone] ?? 4) - (order[b.tone] ?? 4));
+  const main = filtered[0];
+  const rest = filtered.slice(1, 3);
+  const cls = main.tone === 'good' ? 'is-good' : main.tone === 'warn' ? 'is-warn' : main.tone === 'bad' ? 'is-bad' : 'is-mute';
+  const icon = main.tone === 'good' ? '↑' : main.tone === 'warn' ? '!' : main.tone === 'bad' ? '↓' : 'i';
+  const conf = main.confidence ? `<span class="ci-confidence ${main.confidence}">conf: ${main.confidence === 'high' ? 'высокая' : main.confidence === 'medium' ? 'средняя' : 'низкая'}</span>` : '';
+  return `<div class="chart-insight ${cls}">
+    <span class="ci-icon" aria-hidden="true">${icon}</span>
+    <div class="ci-body">
+      <p>${main.html}${conf}</p>
+      ${rest.map(r => `<p>${r.html}</p>`).join('')}
+    </div>
+  </div>`;
+}
+
+// Удобный helper для info-popover (ⓘ) рядом с метрикой / заголовком.
+function infoTip(text) {
+  return `<i class="info-tip" tabindex="0" role="img" aria-label="${escapeHtml(text)}" title="${escapeHtml(text)}"></i>`;
+}
+
 // Chart.js глобальные дефолты в Apple-стиле: SF Pro, нейтральная сетка, плавные линии.
 if (typeof Chart !== 'undefined') {
   Chart.defaults.font.family = '-apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", Inter, system-ui, sans-serif';
@@ -1793,11 +2025,11 @@ function planFromRows(rows, periodDays) {
 }
 
 function planFactBar(fact, plan, fmt = v => Math.round(v).toLocaleString('ru-RU')) {
-  if (!plan || plan <= 0) return '<div class="pf-bars pf-empty text-slate-500 text-[11px]">План не задан</div>';
+  if (!plan || plan <= 0) return '<div class="pf-bars pf-empty text-slate-500 text-[11px]">Baseline не задан</div>';
   const factPct = Math.min(100, Math.max(0, fact / plan * 100));
   const ok = fact >= plan;
-  return `<div class="pf-bars">
-    <div class="flex justify-between text-[10px] text-slate-500 mb-1"><span>План ${fmt(plan)}</span><span>Факт ${fmt(fact)}</span></div>
+  return `<div class="pf-bars" title="Baseline = среднесуточное за предыдущие 90 дней × длина выбранного периода. Это не введённый вручную месячный план — это прогноз baseline.">
+    <div class="flex justify-between text-[10px] text-slate-500 mb-1"><span>Baseline 90д ${fmt(plan)}</span><span>Факт ${fmt(fact)}</span></div>
     <div class="pf-bar pf-plan mb-1"><div class="pf-fill" style="width:100%"></div></div>
     <div class="pf-bar pf-fact ${ok ? 'ok' : 'bad'}"><div class="pf-fill" style="width:${factPct.toFixed(1)}%"></div></div>
   </div>`;
@@ -2635,34 +2867,52 @@ function renderRejectRevenueAnalysis(data, sourceFilter = 'all') {
   const bannerCtr = totalImpressions ? totalBannerClicks / totalImpressions * 100 : 0;
   const corr = relation.correlation;
   const corrCls = corr === null ? 'text-slate-300' : (Math.abs(corr) >= 0.4 ? 'text-emerald-400' : 'text-amber-400');
+  const corrHint = corr === null
+    ? (labels.length < 2 ? `недостаточно данных: ${labels.length} точек, нужно ≥ 2` : 'нет вариации в данных')
+    : escapeHtml(relationLabel(corr));
   summaryEl.innerHTML = `
-    <div class="relation-chip"><div class="label">Показы баннера</div><div class="value">${Math.round(totalImpressions).toLocaleString('ru-RU')}</div><div class="text-xs text-slate-500 mt-1">CTR цели: ${bannerCtr.toFixed(2)}%</div></div>
-    <div class="relation-chip"><div class="label">Выручка</div><div class="value">${Math.round(totalRevenue).toLocaleString('ru-RU')} ₽</div><div class="text-xs text-slate-500 mt-1">RPM: ${rpm.toFixed(2)} ₽ / 1000 показов</div></div>
-    <div class="relation-chip"><div class="label">Связь r</div><div class="value ${corrCls}">${corr === null ? '—' : corr.toFixed(2)}</div><div class="text-xs text-slate-500 mt-1">${escapeHtml(relationLabel(corr))}</div></div>
-    <div class="relation-chip"><div class="label">Отказники</div><div class="value">${Math.round(totalBounces).toLocaleString('ru-RU')}</div><div class="text-xs text-slate-500 mt-1">${totalBounces ? 'добавлены на график' : 'нет загруженных данных'}</div></div>`;
+    <div class="relation-chip"><div class="label">Показы баннера${infoTip('Сумма показов рекламного баннера за выбранный период, источник — Яндекс.Метрика. CTR цели = клики по баннеру ÷ показы × 100%.')}</div><div class="value">${Math.round(totalImpressions).toLocaleString('ru-RU')}</div><div class="text-xs text-slate-500 mt-1">CTR цели: ${bannerCtr.toFixed(2)}%</div></div>
+    <div class="relation-chip"><div class="label">Выручка${infoTip('Выручка из Leads.su за тот же период. RPM = выручка ÷ показы × 1000 — сколько ₽ приносит 1000 показов баннера.')}</div><div class="value">${Math.round(totalRevenue).toLocaleString('ru-RU')} ₽</div><div class="text-xs text-slate-500 mt-1">RPM: ${rpm.toFixed(2)} ₽ / 1000 показов</div></div>
+    <div class="relation-chip"><div class="label">Связь r${infoTip('Коэффициент корреляции Пирсона между рядами «Показы» и «Выручка» по периодам внутри диапазона. r ∈ [−1; +1]. |r| ≥ 0.7 — сильная связь; 0.4–0.7 — средняя; < 0.2 — практически нет. Нужно минимум 2 точки с вариацией.')}</div><div class="value ${corrCls}">${corr === null ? '—' : corr.toFixed(2)}</div><div class="text-xs text-slate-500 mt-1">${corrHint}</div></div>
+    <div class="relation-chip"><div class="label">Отказники${infoTip('Сумма «отказников» из таблицы bounce_stats (ручной ввод). Линия рисуется на графике, только если значение > 0 и активна кнопка «Отказники».')}</div><div class="value">${Math.round(totalBounces).toLocaleString('ru-RU')}</div><div class="text-xs text-slate-500 mt-1">${totalBounces ? 'добавлены на график' : 'нет загруженных данных'}</div></div>`;
+  // Подвал с авто-выводами под чартом
+  const insightEl = document.getElementById('rejectRevenueInsight');
+  if (insightEl) {
+    const items = [
+      narrateCorrelation(corr, 'Показы баннера', 'Выручка', labels.length),
+      narrateRpm(rpm, totalImpressions),
+      totalBounces > 0 ? { tone: 'warn', confidence: _confidenceFromN(labels.length, 7, 21),
+        html: `Зафиксировано <b>${Math.round(totalBounces).toLocaleString('ru-RU')}</b> отказников за период — проверьте качество трафика и креативы на источниках с наибольшим вкладом.` } : null,
+      sourceFilter !== 'all' ? { tone: 'mute', confidence: 'low',
+        html: 'Фильтр по площадке активен: показы баннера приходят из Я.Метрики общей суммой, выручка отфильтрована — r может быть менее показательным.' } : null
+    ];
+    insightEl.innerHTML = renderInsightFooter(items);
+  }
   if (rejectRevenueChartInstance) rejectRevenueChartInstance.destroy();
   if (!labels.length || (!totalImpressions && !totalRevenue && !totalBounces)) {
     summaryEl.innerHTML = '<div class="col-span-full text-sm text-slate-500">Нет данных по показам баннера или выручке за выбранный период.</div>';
+    if (insightEl) insightEl.innerHTML = '';
     return;
   }
   updateBannerRelationLayerButtons();
   const impressionsSeries = labels.map(l => grouped[l].impressions);
   const revenueSeries = labels.map(l => grouped[l].revenue);
+  const P = CHART_PALETTE;
   const datasets = [
-    { label: 'Показы баннера', data: impressionsSeries, borderColor: '#38bdf8', backgroundColor: 'rgba(56,189,248,.10)', fill: true, tension: .35, pointRadius: 2, yAxisID: 'y' },
-    { label: 'Выручка ₽', data: revenueSeries, borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,.08)', fill: true, tension: .35, pointRadius: 2, yAxisID: 'y1' }
+    { label: 'Показы баннера', data: impressionsSeries, borderColor: P.clicks.stroke, backgroundColor: P.clicks.fill, fill: true, tension: .35, pointRadius: 2, yAxisID: 'y' },
+    { label: 'Выручка ₽', data: revenueSeries, borderColor: P.revenue.stroke, backgroundColor: P.revenue.fill, fill: true, tension: .35, pointRadius: 2, yAxisID: 'y1' }
   ];
   if (bannerRelationLayers.has('trend')) {
-    datasets.push({ label: 'Тренд показов', data: linearTrend(impressionsSeries), borderColor: '#38bdf8', borderDash: [8, 5], pointRadius: 0, fill: false, yAxisID: 'y' });
-    datasets.push({ label: 'Тренд выручки', data: linearTrend(revenueSeries), borderColor: '#10b981', borderDash: [8, 5], pointRadius: 0, fill: false, yAxisID: 'y1' });
+    datasets.push({ label: 'Тренд показов', data: linearTrend(impressionsSeries), borderColor: CHART_PALETTE_MUTED.clicks, borderDash: [8, 5], pointRadius: 0, fill: false, yAxisID: 'y' });
+    datasets.push({ label: 'Тренд выручки', data: linearTrend(revenueSeries), borderColor: CHART_PALETTE_MUTED.revenue, borderDash: [8, 5], pointRadius: 0, fill: false, yAxisID: 'y1' });
   }
   if (bannerRelationLayers.has('ma')) {
     const w = Math.min(7, Math.max(2, labels.length));
-    datasets.push({ label: 'MA показов', data: movingAverage(impressionsSeries, w), borderColor: '#93c5fd', borderWidth: 3, pointRadius: 0, fill: false, yAxisID: 'y' });
-    datasets.push({ label: 'MA выручки', data: movingAverage(revenueSeries, w), borderColor: '#86efac', borderWidth: 3, pointRadius: 0, fill: false, yAxisID: 'y1' });
+    datasets.push({ label: 'MA показов', data: movingAverage(impressionsSeries, w), borderColor: CHART_PALETTE_MUTED.clicks, borderWidth: 3, pointRadius: 0, fill: false, yAxisID: 'y' });
+    datasets.push({ label: 'MA выручки', data: movingAverage(revenueSeries, w), borderColor: CHART_PALETTE_MUTED.revenue, borderWidth: 3, pointRadius: 0, fill: false, yAxisID: 'y1' });
   }
   if (totalBounces > 0 && bannerRelationLayers.has('bounces')) {
-    datasets.push({ label: 'Отказники', data: labels.map(l => grouped[l].bounces), borderColor: '#f97316', borderDash: [5, 5], fill: false, tension: .35, pointRadius: 2, yAxisID: 'y' });
+    datasets.push({ label: 'Отказники', data: labels.map(l => grouped[l].bounces), borderColor: P.bounces.stroke, borderDash: [5, 5], fill: false, tension: .35, pointRadius: 2, yAxisID: 'y' });
   }
   rejectRevenueChartInstance = new Chart(canvas, {
     type: 'line',
@@ -3260,13 +3510,22 @@ function refreshChart() {
     scalesConfig = { y:{ticks:{color:'#94a3b8'},grid:{color:'#1e293b'}} };
   }
 
+  // Семантический цвет для MA — берём приглушённый оттенок основной метрики,
+  // чтобы MA визуально читался как «производная» от primary-линии.
+  const _metricKey = metricType === 'absolute' ? 'revenue'
+    : metricType === 'conversion' ? 'cr'
+    : metricType === 'epc' ? 'epc'
+    : metricType === 'traffic' ? 'clicks' : 'revenue';
+  const _maStroke = CHART_PALETTE_MUTED[_metricKey] || CHART_PALETTE.ma.stroke;
+  let _trendMa7 = null, _trendMa30 = null;
   if (hasChartLayer('trend')) {
     const ma7 = movingAverage(primary, Math.min(7, Math.max(2, primary.length)));
     const ma30 = movingAverage(primary, Math.min(30, Math.max(2, primary.length)));
-    datasets.push({ label:'MA 7 (скользящая средняя, 7 точек)', data:ma7, borderColor:'#22d3ee', borderWidth:4, pointRadius:0, tension:.35, yAxisID:'y' });
-    datasets.push({ label:'MA 30 (скользящая средняя, 30 точек)', data:ma30, borderColor:'#a78bfa', borderWidth:3, pointRadius:0, tension:.35, yAxisID:'y' });
-    datasets.push({ label:'Линия тренда', data:linearTrend(primary), borderColor:'#facc15', borderDash:[7,5], pointRadius:0, fill:false, yAxisID:'y' });
-    datasets.push({ label:'Накопительный итог', data:cumulative(primary), borderColor:'#fb7185', borderDash:[2,4], pointRadius:0, fill:false, yAxisID:'y1' });
+    _trendMa7 = ma7; _trendMa30 = ma30;
+    datasets.push({ label:'MA 7 (скользящая средняя, 7 точек)', data:ma7, borderColor:CHART_PALETTE.ma.stroke, borderWidth:4, pointRadius:0, tension:.35, yAxisID:'y' });
+    datasets.push({ label:'MA 30 (скользящая средняя, 30 точек)', data:ma30, borderColor:CHART_PALETTE.maLong.stroke, borderWidth:3, pointRadius:0, tension:.35, yAxisID:'y' });
+    datasets.push({ label:'Линия тренда', data:linearTrend(primary), borderColor:CHART_PALETTE.trend.stroke, borderDash:[7,5], pointRadius:0, fill:false, yAxisID:'y' });
+    datasets.push({ label:'Накопительный итог', data:cumulative(primary), borderColor:CHART_PALETTE.forecast.stroke, borderDash:[2,4], pointRadius:0, fill:false, yAxisID:'y1' });
     scalesConfig.y1 = { display:true, position:'right', ticks:{color:'#94a3b8'}, grid:{drawOnChartArea:false} };
     const slope = linearTrend(primary); const delta = slope.length > 1 ? slope[slope.length - 1] - slope[0] : 0;
     insightCards.push({ label:'Направление', value:delta > 0 ? 'Рост' : delta < 0 ? 'Снижение' : 'Стагнация', cls:delta >= 0 ? 'text-emerald-400' : 'text-red-400', hint:'по линии тренда' });
@@ -3300,7 +3559,7 @@ function refreshChart() {
     }
     datasets.push({ label:'Нижняя граница нормы', data:lower, borderColor:'rgba(148,163,184,.18)', pointRadius:0, fill:false, yAxisID:'y' });
     datasets.push({ label:'Коридор нормы', data:upper, borderColor:'rgba(148,163,184,.18)', backgroundColor:'rgba(148,163,184,.14)', pointRadius:0, fill:'-1', yAxisID:'y' });
-    datasets.push({ label:'MA 7 (скользящая средняя, 7 точек)', data:ma, borderColor:'#22d3ee', borderWidth:3, pointRadius:0, yAxisID:'y' });
+    datasets.push({ label:'MA 7 (скользящая средняя, 7 точек)', data:ma, borderColor:CHART_PALETTE.ma.stroke, borderWidth:3, pointRadius:0, yAxisID:'y' });
     insightCards.push(
       { label:'Аномалии', value:String(anomalies.filter(Boolean).length), cls:anomalies.some(Boolean) ? 'text-orange-400' : 'text-emerald-400', hint:'выходы за коридор' },
       { label:'Максимум', value:(max || 0).toFixed(names.unit ? 2 : 0) + (names.unit ? ' ' + names.unit : ''), cls:'text-emerald-400', hint:displayLabels[primary.indexOf(max)] || '' },
@@ -3354,6 +3613,34 @@ function refreshChart() {
     }
   });
   renderChartSeriesToggles();
+
+  // Авто-вывод под графиком: интерпретация MA7×MA30, корреляции и аномалий.
+  const trendInsightEl = document.getElementById('trendChartInsight');
+  if (trendInsightEl) {
+    const items = [];
+    if (hasChartLayer('trend') && _trendMa7 && _trendMa30) {
+      items.push(narrateMaCross(_trendMa7, _trendMa30));
+    }
+    if (hasChartLayer('dependencies')) {
+      const corr = pearsonCorrelation(labels.map(l => grouped[l].clicks), labels.map(l => grouped[l].rev));
+      items.push(narrateCorrelation(corr, 'Клики', 'Доход', labels.length));
+    }
+    if (hasChartLayer('anomalies')) {
+      const maA = movingAverage(primary, Math.min(7, Math.max(2, primary.length)));
+      const sdA = stddev(primary);
+      const upA = maA.map(v => v === null ? null : v + sdA * 1.6);
+      const loA = maA.map(v => v === null ? null : Math.max(0, v - sdA * 1.6));
+      const anomCount = primary.filter((v, i) => v > upA[i] || v < loA[i]).length;
+      items.push({
+        tone: anomCount ? 'warn' : 'good',
+        confidence: _confidenceFromN(primary.length, 14, 30),
+        html: anomCount
+          ? `Найдено <b>${anomCount}</b> точек вне коридора ±1.6σ — стоит разобрать каждую (внешнее событие, изменение креатива, технический сбой).`
+          : `Все точки в коридоре нормы ±1.6σ — ряд устойчив, аномалий не зафиксировано.`
+      });
+    }
+    trendInsightEl.innerHTML = renderInsightFooter(items);
+  }
 }
 
 function seriesKey(label) {
