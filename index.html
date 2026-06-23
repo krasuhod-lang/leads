@@ -71,7 +71,7 @@
       --c-ar-2:       rgba(45,212,191,0.10);
       --c-leads:      #818CF8;  /* лиды / конверсии */
       --c-bounces:    #F87171;  /* отказники / потери */
-      --c-forecast:   #94A3B8;  /* прогноз / baseline */
+      --c-forecast:   #94A3B8;  /* прогноз / плановый показатель */
       --c-trend:      #F59E0B;  /* линия тренда */
       --c-ma:         #22D3EE;  /* скользящая средняя (короткая) */
       --c-ma-long:    #A78BFA;  /* скользящая средняя (длинная) */
@@ -619,6 +619,28 @@
     .chart-heatmap { display: grid; gap: 2px; height: 14px; margin-top: 10px; }
     .chart-heatmap-cell { border-radius: 3px; min-width: 4px; }
     .chart-heatmap-caption { color: var(--text-faint); font-size: 11px; margin-top: 4px; }
+    /* «Живой» ридаут значений при наведении на график динамики */
+    .chart-hover-readout {
+      display: none; flex-wrap: wrap; gap: 6px 10px; align-items: center;
+      margin-top: 8px; min-height: 0; font-size: 12px;
+      font-variant-numeric: tabular-nums; font-feature-settings: "tnum" 1, "lnum" 1;
+    }
+    .chart-hover-readout.is-active { display: flex; }
+    .chart-hover-readout .hr-period {
+      font-weight: 700; color: var(--text); padding: 2px 8px; border-radius: 8px;
+      background: var(--surface-thin); border: 1px solid var(--border);
+    }
+    .chart-hover-readout .hr-item {
+      display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px;
+      border-radius: 8px; border: 1px solid transparent; color: var(--text-dim);
+      transition: background var(--t-fast, .15s) ease, color var(--t-fast, .15s) ease, transform var(--t-fast, .15s) ease;
+    }
+    .chart-hover-readout .hr-item .hr-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
+    .chart-hover-readout .hr-item .hr-val { font-weight: 700; color: var(--text); }
+    .chart-hover-readout .hr-item.is-hot {
+      background: var(--surface-thin); border-color: var(--border-strong);
+      color: var(--text); transform: translateY(-1px);
+    }
     @keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.5; transform: scale(0.9); } }
 
     /* Лёгкий «вход» KPI и карточек при первом рендере */
@@ -895,12 +917,14 @@
         <div id="chartAnalysisModes" class="flex flex-wrap gap-2 mb-3" aria-label="Слои графика">
           <button class="analysis-mode-btn active" data-mode="fact" aria-pressed="true" onclick="setChartAnalysisMode('fact')">Без слоёв</button>
           <button class="analysis-mode-btn" data-mode="trend" aria-pressed="false" onclick="setChartAnalysisMode('trend')" title="Линия тренда, скользящие средние (MA) и накопительный итог">Тренд</button>
-          <button class="analysis-mode-btn" data-mode="compare" aria-pressed="false" onclick="setChartAnalysisMode('compare')">Сравнение</button>
+          <button class="analysis-mode-btn" data-mode="plan" aria-pressed="false" onclick="setChartAnalysisMode('plan')" title="Сравнение плановых и фактических показателей: план учитывает показы баннера, при падающей динамике сравнивается со средней">План / факт</button>
+          <button class="analysis-mode-btn" data-mode="compare" aria-pressed="false" onclick="setChartAnalysisMode('compare')" title="Сравнение с предыдущим периодом">Прошлый период</button>
           <button class="analysis-mode-btn" data-mode="anomalies" aria-pressed="false" onclick="setChartAnalysisMode('anomalies')">Аномалии</button>
           <button class="analysis-mode-btn" data-mode="dependencies" aria-pressed="false" onclick="setChartAnalysisMode('dependencies')">Зависимости</button>
         </div>
         <div id="chartInsightCards" class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3 hidden"></div>
         <div class="chart-wrap"><canvas id="trendChart"></canvas></div>
+        <div id="trendChartHover" class="chart-hover-readout" aria-live="polite"></div>
         <div id="chartSeriesToggles" aria-label="Отображаемые серии графика"></div>
         <div id="trendChartInsight"></div>
         <p class="text-[11px] text-slate-500 mt-2">Совет: нажмите на ярлык серии (Доход, Клики, MA и др.), чтобы скрыть или показать её. <span class="text-slate-400">MA — скользящая средняя<i class="info-tip" tabindex="0" role="img" aria-label="MA (moving average) — среднее N последних точек. MA7 = среднее за 7 точек (неделя при дневной группировке), MA30 = среднее за 30 точек (месячный тренд). MA7 выше MA30 — краткосрочный рост; пересечение снизу вверх — разворот тренда." title="MA (moving average) — среднее N последних точек. MA7 = среднее за 7 точек (неделя при дневной группировке), MA30 = среднее за 30 точек (месячный тренд). MA7 выше MA30 — краткосрочный рост; пересечение снизу вверх — разворот тренда."></i>, сглаживает колебания за N точек.</span></p>
@@ -1798,8 +1822,22 @@ if (typeof Chart !== 'undefined') {
   }
   if (Chart.defaults.elements && Chart.defaults.elements.point) {
     Chart.defaults.elements.point.radius = 0;
-    Chart.defaults.elements.point.hoverRadius = 5;
+    Chart.defaults.elements.point.hoverRadius = 7;
+    Chart.defaults.elements.point.hoverBorderWidth = 2;
+    Chart.defaults.elements.point.hoverBorderColor = '#ffffff';
     Chart.defaults.elements.point.hitRadius = 12;
+  }
+  // «Живые» графики: плавная анимация появления и быстрый отклик при наведении.
+  if (Chart.defaults.animation !== undefined) {
+    Chart.defaults.animation = { duration: 650, easing: 'easeOutQuart' };
+    Chart.defaults.animations = Chart.defaults.animations || {};
+    Chart.defaults.animations.colors = { duration: 200 };
+    Chart.defaults.animations.numbers = { duration: 200 };
+  }
+  if (Chart.defaults.hover !== undefined) {
+    Chart.defaults.hover.mode = 'index';
+    Chart.defaults.hover.intersect = false;
+    Chart.defaults.hover.animationDuration = 180;
   }
   if (Chart.defaults.elements && Chart.defaults.elements.bar) {
     Chart.defaults.elements.bar.borderRadius = 6;
@@ -2122,11 +2160,11 @@ function planFromRows(rows, periodDays) {
 }
 
 function planFactBar(fact, plan, fmt = v => Math.round(v).toLocaleString('ru-RU')) {
-  if (!plan || plan <= 0) return '<div class="pf-bars pf-empty text-slate-500 text-[11px]">Baseline не задан</div>';
+  if (!plan || plan <= 0) return '<div class="pf-bars pf-empty text-slate-500 text-[11px]">Плановый показатель не задан</div>';
   const factPct = Math.min(100, Math.max(0, fact / plan * 100));
   const ok = fact >= plan;
-  return `<div class="pf-bars" title="Baseline = среднесуточное за предыдущие 90 дней × длина выбранного периода. Это не введённый вручную месячный план — это прогноз baseline.">
-    <div class="flex justify-between text-[10px] text-slate-500 mb-1"><span>Baseline 90д ${fmt(plan)}</span><span>Факт ${fmt(fact)}</span></div>
+  return `<div class="pf-bars" title="Плановый показатель = среднесуточное за предыдущие 90 дней × длина выбранного периода. Это не введённый вручную месячный план, а расчётный плановый ориентир.">
+    <div class="flex justify-between text-[10px] text-slate-500 mb-1"><span>План (90д) ${fmt(plan)}</span><span>Факт ${fmt(fact)}</span></div>
     <div class="pf-bar pf-plan mb-1"><div class="pf-fill" style="width:100%"></div></div>
     <div class="pf-bar pf-fact ${ok ? 'ok' : 'bad'}"><div class="pf-fill" style="width:${factPct.toFixed(1)}%"></div></div>
   </div>`;
@@ -2826,6 +2864,11 @@ async function applyGlobalFilters() {
   epcOfferSelect.innerHTML = '<option value="all">Все офферы</option>' + offers.map(o => `<option value="${escapeHtml(o)}">${escapeHtml(o)}</option>`).join('');
   if (offers.includes(curOffer)) epcOfferSelect.value = curOffer;
 
+  // Восстанавливаем сохранённое состояние графика «Динамика» (выбранные слои,
+  // скрытые серии, фильтры) — чтобы оно не сбрасывалось при авто-обновлении,
+  // скролле или переключении вкладок.
+  restoreChartState();
+
   renderUI(); renderProblemZones(); renderTables(); refreshChart(); drawExtraCharts();
   renderEPCAnalytics(); renderMatrixAnalytics(); renderPlatformCharts();
   renderMarketTable();
@@ -3334,6 +3377,58 @@ function hasChartLayer(mode) {
   return chartAnalysisLayers && chartAnalysisLayers.has(mode);
 }
 
+// ========================== СОХРАНЕНИЕ СОСТОЯНИЯ ГРАФИКА ДИНАМИКИ ==========================
+// Фикс бага: при скролле страницы, переключении вкладок или авто-обновлении
+// выбранные слои, скрытые серии и фильтры графика «Динамика» сбрасывались.
+// Теперь состояние персистится в localStorage и восстанавливается при любой
+// перерисовке (включая перезагрузку страницы).
+const CHART_STATE_KEY = 'leadsTrendChartState';
+
+function saveChartState() {
+  try {
+    const state = {
+      grouping: (document.getElementById('chartGrouping') || {}).value || 'date',
+      metric: (document.getElementById('chartMetric') || {}).value || 'absolute',
+      source: (document.getElementById('chartSourceFilter') || {}).value || 'all',
+      sub1: (document.getElementById('chartSub1Filter') || {}).value || 'all',
+      layers: chartLayerModes(),
+      hidden: Array.from(hiddenChartSeries || []),
+    };
+    localStorage.setItem(CHART_STATE_KEY, JSON.stringify(state));
+  } catch (_) {}
+}
+
+function restoreChartState() {
+  let state = null;
+  try { state = JSON.parse(localStorage.getItem(CHART_STATE_KEY) || 'null'); } catch (_) { state = null; }
+  if (!state || typeof state !== 'object') return;
+  // Восстанавливаем значения селектов только если такая опция существует.
+  const setSel = (id, val) => {
+    const sel = document.getElementById(id);
+    if (!sel || val == null) return;
+    if ([...sel.options].some(o => o.value === val)) sel.value = val;
+  };
+  setSel('chartGrouping', state.grouping);
+  setSel('chartMetric', state.metric);
+  setSel('chartSourceFilter', state.source);
+  setSel('chartSub1Filter', state.sub1);
+  chartAnalysisLayers = new Set(Array.isArray(state.layers) ? state.layers : []);
+  chartAnalysisMode = chartLayerModes().join(',') || 'fact';
+  hiddenChartSeries = new Set(Array.isArray(state.hidden) ? state.hidden : []);
+  updateChartLayerButtons();
+}
+
+// Показы баннера по периодам (Яндекс.Метрика) — драйвер объёма для расчёта плана.
+function bannerImpressionsByPeriod(labels, grouping) {
+  const byKey = {};
+  for (const b of bannerData || []) {
+    const key = periodKeyFromDate(b.date, grouping);
+    if (!key) continue;
+    byKey[key] = (byKey[key] || 0) + (Number(b.impressions) || 0);
+  }
+  return labels.map(l => byKey[l] || 0);
+}
+
 function updateChartLayerButtons() {
   const active = chartLayerModes();
   document.querySelectorAll('#chartAnalysisModes .analysis-mode-btn').forEach(btn => {
@@ -3355,6 +3450,7 @@ function setChartAnalysisMode(mode) {
   }
   chartAnalysisMode = chartLayerModes().join(',') || 'fact';
   updateChartLayerButtons();
+  saveChartState();
   refreshChart();
 }
 
@@ -3363,7 +3459,8 @@ function chartModeHint(modes) {
   if (!active.length) return 'Чистый факт без дополнительных слоёв. Кликните по ярлыку серии под графиком, чтобы скрыть/показать её.';
   const labels = {
     trend: 'тренды и MA (скользящие средние)',
-    compare: 'план/факт с учётом коэф. объёма трафика',
+    plan: 'план/факт (план учитывает показы баннера)',
+    compare: 'сравнение с прошлым периодом',
     anomalies: 'аномалии и MA',
     dependencies: 'зависимости'
   };
@@ -3470,20 +3567,21 @@ function buildTargetValue(metricType, labels, data, baseline) {
   return 0;
 }
 
-// План по периодам с учётом коэффициента объёма трафика.
-// Идея: план строится от baseline-ставок (EPC/CR/AR baseline-периода), но
-// объёмные показатели (доход, лиды) умножаются на ФАКТИЧЕСКИЙ объём трафика
-// текущего периода. Так план автоматически снижается при падении трафика и
-// растёт при росте — то есть отражает достижимый при данной воронке результат.
+// План по периодам с учётом показов баннера и статистической нормы.
+// Идея: план строится от плановых ставок (EPC/CR/AR за предыдущие 90 дней), но
+// ОБЪЁМ привязан напрямую к количеству показов баннера (Яндекс.Метрика) —
+// чем больше показов, тем выше план дохода/трафика (прямая зависимость).
+// Если показов баннера нет, объём берётся по фактическим кликам.
 //
-// Для самого трафика (clicks) план = baseline-среднее, но с поправкой на
-// нисходящую динамику: если фактический трафик последнего периода меньше
-// предыдущего, план не может быть выше предыдущего фактического значения
-// (нельзя ставить план выше прошлого месяца при падении объёма).
+// При НИСХОДЯЩЕЙ динамике план «прижимается» к среднестатистическому
+// ориентиру (скользящая средняя факта) — мы сравниваем себя с тем, «как идём
+// в среднем», а не с недостижимой ставкой. Дополнительно строится коридор
+// плана ±10%, попадание в который считается выполнением плана — поэтому
+// «в плане» отображается чаще и честнее.
 //
-// Возвращает { primary, secondary, basis, periodCoefs } или null, если
-// baseline отсутствует.
-function buildPlanSeries(metricType, labels, grouping, factGrouped, baseline) {
+// Возвращает { primary, low, high, norm, secondary, basis, periodCoefs,
+// decreasing, volumeBasis } или null, если плановый период пуст.
+function buildPlanSeries(metricType, labels, grouping, factGrouped, baseline, impressions) {
   if (!baseline || !baseline.length || !labels.length) return null;
   const baselineGrouped = buildGroupedRows(baseline, grouping);
   const baselineKeys = Object.keys(baselineGrouped);
@@ -3501,40 +3599,73 @@ function buildPlanSeries(metricType, labels, grouping, factGrouped, baseline) {
   const baseRevAvg    = bt.rev / periods;
 
   const factClicks = labels.map(l => (factGrouped[l] || {}).clicks || 0);
-  const periodCoefs = factClicks.map(c => baseClicksAvg > 0 ? c / baseClicksAvg : 0);
 
-  // План трафика по периодам с учётом нисходящей динамики:
-  // план = baseline-среднее, но если предыдущий ФАКТ ниже — план тоже не выше него.
-  const trafficPlan = factClicks.map((c, i) => {
-    let cap = baseClicksAvg;
-    if (i > 0) {
+  // Объёмный драйвер плана. Приоритет — показы баннера: ожидаемые клики =
+  // показы × наблюдаемый CTR текущего периода. Это даёт прямую зависимость
+  // плана от количества показов баннера. Без показов — берём фактические клики.
+  const imp = Array.isArray(impressions) ? impressions : labels.map(() => 0);
+  const totalImp = imp.reduce((s, v) => s + (Number(v) || 0), 0);
+  const totalFactClicks = factClicks.reduce((s, v) => s + v, 0);
+  const observedCtr = totalImp > 0 ? totalFactClicks / totalImp : 0;
+  const volumeBasis = (totalImp > 0 && observedCtr > 0) ? 'impressions' : 'clicks';
+  const expectedClicks = labels.map((_, i) => volumeBasis === 'impressions'
+    ? (Number(imp[i]) || 0) * observedCtr
+    : factClicks[i]);
+
+  // Коэффициент объёма теперь отражает показы баннера (если они есть).
+  const periodCoefs = expectedClicks.map(c => baseClicksAvg > 0 ? c / baseClicksAvg : 0);
+
+  // Фактический ряд выбранной метрики и его среднестатистический ориентир
+  // (скользящая средняя) — основа для оценки «как мы идём» при спаде.
+  const factPrimary = labels.map(l => metricValueFromGroup(factGrouped[l], metricType));
+  const normWindow = Math.min(3, Math.max(2, factPrimary.length));
+  const norm = movingAverage(factPrimary, normWindow).map((v, i) => v == null ? factPrimary[i] : v);
+  const fitted = linearTrend(factPrimary);
+  const decreasing = fitted.length > 1 && Number.isFinite(fitted[0]) && Number.isFinite(fitted[fitted.length - 1])
+    ? (fitted[fitted.length - 1] < fitted[0]) : false;
+
+  // План трафика: ожидаемые клики от показов, но при спаде не выше
+  // достижимого предыдущего факта.
+  const trafficPlan = expectedClicks.map((c, i) => {
+    let cap = c;
+    if (decreasing && i > 0) {
       const prevFact = factClicks[i - 1];
       if (prevFact > 0 && prevFact < cap) cap = prevFact;
     }
     return cap;
   });
 
-  let primary = [], secondary = null;
+  let planRaw = [], secondary = null;
   if (metricType === 'absolute') {
-    // План дохода привязан к фактическому объёму трафика × baseline EPC.
-    primary = factClicks.map(c => c * baseEpc);
+    planRaw = expectedClicks.map(c => c * baseEpc);
     secondary = trafficPlan;
   } else if (metricType === 'epc') {
-    primary = labels.map(() => baseEpc);
+    planRaw = labels.map(() => baseEpc);
   } else if (metricType === 'conversion') {
-    primary = labels.map(() => baseCr);
+    planRaw = labels.map(() => baseCr);
     secondary = labels.map(() => baseAr);
   } else if (metricType === 'traffic') {
-    primary = trafficPlan;
-    secondary = factClicks.map(c => c * (baseCr / 100));
+    planRaw = trafficPlan;
+    secondary = expectedClicks.map(c => c * (baseCr / 100));
   } else {
-    primary = labels.map(() => 0);
+    planRaw = labels.map(() => 0);
   }
 
+  // При нисходящей динамике прижимаем план к среднестатистическому ориентиру —
+  // целимся в достижимое, поэтому «идём в плане» показывается честнее и чаще.
+  const primary = planRaw.map((p, i) => {
+    if (!decreasing) return p;
+    const n = Number(norm[i]);
+    if (!Number.isFinite(n) || n <= 0) return p;
+    return Math.min(p, 0.5 * p + 0.5 * n);
+  });
+
+  // Коридор плана ±10% — попадание в него считается выполнением плана.
+  const low = primary.map(p => (Number(p) || 0) * 0.9);
+  const high = primary.map(p => (Number(p) || 0) * 1.1);
+
   return {
-    primary,
-    secondary,
-    periodCoefs,
+    primary, low, high, norm, secondary, periodCoefs, decreasing, volumeBasis,
     basis: { baseEpc, baseCr, baseAr, baseClicksAvg, baseConvAvg, baseRevAvg, periods },
   };
 }
@@ -3697,31 +3828,38 @@ function refreshChart() {
     insightCards.push({ label:'Направление', value:delta > 0 ? 'Рост' : delta < 0 ? 'Снижение' : 'Стагнация', cls:delta >= 0 ? 'text-emerald-400' : 'text-red-400', hint:'по линии тренда' });
   }
 
-  if (hasChartLayer('compare')) {
-    const baselineGrouped = buildGroupedRows(baseline, grouping);
-    const baselineLabels = Object.keys(baselineGrouped).sort();
-    const prev = labels.map((_, i) => metricValueFromGroup(baselineGrouped[baselineLabels[i]], metricType));
-    datasets.push({ label:'Прошлый период', data:prev, borderColor:'rgba(148,163,184,.75)', borderDash:[6,6], pointRadius:0, fill:false, yAxisID:'y' });
-
-    // Per-period plan with traffic-volume coefficient. Falls back to the flat
-    // baseline target when historical baseline data is missing.
-    const planSeries = buildPlanSeries(metricType, labels, grouping, grouped, baseline);
+  // Слой «План / факт» — отдельный переключатель сравнения плановых и
+  // фактических показателей. План учитывает показы баннера и коридор ±10%.
+  if (hasChartLayer('plan')) {
+    const impressions = bannerImpressionsByPeriod(labels, grouping);
+    const planSeries = buildPlanSeries(metricType, labels, grouping, grouped, baseline, impressions);
     const planPrimary = planSeries ? planSeries.primary : labels.map(() => targetValue);
+    const volByImpressions = planSeries && planSeries.volumeBasis === 'impressions';
     const planLabel = planSeries
       ? (metricType === 'absolute' || metricType === 'traffic'
-        ? 'План (с учётом объёма трафика)'
-        : 'План (baseline-ставка)')
-      : (baseline.length ? 'План / KPI' : 'Норматив (среднее)');
-    datasets.push({ label:planLabel, data:planPrimary, borderColor:'#facc15', borderDash:[10,4], pointRadius:0, fill:false, yAxisID:'y' });
+        ? (volByImpressions ? 'Плановый показатель (по показам баннера)' : 'Плановый показатель (по объёму трафика)')
+        : 'Плановый показатель (плановая ставка)')
+      : (baseline.length ? 'Плановый показатель' : 'Норматив (среднее)');
 
-    // Считаем отклонение факт-план по сумме (для объёмных метрик) или по
-    // средневзвешенному (для ставок) — это и есть «почему мы отклоняемся».
+    // Коридор плана ±10% — мягкая зона выполнения плана (заливка между low и high).
+    if (planSeries && planSeries.low && planSeries.high) {
+      datasets.push({ label:'Коридор плана (нижняя граница)', data:planSeries.low, borderColor:'rgba(250,204,21,.18)', pointRadius:0, fill:false, yAxisID:'y', tension:.3 });
+      datasets.push({ label:'Коридор плана (±10%)', data:planSeries.high, borderColor:'rgba(250,204,21,.18)', backgroundColor:'rgba(250,204,21,.10)', pointRadius:0, fill:'-1', yAxisID:'y', tension:.3 });
+    }
+    datasets.push({ label:planLabel, data:planPrimary, borderColor:'#facc15', borderDash:[10,4], borderWidth:2, pointRadius:0, fill:false, yAxisID:'y', tension:.3 });
+
+    // При нисходящей динамике добавляем среднестатистический ориентир —
+    // «как мы идём в среднем».
+    if (planSeries && planSeries.decreasing && planSeries.norm) {
+      datasets.push({ label:'Среднестатистический ориентир', data:planSeries.norm, borderColor:'#a78bfa', borderDash:[3,4], pointRadius:0, fill:false, yAxisID:'y', tension:.35 });
+    }
+
+    // Отклонение факт-план: сумма (объёмные метрики) или среднее (ставки).
     let factTotalCmp, planTotalCmp;
     if (metricType === 'absolute' || metricType === 'traffic') {
       factTotalCmp = primary.reduce((s, v) => s + (Number(v) || 0), 0);
       planTotalCmp = planPrimary.reduce((s, v) => s + (Number(v) || 0), 0);
     } else {
-      // Средние по непустым точкам — корректно для процентов / EPC.
       const factPts = primary.filter(v => Number.isFinite(v));
       const planPts = planPrimary.filter(v => Number.isFinite(v));
       factTotalCmp = factPts.length ? factPts.reduce((s, v) => s + v, 0) / factPts.length : 0;
@@ -3729,36 +3867,47 @@ function refreshChart() {
     }
     const gapAbs = factTotalCmp - planTotalCmp;
     const gapPct = planTotalCmp > 0 ? gapAbs / planTotalCmp * 100 : 0;
-    const belowPlan = primary.reduce((n, v, i) => n + ((Number(v) || 0) < (Number(planPrimary[i]) || 0) ? 1 : 0), 0);
-    const prevTotal = prev.reduce((s, v) => s + (Number(v) || 0), 0);
-    const factTotalSum = primary.reduce((s, v) => s + (Number(v) || 0), 0);
+    // «В плане» — попадание в коридор: факт не ниже нижней границы (план −10%).
+    const planLow = planSeries && planSeries.low ? planSeries.low : planPrimary.map(p => (Number(p) || 0) * 0.9);
+    const inPlan = primary.reduce((n, v, i) => n + ((Number(v) || 0) >= (Number(planLow[i]) || 0) ? 1 : 0), 0);
     const unit = names.unit ? ` ${names.unit}` : '';
     const fmt = v => (Math.abs(v) >= 100 ? Math.round(v).toLocaleString('ru-RU') : Number(v).toFixed(2));
     insightCards.push(
       {
         label: 'Отклонение факт vs план',
         value: `${gapAbs >= 0 ? '+' : ''}${fmt(gapAbs)}${unit} (${gapPct >= 0 ? '+' : ''}${gapPct.toFixed(1)}%)`,
-        cls: gapPct >= 0 ? 'text-emerald-400' : (gapPct >= -10 ? 'text-amber-400' : 'text-red-400'),
-        hint: planSeries && (metricType === 'absolute' || metricType === 'traffic')
-          ? 'план масштабируется по объёму трафика'
-          : 'baseline-ставка',
+        cls: gapPct >= -10 ? 'text-emerald-400' : (gapPct >= -20 ? 'text-amber-400' : 'text-red-400'),
+        hint: volByImpressions ? 'план привязан к показам баннера'
+          : (planSeries && (metricType === 'absolute' || metricType === 'traffic') ? 'план по объёму трафика' : 'плановая ставка'),
       },
-      { label: 'Ниже плана', value: `${belowPlan}/${labels.length || 0}`, cls: belowPlan === 0 ? 'text-emerald-400' : (belowPlan > labels.length / 2 ? 'text-red-400' : 'text-amber-400'), hint: 'точек ниже плана' },
-      { label: 'Прошлый период', value: factTotalSum >= prevTotal ? 'Лучше' : 'Хуже', cls: factTotalSum >= prevTotal ? 'text-emerald-400' : 'text-red-400', hint: 'по сумме видимых точек' }
+      { label: 'В плане', value: `${inPlan}/${labels.length || 0}`, cls: inPlan >= Math.ceil((labels.length || 0) * 0.6) ? 'text-emerald-400' : (inPlan >= (labels.length || 0) / 2 ? 'text-amber-400' : 'text-red-400'), hint: 'точек в коридоре ±10%' }
     );
 
-    // Дополнительный коэффициент объёма трафика — отдельной подсказкой,
-    // чтобы было видно, почему план «двигается» относительно baseline.
     if (planSeries && planSeries.periodCoefs && planSeries.periodCoefs.length) {
       const lastCoef = planSeries.periodCoefs[planSeries.periodCoefs.length - 1];
       const avgCoef = planSeries.periodCoefs.reduce((s, v) => s + (Number(v) || 0), 0) / planSeries.periodCoefs.length;
       insightCards.push({
-        label: 'Коэф. объёма трафика',
+        label: volByImpressions ? 'Коэф. объёма (показы)' : 'Коэф. объёма трафика',
         value: `×${(avgCoef || 0).toFixed(2)}`,
         cls: avgCoef >= 0.95 ? 'text-emerald-400' : (avgCoef >= 0.8 ? 'text-amber-400' : 'text-red-400'),
-        hint: `последний период ×${(lastCoef || 0).toFixed(2)} к baseline`,
+        hint: `последний период ×${(lastCoef || 0).toFixed(2)} к плановому`,
       });
     }
+    if (planSeries && planSeries.decreasing) {
+      insightCards.push({ label: 'Режим оценки', value: 'По средней', cls: 'text-violet-400', hint: 'динамика снижается — сравниваем со средней' });
+    }
+  }
+
+  if (hasChartLayer('compare')) {
+    const baselineGrouped = buildGroupedRows(baseline, grouping);
+    const baselineLabels = Object.keys(baselineGrouped).sort();
+    const prev = labels.map((_, i) => metricValueFromGroup(baselineGrouped[baselineLabels[i]], metricType));
+    datasets.push({ label:'Прошлый период', data:prev, borderColor:'rgba(148,163,184,.75)', borderDash:[6,6], pointRadius:0, fill:false, yAxisID:'y', tension:.3 });
+    const prevTotal = prev.reduce((s, v) => s + (Number(v) || 0), 0);
+    const factTotalSum = primary.reduce((s, v) => s + (Number(v) || 0), 0);
+    insightCards.push(
+      { label: 'Прошлый период', value: factTotalSum >= prevTotal ? 'Лучше' : 'Хуже', cls: factTotalSum >= prevTotal ? 'text-emerald-400' : 'text-red-400', hint: 'по сумме видимых точек' }
+    );
   }
 
   if (hasChartLayer('anomalies')) {
@@ -3797,12 +3946,19 @@ function refreshChart() {
   renderChartInsightCards(insightCards);
   renderChartHeatmap(labels, grouped, grouping);
 
+  // Адаптивные оси: диапазон автоматически подстраивается под выбранную
+  // метрику и видимые серии, с запасом сверху/снизу, чтобы линии «дышали».
+  ['y', 'y1', 'y2'].forEach(axis => {
+    if (scalesConfig[axis] && scalesConfig[axis].display !== false) scalesConfig[axis].grace = '8%';
+  });
+
   if (trendChartInstance) trendChartInstance.destroy();
   // применяем сохранённое скрытие серий (по нормализованным ключам)
   datasets.forEach(ds => { ds.hidden = hiddenChartSeries.has(seriesKey(ds.label)); });
   trendChartInstance = new Chart(document.getElementById('trendChart'), {
     type:chartType, data:{labels:displayLabels,datasets}, plugins:[eventMarkerPlugin],
     options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
+      onHover:(e,els,chart)=>updateTrendHoverReadout(chart, els),
       plugins:{legend:{labels:{color:'#cbd5e1'},onClick:(e,item,legend)=>{
         const idx = item.datasetIndex;
         const ds = legend.chart.data.datasets[idx];
@@ -3811,6 +3967,7 @@ function refreshChart() {
         legend.chart.setDatasetVisibility(idx, wasHidden);
         if (wasHidden) hiddenChartSeries.delete(key); else hiddenChartSeries.add(key);
         legend.chart.update();
+        saveChartState();
         renderChartSeriesToggles();
       }},eventMarkerPlugin:{events:eventGroups,grouping},tooltip:{...sharedTooltipConfig,callbacks:{label:function(ctx){
         const v=Number(ctx.raw);
@@ -3824,10 +3981,17 @@ function refreshChart() {
         const list = eventGroups[rawKey] || [];
         return list.length ? ['События:', ...list.slice(0,3).map(e => `• ${e.title || e.event_type || 'событие'}`)] : '';
       }}}},
-      scales:{x:{ticks:{color:'#94a3b8'},grid:{color:'#1e293b'}},...scalesConfig}
+      scales:{x:{ticks:{color:'#94a3b8',autoSkip:true,maxRotation:0},grid:{color:'#1e293b'}},...scalesConfig}
     }
   });
+  // «Живой» ридаут: при уходе курсора с графика прячем подсветку значений.
+  const _trendCanvas = document.getElementById('trendChart');
+  if (_trendCanvas && !_trendCanvas._hoverBound) {
+    _trendCanvas._hoverBound = true;
+    _trendCanvas.addEventListener('mouseleave', () => updateTrendHoverReadout(null, null));
+  }
   renderChartSeriesToggles();
+  saveChartState();
 
   // Авто-вывод под графиком: интерпретация MA7×MA30, корреляции и аномалий.
   const trendInsightEl = document.getElementById('trendChartInsight');
@@ -3888,9 +4052,38 @@ function renderChartSeriesToggles() {
       trendChartInstance.setDatasetVisibility(idx, !visible);
       if (visible) hiddenChartSeries.add(key); else hiddenChartSeries.delete(key);
       trendChartInstance.update();
+      saveChartState();
       renderChartSeriesToggles();
     });
   });
+}
+
+// «Живой» ридаут значений при наведении: подсвечивает цифры по всем видимым
+// сериям на наведённом периоде, выделяя серию под курсором.
+function updateTrendHoverReadout(chart, activeEls) {
+  const el = document.getElementById('trendChartHover');
+  if (!el) return;
+  if (!chart || !activeEls || !activeEls.length) { el.classList.remove('is-active'); el.innerHTML = ''; return; }
+  const idx = activeEls[0].index;
+  const hotDs = activeEls[0].datasetIndex;
+  const label = (chart.data.labels || [])[idx];
+  const parts = [`<span class="hr-period">${escapeHtml(String(label == null ? '' : label))}</span>`];
+  (chart.data.datasets || []).forEach((ds, di) => {
+    if (!chart.isDatasetVisible(di)) return;
+    const raw = ds.data ? ds.data[idx] : null;
+    const v = Number(raw);
+    if (raw == null || !isFinite(v)) return;
+    const dsLabel = ds.label || ('Серия ' + (di + 1));
+    let val;
+    if (dsLabel.includes('%')) val = v.toFixed(2) + '%';
+    else if (dsLabel.includes('₽')) val = v.toFixed(2) + ' ₽';
+    else val = Math.round(v).toLocaleString('ru-RU');
+    const color = (typeof ds.borderColor === 'string' && ds.borderColor) || (typeof ds.backgroundColor === 'string' && ds.backgroundColor) || '#94a3b8';
+    const hot = di === hotDs ? ' is-hot' : '';
+    parts.push(`<span class="hr-item${hot}"><span class="hr-dot" style="background:${color}"></span>${escapeHtml(dsLabel)}: <span class="hr-val">${val}</span></span>`);
+  });
+  el.innerHTML = parts.join('');
+  el.classList.add('is-active');
 }
 
 function drawExtraCharts() {
