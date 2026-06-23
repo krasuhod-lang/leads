@@ -1911,16 +1911,23 @@ async function updateHealthBadge() {
   const dot = el.querySelector('.dot');
   const text = el.querySelector('span:last-child');
   try {
-    const json = await fetchJsonSafe(buildApiUrl({ action: 'health' }));
+    const [json, leadsDiag] = await Promise.all([
+      fetchJsonSafe(buildApiUrl({ action: 'health' })),
+      fetchJsonSafe(buildApiUrl({ action: 'leads_diag' })).catch(e => ({ ok: false, message: e && e.message ? e.message : String(e) })),
+    ]);
     const ok = json.status === 'success' && json.db && json.db.ok;
     const integrations = json.integrations || {};
     const ymOk = !!(integrations.yandex_metrika && integrations.yandex_metrika.token_present && integrations.yandex_metrika.last_banner_date);
     const marketOk = !!(integrations.offers_market && integrations.offers_market.last_update);
     const aiOk = !!(json.ai && json.ai.api_key_present);
-    const allOk = ok && ymOk && marketOk && aiOk;
-    if (dot) dot.style.background = allOk ? 'var(--ok)' : (ok ? 'var(--warn)' : 'var(--bad)');
-    if (text) text.textContent = allOk ? 'Health: OK' : (ok ? 'Health: partial' : 'Health: fail');
+    const leadsOk = !!(leadsDiag && leadsDiag.ok);
+    const allOk = ok && ymOk && marketOk && aiOk && leadsOk;
+    if (dot) dot.style.background = allOk ? 'var(--ok)' : ((ok && leadsOk) ? 'var(--warn)' : 'var(--bad)');
+    if (text) text.textContent = allOk ? 'Health: OK' : ((ok && leadsOk) ? 'Health: partial' : 'Health: fail');
     const tokenTxt = json.leads_token?.present ? `Leads token: ${json.leads_token.source}` : 'Leads token: не задан';
+    const leadsTxt = leadsDiag && leadsDiag.ok
+      ? `Leads API: OK (${leadsDiag.latency_ms || 0} мс)`
+      : `Leads API: fail${leadsDiag && leadsDiag.reason ? ' [' + leadsDiag.reason + ']' : ''}${leadsDiag && leadsDiag.message ? ' — ' + String(leadsDiag.message).slice(0, 100) : ''}`;
     const ymTxt = integrations.yandex_metrika
       ? `Метрика: ${integrations.yandex_metrika.token_present ? 'токен есть' : 'нет токена'}, баннер до ${integrations.yandex_metrika.last_banner_date || '—'}`
       : 'Метрика: —';
@@ -1930,7 +1937,21 @@ async function updateHealthBadge() {
     const tgTxt = integrations.telegram
       ? `Telegram: ${integrations.telegram.configured ? 'настроен' : 'не настроен'}`
       : 'Telegram: —';
-    el.title = `${tokenTxt}; строк: ${json.db?.daily_rows ?? 0}; последняя дата: ${json.db?.last_stats_date || '—'}; ${ymTxt}; ${marketTxt}; AI: ${aiOk ? 'ключ есть' : 'нет ключа'}; ${tgTxt}`;
+    el.title = `${tokenTxt}; ${leadsTxt}; строк: ${json.db?.daily_rows ?? 0}; последняя дата: ${json.db?.last_stats_date || '—'}; ${ymTxt}; ${marketTxt}; AI: ${aiOk ? 'ключ есть' : 'нет ключа'}; ${tgTxt}`;
+
+    // Если кнопка «Проверить health» / индикатор статуса Leads токена есть на странице —
+    // показываем подробный результат активной проверки интеграции Leads.su.
+    const leadsStatusEl = document.getElementById('leadsTokenStatus');
+    if (leadsStatusEl) {
+      if (leadsDiag && leadsDiag.ok) {
+        const firstName = leadsDiag.first_platform && leadsDiag.first_platform.name ? ` — пример: ${leadsDiag.first_platform.name}` : '';
+        leadsStatusEl.innerHTML = `<span class="text-emerald-400">✓ Leads API доступен (${leadsDiag.latency_ms || 0} мс${firstName})</span>`;
+      } else if (leadsDiag) {
+        const reasonTxt = leadsDiag.reason ? ` [${leadsDiag.reason}]` : '';
+        const msgTxt = leadsDiag.message ? ' — ' + leadsDiag.message : '';
+        leadsStatusEl.innerHTML = `<span class="text-red-400">✗ Leads API недоступен${reasonTxt}${msgTxt}</span>`;
+      }
+    }
   } catch (e) {
     if (dot) dot.style.background = 'var(--bad)';
     if (text) text.textContent = 'Health: fail';
@@ -3342,7 +3363,7 @@ function chartModeHint(modes) {
   if (!active.length) return 'Чистый факт без дополнительных слоёв. Кликните по ярлыку серии под графиком, чтобы скрыть/показать её.';
   const labels = {
     trend: 'тренды и MA (скользящие средние)',
-    compare: 'сравнение',
+    compare: 'план/факт с учётом коэф. объёма трафика',
     anomalies: 'аномалии и MA',
     dependencies: 'зависимости'
   };
@@ -3447,6 +3468,75 @@ function buildTargetValue(metricType, labels, data, baseline) {
   if (metricType === 'epc') return totals.clicks ? totals.revenue / totals.clicks : 0;
   if (metricType === 'traffic') return totals.clicks / periods;
   return 0;
+}
+
+// План по периодам с учётом коэффициента объёма трафика.
+// Идея: план строится от baseline-ставок (EPC/CR/AR baseline-периода), но
+// объёмные показатели (доход, лиды) умножаются на ФАКТИЧЕСКИЙ объём трафика
+// текущего периода. Так план автоматически снижается при падении трафика и
+// растёт при росте — то есть отражает достижимый при данной воронке результат.
+//
+// Для самого трафика (clicks) план = baseline-среднее, но с поправкой на
+// нисходящую динамику: если фактический трафик последнего периода меньше
+// предыдущего, план не может быть выше предыдущего фактического значения
+// (нельзя ставить план выше прошлого месяца при падении объёма).
+//
+// Возвращает { primary, secondary, basis, periodCoefs } или null, если
+// baseline отсутствует.
+function buildPlanSeries(metricType, labels, grouping, factGrouped, baseline) {
+  if (!baseline || !baseline.length || !labels.length) return null;
+  const baselineGrouped = buildGroupedRows(baseline, grouping);
+  const baselineKeys = Object.keys(baselineGrouped);
+  if (!baselineKeys.length) return null;
+  const bt = baselineKeys.reduce((a, k) => {
+    const g = baselineGrouped[k];
+    a.clicks += g.clicks; a.conv += g.conv; a.app += g.app; a.rev += g.rev; return a;
+  }, { clicks: 0, conv: 0, app: 0, rev: 0 });
+  const periods = baselineKeys.length;
+  const baseEpc = bt.clicks ? bt.rev / bt.clicks : 0;
+  const baseCr  = bt.clicks ? bt.conv / bt.clicks * 100 : 0;
+  const baseAr  = bt.conv  ? bt.app / bt.conv * 100 : 0;
+  const baseClicksAvg = bt.clicks / periods;
+  const baseConvAvg   = bt.conv / periods;
+  const baseRevAvg    = bt.rev / periods;
+
+  const factClicks = labels.map(l => (factGrouped[l] || {}).clicks || 0);
+  const periodCoefs = factClicks.map(c => baseClicksAvg > 0 ? c / baseClicksAvg : 0);
+
+  // План трафика по периодам с учётом нисходящей динамики:
+  // план = baseline-среднее, но если предыдущий ФАКТ ниже — план тоже не выше него.
+  const trafficPlan = factClicks.map((c, i) => {
+    let cap = baseClicksAvg;
+    if (i > 0) {
+      const prevFact = factClicks[i - 1];
+      if (prevFact > 0 && prevFact < cap) cap = prevFact;
+    }
+    return cap;
+  });
+
+  let primary = [], secondary = null;
+  if (metricType === 'absolute') {
+    // План дохода привязан к фактическому объёму трафика × baseline EPC.
+    primary = factClicks.map(c => c * baseEpc);
+    secondary = trafficPlan;
+  } else if (metricType === 'epc') {
+    primary = labels.map(() => baseEpc);
+  } else if (metricType === 'conversion') {
+    primary = labels.map(() => baseCr);
+    secondary = labels.map(() => baseAr);
+  } else if (metricType === 'traffic') {
+    primary = trafficPlan;
+    secondary = factClicks.map(c => c * (baseCr / 100));
+  } else {
+    primary = labels.map(() => 0);
+  }
+
+  return {
+    primary,
+    secondary,
+    periodCoefs,
+    basis: { baseEpc, baseCr, baseAr, baseClicksAvg, baseConvAvg, baseRevAvg, periods },
+  };
 }
 
 function chartEventGroups(labels, grouping) {
@@ -3612,14 +3702,63 @@ function refreshChart() {
     const baselineLabels = Object.keys(baselineGrouped).sort();
     const prev = labels.map((_, i) => metricValueFromGroup(baselineGrouped[baselineLabels[i]], metricType));
     datasets.push({ label:'Прошлый период', data:prev, borderColor:'rgba(148,163,184,.75)', borderDash:[6,6], pointRadius:0, fill:false, yAxisID:'y' });
-    datasets.push({ label:baseline.length ? 'План / KPI' : 'Норматив (среднее)', data:labels.map(()=>targetValue), borderColor:'#facc15', borderDash:[10,4], pointRadius:0, fill:false, yAxisID:'y' });
-    const abovePlan = primary.filter(v => v >= targetValue).length;
-    const prevTotal = prev.reduce((s,v)=>s+(Number(v)||0),0);
-    const factTotal = primary.reduce((s,v)=>s+(Number(v)||0),0);
+
+    // Per-period plan with traffic-volume coefficient. Falls back to the flat
+    // baseline target when historical baseline data is missing.
+    const planSeries = buildPlanSeries(metricType, labels, grouping, grouped, baseline);
+    const planPrimary = planSeries ? planSeries.primary : labels.map(() => targetValue);
+    const planLabel = planSeries
+      ? (metricType === 'absolute' || metricType === 'traffic'
+        ? 'План (с учётом объёма трафика)'
+        : 'План (baseline-ставка)')
+      : (baseline.length ? 'План / KPI' : 'Норматив (среднее)');
+    datasets.push({ label:planLabel, data:planPrimary, borderColor:'#facc15', borderDash:[10,4], pointRadius:0, fill:false, yAxisID:'y' });
+
+    // Считаем отклонение факт-план по сумме (для объёмных метрик) или по
+    // средневзвешенному (для ставок) — это и есть «почему мы отклоняемся».
+    let factTotalCmp, planTotalCmp;
+    if (metricType === 'absolute' || metricType === 'traffic') {
+      factTotalCmp = primary.reduce((s, v) => s + (Number(v) || 0), 0);
+      planTotalCmp = planPrimary.reduce((s, v) => s + (Number(v) || 0), 0);
+    } else {
+      // Средние по непустым точкам — корректно для процентов / EPC.
+      const factPts = primary.filter(v => Number.isFinite(v));
+      const planPts = planPrimary.filter(v => Number.isFinite(v));
+      factTotalCmp = factPts.length ? factPts.reduce((s, v) => s + v, 0) / factPts.length : 0;
+      planTotalCmp = planPts.length ? planPts.reduce((s, v) => s + v, 0) / planPts.length : 0;
+    }
+    const gapAbs = factTotalCmp - planTotalCmp;
+    const gapPct = planTotalCmp > 0 ? gapAbs / planTotalCmp * 100 : 0;
+    const belowPlan = primary.reduce((n, v, i) => n + ((Number(v) || 0) < (Number(planPrimary[i]) || 0) ? 1 : 0), 0);
+    const prevTotal = prev.reduce((s, v) => s + (Number(v) || 0), 0);
+    const factTotalSum = primary.reduce((s, v) => s + (Number(v) || 0), 0);
+    const unit = names.unit ? ` ${names.unit}` : '';
+    const fmt = v => (Math.abs(v) >= 100 ? Math.round(v).toLocaleString('ru-RU') : Number(v).toFixed(2));
     insightCards.push(
-      { label:'План', value:`${abovePlan}/${labels.length || 0} выше`, cls:abovePlan >= labels.length / 2 ? 'text-emerald-400' : 'text-amber-400', hint:'точек выше KPI' },
-      { label:'Прошлый период', value:factTotal >= prevTotal ? 'Лучше' : 'Хуже', cls:factTotal >= prevTotal ? 'text-emerald-400' : 'text-red-400', hint:'по сумме видимых точек' }
+      {
+        label: 'Отклонение факт vs план',
+        value: `${gapAbs >= 0 ? '+' : ''}${fmt(gapAbs)}${unit} (${gapPct >= 0 ? '+' : ''}${gapPct.toFixed(1)}%)`,
+        cls: gapPct >= 0 ? 'text-emerald-400' : (gapPct >= -10 ? 'text-amber-400' : 'text-red-400'),
+        hint: planSeries && (metricType === 'absolute' || metricType === 'traffic')
+          ? 'план масштабируется по объёму трафика'
+          : 'baseline-ставка',
+      },
+      { label: 'Ниже плана', value: `${belowPlan}/${labels.length || 0}`, cls: belowPlan === 0 ? 'text-emerald-400' : (belowPlan > labels.length / 2 ? 'text-red-400' : 'text-amber-400'), hint: 'точек ниже плана' },
+      { label: 'Прошлый период', value: factTotalSum >= prevTotal ? 'Лучше' : 'Хуже', cls: factTotalSum >= prevTotal ? 'text-emerald-400' : 'text-red-400', hint: 'по сумме видимых точек' }
     );
+
+    // Дополнительный коэффициент объёма трафика — отдельной подсказкой,
+    // чтобы было видно, почему план «двигается» относительно baseline.
+    if (planSeries && planSeries.periodCoefs && planSeries.periodCoefs.length) {
+      const lastCoef = planSeries.periodCoefs[planSeries.periodCoefs.length - 1];
+      const avgCoef = planSeries.periodCoefs.reduce((s, v) => s + (Number(v) || 0), 0) / planSeries.periodCoefs.length;
+      insightCards.push({
+        label: 'Коэф. объёма трафика',
+        value: `×${(avgCoef || 0).toFixed(2)}`,
+        cls: avgCoef >= 0.95 ? 'text-emerald-400' : (avgCoef >= 0.8 ? 'text-amber-400' : 'text-red-400'),
+        hint: `последний период ×${(lastCoef || 0).toFixed(2)} к baseline`,
+      });
+    }
   }
 
   if (hasChartLayer('anomalies')) {
@@ -5184,6 +5323,99 @@ function buildAIPayload() {
   const bannerRevenueRelation = buildBannerRevenueRelation(rows, 'all', 'date');
   const integrationHealth = buildClientIntegrationHealth(rows);
 
+  // ===== План/факт с учётом коэффициента объёма трафика =====
+  // Берём baseline (предыдущие 90 дней до выбранного диапазона) как эталонную
+  // воронку: считаем baseline-EPC/CR/Approve и среднесуточный трафик. Затем
+  // строим план для текущих месяцев так, что объёмные показатели (доход,
+  // лиды) масштабируются по фактическому объёму трафика, а ставки берутся
+  // от baseline. План трафика снижается, если динамика идёт на убыль —
+  // нельзя планировать выше прошлого месяца при падающем трафике.
+  // AI использует этот блок, чтобы объяснить ОТКЛОНЕНИЯ и предложить пути
+  // достижения цели (что починить в воронке/офферах/площадках).
+  const planVsFact = (() => {
+    const baseline = planBaselineData || [];
+    if (!baseline.length) {
+      return { available: false, note: 'Baseline за предыдущие 90 дней пуст — план не построен.' };
+    }
+    const grouping = 'month';
+    const factGrouped = buildGroupedRows(rows, grouping);
+    const baseGrouped = buildGroupedRows(baseline, grouping);
+    const periods = Object.keys(factGrouped).sort();
+    if (!periods.length) {
+      return { available: false, note: 'В выбранном периоде нет месячной агрегации.' };
+    }
+    const bt = Object.values(baseGrouped).reduce((a, g) => {
+      a.clicks += g.clicks; a.conv += g.conv; a.app += g.app; a.rev += g.rev; return a;
+    }, { clicks: 0, conv: 0, app: 0, rev: 0 });
+    const basePeriods = Math.max(1, Object.keys(baseGrouped).length);
+    const baseEpc = bt.clicks ? bt.rev / bt.clicks : 0;
+    const baseCr  = bt.clicks ? bt.conv / bt.clicks * 100 : 0;
+    const baseAr  = bt.conv  ? bt.app / bt.conv * 100 : 0;
+    const baseClicksAvg = bt.clicks / basePeriods;
+    const series = [];
+    let prevFactClicks = null;
+    for (const p of periods) {
+      const g = factGrouped[p];
+      const trafficCoef = baseClicksAvg > 0 ? g.clicks / baseClicksAvg : 0;
+      let planClicks = baseClicksAvg;
+      if (prevFactClicks !== null && trafficCoef < 1 && prevFactClicks < planClicks) {
+        planClicks = prevFactClicks;
+      }
+      const planRevenue = g.clicks * baseEpc;
+      const planConv = g.clicks * (baseCr / 100);
+      const factEpc = g.clicks ? g.rev / g.clicks : 0;
+      const factCr  = g.clicks ? g.conv / g.clicks * 100 : 0;
+      const factAr  = g.conv ? g.app / g.conv * 100 : 0;
+      series.push({
+        period: p,
+        traffic_coef: _r(trafficCoef, 3),
+        fact: {
+          clicks: g.clicks, conversions: g.conv, approved: g.app,
+          revenue: _r(g.rev, 2), epc: _r(factEpc, 2),
+          cr_pct: _r(factCr, 2), approve_rate_pct: _r(factAr, 2),
+        },
+        plan: {
+          clicks: Math.round(planClicks),
+          conversions: Math.round(planConv),
+          revenue: _r(planRevenue, 2),
+          epc: _r(baseEpc, 2),
+          cr_pct: _r(baseCr, 2),
+          approve_rate_pct: _r(baseAr, 2),
+        },
+        deviation: {
+          revenue_abs: _r(g.rev - planRevenue, 2),
+          revenue_pct: planRevenue > 0 ? _r((g.rev - planRevenue) / planRevenue * 100, 1) : 0,
+          epc_pct: baseEpc > 0 ? _r((factEpc - baseEpc) / baseEpc * 100, 1) : 0,
+          cr_pct: baseCr > 0 ? _r((factCr - baseCr) / baseCr * 100, 1) : 0,
+          approve_rate_pct: baseAr > 0 ? _r((factAr - baseAr) / baseAr * 100, 1) : 0,
+        },
+      });
+      prevFactClicks = g.clicks;
+    }
+    const factRevTotal = series.reduce((s, x) => s + x.fact.revenue, 0);
+    const planRevTotal = series.reduce((s, x) => s + x.plan.revenue, 0);
+    return {
+      available: true,
+      grouping,
+      baseline_period: { from: planFactState.baselineFrom, to: planFactState.baselineTo },
+      baseline_rates: {
+        epc: _r(baseEpc, 2),
+        cr_pct: _r(baseCr, 2),
+        approve_rate_pct: _r(baseAr, 2),
+        clicks_avg_per_period: Math.round(baseClicksAvg),
+      },
+      series,
+      totals: {
+        fact_revenue: _r(factRevTotal, 2),
+        plan_revenue: _r(planRevTotal, 2),
+        revenue_gap_abs: _r(factRevTotal - planRevTotal, 2),
+        revenue_gap_pct: planRevTotal > 0 ? _r((factRevTotal - planRevTotal) / planRevTotal * 100, 1) : 0,
+        periods_below_plan: series.filter(x => x.fact.revenue < x.plan.revenue).length,
+      },
+      method_note: 'Plan rates = baseline (предыдущие 90 дней). Plan volume = fact_clicks × baseline_rate (масштабируется по фактическому трафику). Для clicks-плана: если динамика трафика на убыль, план не выше прошлого фактического месяца.',
+    };
+  })();
+
   return {
     period: { from: dateFrom, to: dateTo, days: new Set(dates).size },
     kpi: {
@@ -5228,6 +5460,7 @@ function buildAIPayload() {
       note: bannerRevenueRelation.note,
     },
     integration_health: integrationHealth,
+    plan_vs_fact: planVsFact,
     dashboard_ux_context: {
       visible_charts: ['trend', 'platform_revenue', 'platform_traffic', 'banner_revenue_relation', 'funnel', 'market_epc', 'ai_analysis'],
       improvement_focus: ['числовые зависимости', 'понятная причинно-следственная связь', 'меньше визуального шума', 'быстрые действия из рекомендаций'],
