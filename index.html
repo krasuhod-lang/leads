@@ -601,10 +601,18 @@
     .chart-insight .ci-confidence.medium { color: var(--warn); border-color: rgba(255,159,10,.35); }
     .chart-insight .ci-confidence.low    { color: var(--text-faint); border-color: var(--border); }
 
-    /* Табличные цифры везде, где это важно для аналитики */
+    /* Табличные цифры везде, где это важно для аналитики. tnum/lnum гарантирует
+       одинаковую ширину цифр — колонки чисел в таблицах и значения в чипах
+       больше не «прыгают» при смене значения. */
     .num-tabular,
     #kpiCards .text-3xl, #bannerKpiCards .text-3xl, #compareKpiGrid .text-2xl,
-    .relation-chip .value, .analysis-chip .value {
+    .relation-chip .value, .analysis-chip .value,
+    .card table td, .card table th,
+    .overflow-auto table td, .overflow-auto table th,
+    #chartInsightCards .chip-value, #chartInsightCards .text-2xl,
+    .chart-insight .ci-body b,
+    .pf-bars, .pf-bars *,
+    #planFactInsight, #planFactInsight * {
       font-variant-numeric: tabular-nums;
       font-feature-settings: "tnum" 1, "lnum" 1;
     }
@@ -929,8 +937,8 @@
       <div id="rejectRevenueInsight"></div>
     </div>
     <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
-      <div class="card"><h2 class="text-white font-bold mb-4">Доли площадок (Доход ₽)</h2><div class="chart-wrap flex justify-center"><canvas id="donutChart"></canvas></div></div>
-      <div class="card"><h2 class="text-white font-bold mb-4">Топ-5 Офферов по EPC (от 100 кликов)</h2><div class="chart-wrap"><canvas id="barChart"></canvas></div></div>
+      <div class="card"><h2 class="text-white font-bold mb-4">Доли площадок (Доход ₽)</h2><div class="chart-wrap flex justify-center"><canvas id="donutChart"></canvas></div><div id="donutChartInsight"></div></div>
+      <div class="card"><h2 class="text-white font-bold mb-4">Топ-5 Офферов по EPC (от 100 кликов)</h2><div class="chart-wrap"><canvas id="barChart"></canvas></div><div id="barChartInsight"></div></div>
     </div>
     <div class="card">
       <div class="flex flex-wrap gap-3 justify-between items-center mb-4">
@@ -940,8 +948,9 @@
         </select>
       </div>
       <div class="chart-wrap" style="height:400px"><canvas id="revenueByPlatformChart"></canvas></div>
+      <div id="revenueByPlatformInsight"></div>
     </div>
-    <div class="card"><h2 class="text-white font-bold mb-4">Объём трафика по площадкам</h2><div class="chart-wrap" style="height:400px"><canvas id="trafficByPlatformChart"></canvas></div></div>
+    <div class="card"><h2 class="text-white font-bold mb-4">Объём трафика по площадкам</h2><div class="chart-wrap" style="height:400px"><canvas id="trafficByPlatformChart"></canvas></div><div id="trafficByPlatformInsight"></div></div>
     <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
       <div class="card">
         <h2 class="text-white font-bold mb-4">Площадки</h2>
@@ -1012,12 +1021,12 @@
         </div>
       </div>
       <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
-        <div><h3 class="text-sm text-slate-400 mb-2">Динамика EPC</h3><div class="chart-wrap" style="height:320px"><canvas id="epcLineChart"></canvas></div></div>
-        <div><h3 class="text-sm text-slate-400 mb-2">EPC по дням недели</h3><div class="chart-wrap" style="height:320px"><canvas id="epcWeekdayChart"></canvas></div></div>
+        <div><h3 class="text-sm text-slate-400 mb-2">Динамика EPC</h3><div class="chart-wrap" style="height:320px"><canvas id="epcLineChart"></canvas></div><div id="epcLineInsight"></div></div>
+        <div><h3 class="text-sm text-slate-400 mb-2">EPC по дням недели</h3><div class="chart-wrap" style="height:320px"><canvas id="epcWeekdayChart"></canvas></div><div id="epcWeekdayInsight"></div></div>
       </div>
     </div>
     <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
-      <div class="card"><h2 class="text-white font-bold mb-4">EPC по месяцам</h2><div class="chart-wrap" style="height:320px"><canvas id="epcMonthChart"></canvas></div></div>
+      <div class="card"><h2 class="text-white font-bold mb-4">EPC по месяцам</h2><div class="chart-wrap" style="height:320px"><canvas id="epcMonthChart"></canvas></div><div id="epcMonthInsight"></div></div>
       <div class="card">
         <div class="flex flex-wrap gap-3 justify-between items-center mb-4">
           <h2 class="text-white font-bold">Тепловая карта EPC (день недели × период)</h2>
@@ -1682,6 +1691,73 @@ function narrateMaCross(ma7, ma30) {
   return {
     tone: upward ? 'good' : 'bad', confidence: _confidenceFromN(ma7.length, 14, 30),
     html: `MA7 пересёк MA30 <b>${upward ? 'снизу вверх' : 'сверху вниз'}</b> ${ago === 0 ? 'на последней точке' : `${ago} ${ago === 1 ? 'точку' : 'точки'} назад`} — ${upward ? 'разворот тренда вверх' : 'тренд развернулся вниз, риск просадки'}.`
+  };
+}
+// Тренд по числовой последовательности: линейная регрессия + сравнение
+// первой/последней трети периода. Возвращает narrator-объект.
+function narrateTrend(series, label, unitFmt) {
+  const arr = (series || []).map(v => Number(v)).filter(v => isFinite(v));
+  const n = arr.length;
+  if (n < 3) return { tone: 'mute', confidence: 'low',
+    html: `Для оценки тренда «${escapeHtml(label)}» нужно ≥ 3 точек (сейчас ${n}). Расширьте период.` };
+  const fmt = typeof unitFmt === 'function' ? unitFmt : (v => v.toFixed(2));
+  // Линейная регрессия y = a*x + b
+  let sx = 0, sy = 0, sxx = 0, sxy = 0;
+  for (let i = 0; i < n; i++) { sx += i; sy += arr[i]; sxx += i*i; sxy += i*arr[i]; }
+  const denom = n*sxx - sx*sx;
+  const slope = denom ? (n*sxy - sx*sy) / denom : 0;
+  const mean = sy / n;
+  // Изменение от первой трети к последней трети
+  const k = Math.max(1, Math.floor(n / 3));
+  const head = arr.slice(0, k).reduce((s, v) => s + v, 0) / k;
+  const tail = arr.slice(-k).reduce((s, v) => s + v, 0) / k;
+  const deltaPct = head ? (tail - head) / Math.abs(head) * 100 : 0;
+  const abs = Math.abs(deltaPct);
+  let tone = 'mute', verdict;
+  if (abs < 5) { tone = 'mute'; verdict = 'без выраженной динамики — флэт.'; }
+  else if (deltaPct > 0) { tone = abs >= 15 ? 'good' : 'mute'; verdict = `рост на <b>${deltaPct.toFixed(1)}%</b> от начала к концу периода.`; }
+  else { tone = abs >= 15 ? 'bad' : 'warn'; verdict = `снижение на <b>${abs.toFixed(1)}%</b> от начала к концу периода — проверьте источник падения.`; }
+  return {
+    tone, confidence: _confidenceFromN(n, 7, 21),
+    html: `Тренд «${escapeHtml(label)}» (наклон ≈ ${fmt(slope)} за точку, среднее ${fmt(mean)}): ${verdict}`
+  };
+}
+// Концентрация: насколько выручка/трафик сосредоточены в нескольких источниках.
+// items: [{name, value}]. Возвращает narrator с HHI и долей топ-2.
+function narrateConcentration(items, metricLabel) {
+  const arr = (items || []).filter(i => Number(i.value) > 0);
+  if (!arr.length) return null;
+  const total = arr.reduce((s, i) => s + Number(i.value), 0);
+  if (!total) return null;
+  const shares = arr.map(i => Number(i.value) / total).sort((a, b) => b - a);
+  const top2 = (shares[0] || 0) + (shares[1] || 0);
+  const hhi = shares.reduce((s, x) => s + x*x, 0); // 0..1
+  let tone, verdict;
+  if (top2 >= 0.7) { tone = 'warn'; verdict = `топ-2 источника дают <b>${(top2*100).toFixed(0)}%</b> ${metricLabel} — высокая концентрация, риск зависимости от одного канала.`; }
+  else if (top2 >= 0.5) { tone = 'mute'; verdict = `топ-2 источника дают <b>${(top2*100).toFixed(0)}%</b> ${metricLabel} — умеренная концентрация.`; }
+  else { tone = 'good'; verdict = `портфель сбалансирован: топ-2 дают всего <b>${(top2*100).toFixed(0)}%</b> ${metricLabel}.`; }
+  return {
+    tone, confidence: _confidenceFromN(arr.length, 3, 6),
+    html: `HHI = <b>${hhi.toFixed(2)}</b> (${hhi >= 0.25 ? 'высокий' : hhi >= 0.15 ? 'умеренный' : 'низкий'}); ${verdict}`
+  };
+}
+// Сезонность по дням недели: лучший / худший день относительно среднего.
+// wdItems: [{name, value, weight}], value — метрика (EPC и т.п.), weight — объём (клики).
+function narrateWeekdaySeasonality(wdItems, unitLabel) {
+  const arr = (wdItems || []).filter(i => Number(i.weight) > 0 && Number(i.value) > 0);
+  if (arr.length < 3) return null;
+  const mean = arr.reduce((s, i) => s + Number(i.value), 0) / arr.length;
+  if (!mean) return null;
+  const best = arr.reduce((a, b) => Number(b.value) > Number(a.value) ? b : a);
+  const worst = arr.reduce((a, b) => Number(b.value) < Number(a.value) ? b : a);
+  const spreadPct = (Number(best.value) - Number(worst.value)) / mean * 100;
+  let tone = 'mute', verdict;
+  if (spreadPct < 15) { tone = 'mute'; verdict = `день недели почти не влияет (${unitLabel} ровный).`; }
+  else if (spreadPct < 35) { tone = 'mute'; verdict = `умеренная сезонность — закладывайте поправку в ставки/бюджеты.`; }
+  else { tone = 'warn'; verdict = `сильная сезонность — пиковые дни стоит масштабировать, провальные — урезать.`; }
+  return {
+    tone, confidence: 'medium',
+    html: `Лучший день: <b>${escapeHtml(best.name)}</b> (${Number(best.value).toFixed(2)}), худший: <b>${escapeHtml(worst.name)}</b> (${Number(worst.value).toFixed(2)}); разрыв ≈ <b>${spreadPct.toFixed(0)}%</b> от среднего. ${verdict}`
   };
 }
 function renderInsightFooter(items) {
@@ -2597,10 +2673,10 @@ function renderBannerKPI() {
   const avgConv = bannerData.length ? (bannerData.reduce((s,d) => s + d.conversion_rate, 0) / bannerData.length) : 0;
   const c = document.getElementById('bannerKpiCards');
   if (c) c.innerHTML = `
-    <div class="card"><div class="text-slate-400 text-xs uppercase">Показы (хосты)</div><div class="text-3xl font-black mt-2">${totalImpressions.toLocaleString('ru-RU')}</div></div>
-    <div class="card"><div class="text-slate-400 text-xs uppercase">Уникальные посетители</div><div class="text-3xl font-black mt-2">${totalClicks.toLocaleString('ru-RU')}</div></div>
-    <div class="card"><div class="text-slate-400 text-xs uppercase">Общая конверсия</div><div class="text-3xl font-black mt-2">${overallConv.toFixed(2)}%</div></div>
-    <div class="card"><div class="text-slate-400 text-xs uppercase">Средняя конверсия</div><div class="text-3xl font-black mt-2">${avgConv.toFixed(2)}%</div></div>`;
+    <div class="card"><div class="text-slate-400 text-xs uppercase">Показы (хосты)${infoTip('Сумма показов баннера за период по уникальным хостам (Яндекс.Метрика, цель показа). База для расчёта CTR и RPM.')}</div><div class="text-3xl font-black mt-2">${totalImpressions.toLocaleString('ru-RU')}</div></div>
+    <div class="card"><div class="text-slate-400 text-xs uppercase">Уникальные посетители${infoTip('Уникальные посетители, кликнувшие по баннеру (Яндекс.Метрика, цель клика). Используется как переход с баннера в Leads.su.')}</div><div class="text-3xl font-black mt-2">${totalClicks.toLocaleString('ru-RU')}</div></div>
+    <div class="card"><div class="text-slate-400 text-xs uppercase">Общая конверсия${infoTip('Клики ÷ Показы × 100% по сумме за весь период (взвешенная CTR баннера). Менее чувствительна к выбросам отдельных дней.')}</div><div class="text-3xl font-black mt-2">${overallConv.toFixed(2)}%</div></div>
+    <div class="card"><div class="text-slate-400 text-xs uppercase">Средняя конверсия${infoTip('Простое арифметическое среднее CTR по дням периода — каждый день учитывается с равным весом. Полезно для сравнения «типичного дня» с «общей конверсией».')}</div><div class="text-3xl font-black mt-2">${avgConv.toFixed(2)}%</div></div>`;
 }
 
 function aggregateBannerByPeriod(grouping) {
@@ -2639,33 +2715,33 @@ function renderBannerChart() {
   if (metric === 'impressions') {
     datasets = [{
       label: 'Показы (хосты)', data: series.map(s => s.impressions),
-      borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,0.1)', fill: true, tension: 0.3, pointRadius: 3
+      borderColor: CHART_PALETTE.clicks.stroke, backgroundColor: CHART_PALETTE.clicks.fill, fill: true, tension: 0.3, pointRadius: 3
     }];
     scalesConfig = { y: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } } };
   } else if (metric === 'clicks') {
     datasets = [{
       label: 'Уникальные посетители', data: series.map(s => s.clicks),
-      borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,0.1)', fill: true, tension: 0.3, pointRadius: 3
+      borderColor: CHART_PALETTE.leads.stroke, backgroundColor: CHART_PALETTE.leads.fill, fill: true, tension: 0.3, pointRadius: 3
     }];
     scalesConfig = { y: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } } };
   } else if (metric === 'conversion') {
     datasets = [{
       label: 'Конверсия (%)', data: series.map(s => s.conversion_rate),
-      borderColor: '#f97316', backgroundColor: 'rgba(249,115,22,0.1)', fill: true, tension: 0.3, pointRadius: 3
+      borderColor: CHART_PALETTE.cr.stroke, backgroundColor: CHART_PALETTE.cr.fill, fill: true, tension: 0.3, pointRadius: 3
     }];
     scalesConfig = { y: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } } };
   } else if (metric === 'imp_clicks') {
     datasets = [
-      { label: 'Показы (хосты)', data: series.map(s => s.impressions), borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,0.1)', fill: true, tension: 0.3, pointRadius: 3, yAxisID: 'y' },
-      { label: 'Уникальные посетители', data: series.map(s => s.clicks), borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,0.1)', fill: true, tension: 0.3, pointRadius: 3, yAxisID: 'y' }
+      { label: 'Показы (хосты)', data: series.map(s => s.impressions), borderColor: CHART_PALETTE.clicks.stroke, backgroundColor: CHART_PALETTE.clicks.fill, fill: true, tension: 0.3, pointRadius: 3, yAxisID: 'y' },
+      { label: 'Уникальные посетители', data: series.map(s => s.clicks), borderColor: CHART_PALETTE.leads.stroke, backgroundColor: CHART_PALETTE.leads.fill, fill: true, tension: 0.3, pointRadius: 3, yAxisID: 'y' }
     ];
     scalesConfig = { y: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } } };
   } else {
     // "all" — show impressions + clicks on left axis, conversion on right axis
     datasets = [
-      { label: 'Показы (хосты)', data: series.map(s => s.impressions), borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,0.08)', fill: true, tension: 0.3, pointRadius: 3, yAxisID: 'y' },
-      { label: 'Уникальные посетители', data: series.map(s => s.clicks), borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,0.08)', fill: true, tension: 0.3, pointRadius: 3, yAxisID: 'y' },
-      { label: 'Конверсия (%)', data: series.map(s => s.conversion_rate), borderColor: '#f97316', borderDash: [5, 5], tension: 0.3, pointRadius: 3, yAxisID: 'y1' }
+      { label: 'Показы (хосты)', data: series.map(s => s.impressions), borderColor: CHART_PALETTE.clicks.stroke, backgroundColor: CHART_PALETTE.clicks.fill, fill: true, tension: 0.3, pointRadius: 3, yAxisID: 'y' },
+      { label: 'Уникальные посетители', data: series.map(s => s.clicks), borderColor: CHART_PALETTE.leads.stroke, backgroundColor: CHART_PALETTE.leads.fill, fill: true, tension: 0.3, pointRadius: 3, yAxisID: 'y' },
+      { label: 'Конверсия (%)', data: series.map(s => s.conversion_rate), borderColor: CHART_PALETTE.cr.stroke, borderDash: [5, 5], tension: 0.3, pointRadius: 3, yAxisID: 'y1' }
     ];
     scalesConfig = {
       y: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } },
@@ -2754,19 +2830,19 @@ function renderUI() {
   if (sf !== 'all') baseline = baseline.filter(r => r.source === sf);
   if (sub1f !== 'all') baseline = baseline.filter(r => r.sub1 === sub1f);
   const plan = planFromRows(baseline, planFactState.days || 1);
-  const kpiCard = (title, valueHtml, fact, planValue, fmt) => `<div class="card">
-    <div class="text-slate-400 text-xs uppercase">${title}</div>
+  const kpiCard = (title, valueHtml, fact, planValue, fmt, tipText) => `<div class="card">
+    <div class="text-slate-400 text-xs uppercase">${title}${tipText?infoTip(tipText):''}</div>
     <div class="kpi-value"><div class="text-3xl font-black mt-2">${valueHtml}</div></div>
     <div class="kpi-pf mt-3">${planFactBar(fact, planValue, fmt)}</div>
   </div>`;
   const noDataHint = !globalRawData.length ? '<div class="col-span-full text-center text-slate-500 text-sm py-2">Нет данных за выбранный период. Нажмите « Загрузить из кабинета» для загрузки.</div>' : '';
   document.getElementById('kpiCards').innerHTML = noDataHint + `
-    ${kpiCard('Клики', t.clicks.toLocaleString('ru-RU'), t.clicks, plan.clicks, v => Math.round(v).toLocaleString('ru-RU'))}
-    ${kpiCard('Лиды', t.conversions.toLocaleString('ru-RU'), t.conversions, plan.conversions, v => Math.round(v).toLocaleString('ru-RU'))}
-    ${kpiCard('Approve %', ar.toFixed(2) + '%', ar, plan.approveRate, v => v.toFixed(1) + '%')}
-    ${kpiCard('Доход (₽)', Math.round(t.revenue).toLocaleString('ru-RU') + ' ₽', t.revenue, plan.revenue, v => Math.round(v).toLocaleString('ru-RU') + ' ₽')}
-    ${kpiCard('EPC', `<span class="text-emerald-400">${epc.toFixed(2)} ₽</span>`, epc, plan.epc, v => v.toFixed(2) + ' ₽')}
-    ${kpiCard('CR %', cr.toFixed(2) + '%', cr, plan.cr, v => v.toFixed(1) + '%')}`;
+    ${kpiCard('Клики', t.clicks.toLocaleString('ru-RU'), t.clicks, plan.clicks, v => Math.round(v).toLocaleString('ru-RU'), 'Сумма кликов из Leads.su за выбранный период с учётом фильтров «Площадка» и «Sub1». Базовая метрика трафика — знаменатель для CR и EPC.')}
+    ${kpiCard('Лиды', t.conversions.toLocaleString('ru-RU'), t.conversions, plan.conversions, v => Math.round(v).toLocaleString('ru-RU'), 'Сумма конверсий (поданных заявок) из Leads.su. CR = Лиды ÷ Клики × 100%.')}
+    ${kpiCard('Approve %', ar.toFixed(2) + '%', ar, plan.approveRate, v => v.toFixed(1) + '%', 'Approve Rate = одобренные заявки ÷ всего лидов × 100%. Показывает, насколько качественный трафик доходит до выплаты МФО.')}
+    ${kpiCard('Доход (₽)', Math.round(t.revenue).toLocaleString('ru-RU') + ' ₽', t.revenue, plan.revenue, v => Math.round(v).toLocaleString('ru-RU') + ' ₽', 'Сумма выплат из Leads.su за период по одобренным заявкам с учётом активных фильтров.')}
+    ${kpiCard('EPC', `<span class="text-emerald-400">${epc.toFixed(2)} ₽</span>`, epc, plan.epc, v => v.toFixed(2) + ' ₽', 'EPC (Earnings Per Click) = Доход ÷ Клики. Сколько ₽ в среднем приносит один клик. Главный показатель эффективности трафика.')}
+    ${kpiCard('CR %', cr.toFixed(2) + '%', cr, plan.cr, v => v.toFixed(1) + '%', 'CR (Conversion Rate) = Лиды ÷ Клики × 100%. Какая доля кликнувших оставила заявку.')}`;
   renderFunnel(data, sf);
   renderRejectRevenueAnalysis(data, sf);
   markDataUpdated();
@@ -3697,13 +3773,36 @@ function drawExtraCharts() {
       }}},tooltip:{...sharedTooltipConfig,titleColor:'#ffffff',bodyColor:'#ffffff',callbacks:{label:function(context){const v=context.raw;const p=totalRev>0?((v/totalRev)*100).toFixed(1):0;return ` ${Math.round(v).toLocaleString('ru-RU')} ₽ (${p}%)`;}}}}
     }
   });
+  // Авто-инсайт: концентрация выручки по площадкам.
+  const donutInsightEl=document.getElementById('donutChartInsight');
+  if(donutInsightEl){
+    // Исключаем «Другие» из расчёта концентрации, иначе слипшийся хвост искажает HHI.
+    const realSources=dd.filter(d=>d.name!=='Другие').map(d=>({name:d.name,value:d.revenue}));
+    donutInsightEl.innerHTML=renderInsightFooter([narrateConcentration(realSources,'выручки')]);
+  }
   let bd = Object.entries(offMap).map(([n,s])=>({name:n.split(',')[1]?n.split(',')[1].trim():n,epc:s.clicks>0?(s.revenue/s.clicks):0,clicks:s.clicks})).filter(i=>i.clicks>100&&i.epc>0).sort((a,b)=>b.epc-a.epc).slice(0,5);
   if(barChartInstance)barChartInstance.destroy();
   barChartInstance = new Chart(document.getElementById('barChart'),{
-    type:'bar',data:{labels:bd.map(d=>d.name.substring(0,20)+(d.name.length>20?'...':'')),datasets:[{label:'EPC (₽)',data:bd.map(d=>d.epc),backgroundColor:'#10b981',borderRadius:4}]},
+    type:'bar',data:{labels:bd.map(d=>d.name.substring(0,20)+(d.name.length>20?'...':'')),datasets:[{label:'EPC (₽)',data:bd.map(d=>d.epc),backgroundColor:CHART_PALETTE.epc.stroke,borderRadius:4}]},
     options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{...sharedTooltipConfig,callbacks:{label:ctx=>` EPC: ${Number(ctx.raw).toFixed(2)} ₽`}}},
       scales:{x:{ticks:{color:'#94a3b8'},grid:{display:false}},y:{ticks:{color:'#94a3b8'},grid:{color:'#1e293b'}}}}
   });
+  // Авто-инсайт: насколько топовый оффер опережает медиану по EPC.
+  const barInsightEl=document.getElementById('barChartInsight');
+  if(barInsightEl){
+    if(!bd.length){
+      barInsightEl.innerHTML=renderInsightFooter([{tone:'mute',confidence:'low',
+        html:'Нет офферов с ≥ 100 кликов и положительным EPC за период.'}]);
+    }else{
+      const epcs=bd.map(d=>d.epc).sort((a,b)=>a-b);
+      const median=epcs[Math.floor(epcs.length/2)];
+      const top=bd[0];
+      const gap=median>0?((top.epc-median)/median*100):0;
+      const tone=gap>=50?'good':gap>=20?'mute':'warn';
+      barInsightEl.innerHTML=renderInsightFooter([{tone,confidence:_confidenceFromN(bd.length,3,5),
+        html:`Лидер: <b>${escapeHtml(top.name)}</b> с EPC <b>${top.epc.toFixed(2)} ₽</b> (${top.clicks.toLocaleString('ru-RU')} кликов). ${gap>=50?`Оторвался от медианы топ-5 на <b>${gap.toFixed(0)}%</b> — масштабируйте бюджет.`:gap>=20?`Опережает медиану топ-5 на <b>${gap.toFixed(0)}%</b>.`:`Разрыв с медианой топ-5 всего <b>${gap.toFixed(0)}%</b> — все офферы близки по эффективности.`}`}]);
+    }
+  }
 }
 
 // ========================== PLATFORM CHARTS ==========================
@@ -3773,6 +3872,24 @@ function renderPlatformCharts() {
       plugins:{legend:{labels:{color:'#cbd5e1'}},tooltip:{...sharedTooltipConfig,callbacks:{label:ctx=>` ${ctx.dataset.label}: ${ctx.raw.toLocaleString('ru-RU')} кликов`}}},
       scales:{x:{ticks:{color:'#94a3b8',maxRotation:0,autoSkip:true},grid:{display:false}},y:{ticks:{color:'#94a3b8'},grid:{color:'#1e293b'}}}}
   });
+  // Авто-инсайты под platform-чартами: концентрация по метрике + тренд лидера.
+  const _topByMetric=(metric)=>Object.entries(sourceTotals)
+    .filter(([,v])=>(Number(v[metric])||0)>0)
+    .map(([name,v])=>({name,value:Number(v[metric])||0}))
+    .sort((a,b)=>b.value-a.value);
+  const renderPlatformInsight=(elId,metric,unitLabel,trendLabel,fmt)=>{
+    const el=document.getElementById(elId);
+    if(!el)return;
+    const ranked=_topByMetric(metric);
+    const leader=ranked[0];
+    const leaderSeries=leader?periods.map(p=>(bySourcePeriod[leader.name]?.[p]?.[metric])||0):[];
+    el.innerHTML=renderInsightFooter([
+      narrateConcentration(ranked,unitLabel),
+      leader?narrateTrend(leaderSeries,`${leader.name} · ${trendLabel}`,fmt):null
+    ]);
+  };
+  renderPlatformInsight('revenueByPlatformInsight','revenue','выручки','выручка',v=>Math.round(v).toLocaleString('ru-RU')+' ₽');
+  renderPlatformInsight('trafficByPlatformInsight','clicks','трафика','клики',v=>Math.round(v).toLocaleString('ru-RU'));
 }
 
 // ========================== EPC ANALYTICS ==========================
@@ -3800,12 +3917,23 @@ function renderEPCAnalytics() {
   if(epcLineChart)epcLineChart.destroy();
   epcLineChart=new Chart(document.getElementById('epcLineChart').getContext('2d'),{
     type:'line',data:{labels:labels.map(l=>grouping==='day'?l.slice(5):l),datasets:[
-      {label:'EPC (₽)',data:epcValues,borderColor:'#f59e0b',backgroundColor:'rgba(245,158,11,0.1)',fill:true,tension:0.3,pointRadius:3,pointBackgroundColor:epcValues.map(v=>v<avgEpc*0.7?'#ef4444':'#f59e0b')},
-      {label:'Среднее',data:labels.map(()=>avgEpc),borderColor:'#64748b',borderDash:[8,4],pointRadius:0,fill:false}
+      {label:'EPC (₽)',data:epcValues,borderColor:CHART_PALETTE.epc.stroke,backgroundColor:CHART_PALETTE.epc.fill,fill:true,tension:0.3,pointRadius:3,pointBackgroundColor:epcValues.map(v=>v<avgEpc*0.7?'#FF453A':CHART_PALETTE.epc.stroke)},
+      {label:'Среднее',data:labels.map(()=>avgEpc),borderColor:CHART_PALETTE.forecast.stroke,borderDash:[8,4],pointRadius:0,fill:false}
     ]},options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
       plugins:{tooltip:{...sharedTooltipConfig,callbacks:{label:ctx=>` ${ctx.dataset.label}: ${Number(ctx.raw).toFixed(2)} ₽`}}},
       scales:{y:{ticks:{color:'#94a3b8'},grid:{color:'#1e293b'}},x:{ticks:{color:'#94a3b8',maxRotation:45},grid:{display:false}}}}
   });
+  // Авто-инсайт под графиком динамики EPC
+  const epcLineInsightEl=document.getElementById('epcLineInsight');
+  if(epcLineInsightEl){
+    const dropPoints=epcValues.filter(v=>v>0&&v<avgEpc*0.7).length;
+    const items=[
+      narrateTrend(epcValues.filter(v=>v>0),'EPC',v=>v.toFixed(2)+' ₽'),
+      dropPoints>0?{tone:dropPoints>=Math.max(2,labels.length*0.2)?'bad':'warn',confidence:_confidenceFromN(labels.length,7,21),
+        html:`<b>${dropPoints}</b> ${dropPoints===1?'точка':dropPoints<5?'точки':'точек'} с EPC ниже 70% от среднего (${avgEpc.toFixed(2)} ₽) — присмотритесь к этим периодам в матрице.`}:null
+    ];
+    epcLineInsightEl.innerHTML=renderInsightFooter(items);
+  }
 
   // EPC by weekday
   const wdMap=Array(7).fill().map(()=>({clicks:0,revenue:0}));
@@ -3814,11 +3942,17 @@ function renderEPCAnalytics() {
   const wdEpc=wdNames.map((n,i)=>({name:n,epc:wdMap[i].clicks>0?wdMap[i].revenue/wdMap[i].clicks:0,clicks:wdMap[i].clicks}));
   if(epcWeekdayChart)epcWeekdayChart.destroy();
   epcWeekdayChart=new Chart(document.getElementById('epcWeekdayChart').getContext('2d'),{
-    type:'bar',data:{labels:wdEpc.map(d=>d.name),datasets:[{label:'Средний EPC (₽)',data:wdEpc.map(d=>d.epc),backgroundColor:wdEpc.map(d=>d.epc<avgEpc*0.7?'#ef4444':'#3b82f6'),borderRadius:4}]},
+    type:'bar',data:{labels:wdEpc.map(d=>d.name),datasets:[{label:'Средний EPC (₽)',data:wdEpc.map(d=>d.epc),backgroundColor:wdEpc.map(d=>d.epc<avgEpc*0.7?'#FF453A':CHART_PALETTE.epc.stroke),borderRadius:4}]},
     options:{responsive:true,maintainAspectRatio:false,
       plugins:{tooltip:{...sharedTooltipConfig,callbacks:{label:ctx=>` ${Number(ctx.raw).toFixed(2)} ₽ (кликов: ${wdEpc[ctx.dataIndex].clicks.toLocaleString('ru-RU')})`}}},
       scales:{y:{ticks:{color:'#94a3b8'},grid:{color:'#1e293b'}},x:{ticks:{color:'#94a3b8'},grid:{display:false}}}}
   });
+  const epcWeekdayInsightEl=document.getElementById('epcWeekdayInsight');
+  if(epcWeekdayInsightEl){
+    epcWeekdayInsightEl.innerHTML=renderInsightFooter([
+      narrateWeekdaySeasonality(wdEpc.map(w=>({name:w.name,value:w.epc,weight:w.clicks})),'EPC')
+    ]);
+  }
 
   // EPC by month
   const mMap={};
@@ -3827,11 +3961,17 @@ function renderEPCAnalytics() {
   const mEpc=mLabels.map(m=>mMap[m].clicks>0?mMap[m].revenue/mMap[m].clicks:0);
   if(epcMonthChartInstance)epcMonthChartInstance.destroy();
   epcMonthChartInstance=new Chart(document.getElementById('epcMonthChart').getContext('2d'),{
-    type:'bar',data:{labels:mLabels,datasets:[{label:'EPC (₽)',data:mEpc,backgroundColor:mEpc.map(v=>v<avgEpc*0.7?'#ef4444':v<avgEpc*0.9?'#f59e0b':'#10b981'),borderRadius:4}]},
+    type:'bar',data:{labels:mLabels,datasets:[{label:'EPC (₽)',data:mEpc,backgroundColor:mEpc.map(v=>v<avgEpc*0.7?'#FF453A':v<avgEpc*0.9?'#FF9F0A':CHART_PALETTE.epc.stroke),borderRadius:4}]},
     options:{responsive:true,maintainAspectRatio:false,
       plugins:{tooltip:{...sharedTooltipConfig,callbacks:{label:ctx=>` EPC: ${Number(ctx.raw).toFixed(2)} ₽`}}},
       scales:{y:{ticks:{color:'#94a3b8'},grid:{color:'#1e293b'}},x:{ticks:{color:'#94a3b8'},grid:{display:false}}}}
   });
+  const epcMonthInsightEl=document.getElementById('epcMonthInsight');
+  if(epcMonthInsightEl){
+    epcMonthInsightEl.innerHTML=renderInsightFooter([
+      narrateTrend(mEpc.filter(v=>v>0),'EPC по месяцам',v=>v.toFixed(2)+' ₽')
+    ]);
+  }
 
   // Heatmap: ось Y — месяц или неделя (issue 5).
   const heatAxis = (document.getElementById('epcHeatmapAxis') || {}).value || 'month';
