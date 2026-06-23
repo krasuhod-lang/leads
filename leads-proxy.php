@@ -1171,7 +1171,7 @@ function aiBuildSignature() {
             // Пустые/общие формулировки (без target и без числового expected_impact.delta_pct)
             // в UI помечаются как low-quality и сворачиваются — поэтому модели нет смысла их
             // выдавать.
-            'recommendations' => 'array<{title:string, target:{type:"offer"|"platform"|"sub1"|"channel"|"global", name:string}, action_type:string (one of allowed_action_types), action:string, implementation_steps:array<string> (2-5 шагов «что нажать / кому позвонить»), expected_impact:{metric:"epc"|"revenue"|"cr"|"ar"|"approved"|"clicks", current:number, target:number, delta_abs:number, delta_pct:number, horizon_days:7|30, confidence:"low"|"medium"|"high"}, evidence:{source:"daily_recent"|"weekly_trend"|"monthly_trend"|"market_compare"|"sub1_anomalies"|"offers_top"|"offers_underperforming"|"offers_daily_epc"|"top_platforms"|"traffic_sources_breakdown"|"forecast_baseline"|"anomalies_detected"|"epc_drops_signals"|"reject_funnel"|"banner_revenue_relation"|"integration_health"|"kpi", fields:array<string>, values:object, note:string}, time_window:{from:string, to:string}, data_points_used:number, revoke_if:string (короткое условие отмены, ≤140 chars), priority:"high"|"medium"|"low"}> — 3-7 конкретных рекомендаций. ОГРАНИЧЕНИЯ: target.name (если type≠"global"|"channel") ОБЯЗАН быть из allowed_entities соответствующего типа; action_type ОБЯЗАН быть из allowed_action_types; expected_impact.delta_pct — обязательно ненулевое число; evidence.fields должны существовать в evidence.source-блоке payload.',
+            'recommendations' => 'array<{title:string, target:{type:"offer"|"platform"|"sub1"|"channel"|"global", name:string}, action_type:string (one of allowed_action_types), action:string, implementation_steps:array<string> (2-5 шагов «что нажать / кому позвонить»), expected_impact:{metric:"epc"|"revenue"|"cr"|"ar"|"approved"|"clicks", current:number, target:number, delta_abs:number, delta_pct:number, horizon_days:7|30, confidence:"low"|"medium"|"high"}, evidence:{source:"daily_recent"|"weekly_trend"|"monthly_trend"|"market_compare"|"sub1_anomalies"|"offers_top"|"offers_underperforming"|"offers_daily_epc"|"top_platforms"|"traffic_sources_breakdown"|"forecast_baseline"|"anomalies_detected"|"epc_drops_signals"|"reject_funnel"|"banner_revenue_relation"|"integration_health"|"plan_vs_fact"|"kpi", fields:array<string>, values:object, note:string}, time_window:{from:string, to:string}, data_points_used:number, revoke_if:string (короткое условие отмены, ≤140 chars), priority:"high"|"medium"|"low"}> — 3-7 конкретных рекомендаций. ОГРАНИЧЕНИЯ: target.name (если type≠"global"|"channel") ОБЯЗАН быть из allowed_entities соответствующего типа; action_type ОБЯЗАН быть из allowed_action_types; expected_impact.delta_pct — обязательно ненулевое число; evidence.fields должны существовать в evidence.source-блоке payload.',
             'forecast' => '{period_7d:{revenue:number, clicks:number, epc:number, approve_rate:number, confidence:"low"|"medium"|"high", basis:string}, period_30d:{revenue:number, clicks:number, epc:number, approve_rate:number, confidence:"low"|"medium"|"high", basis:string}}',
             'platforms_breakdown' => 'array<{name:string, revenue_share_pct:number, status:"grow"|"stable"|"watch"|"risk", insight:string, action:string}> — разбор только по площадкам из top_platforms (до 10), с долей в выручке',
             'key_decisions' => 'array<{decision:string, target:{type:"offer"|"platform"|"sub1"|"channel"|"global", name:string}, action_type:string (one of allowed_action_types), rationale:string, kpi_impact:{metric:string, delta_pct:number, horizon_days:7|30}}> — 2-5 ключевых управленческих решений, направленных на рост выручки. Те же ограничения по target/action_type, что и в recommendations.',
@@ -1306,6 +1306,7 @@ J. kpi_action_plan — ALWAYS produce it (see [KPI ACHIEVEMENT PLAN]). targets[]
 I. anomalies_detected (input field, NOT output) — массив заранее посчитанных аномалий: fraud_suspect (sub1 с подозрительно низким AR/CR при больших кликах), epc_drop (день-к-дню), offer_epc_drop / platform_epc_drop (просадки конкретного оффера или площадки vs trailing-7d-median), quality_anomaly (offer×platform пары с аномально низким AR). Используй их как АВТОРИТЕТНЫЕ диагнозы — не пропускай и не пересчитывай. Включи их в risks (kind=fraud_suspect → severity=high) и в epc_drops (kind=*epc_drop*). Для quality_anomaly выводи в reject_monetization_strategy с предложением routing-а.
 K. banner_revenue_relation — если correlation слабая/отрицательная или RPM низкий, объясни где показы не монетизируются, добавь рекомендацию с evidence.source="banner_revenue_relation" и предложи проверку офферов/маршрута.
 L. integration_health — если есть warnings или пустые кэши (banner/market/rejects), включи это в risks и dashboard_ux_suggestions, но не выдумывай данные вместо отсутствующих.
+N. plan_vs_fact — если available=true, ОБЯЗАТЕЛЬНО используй этот блок: план по периодам построен от baseline-ставок (EPC/CR/Approve) baseline_period и масштабирован по фактическому объёму трафика (traffic_coef = fact_clicks / baseline_clicks_avg_per_period). Для каждого периода series[] содержит fact, plan и deviation (revenue_abs/revenue_pct/epc_pct/cr_pct/approve_rate_pct). totals.revenue_gap_pct — суммарное отклонение по выручке за период. Используй это как АВТОРИТЕТНУЮ диагностику плана/факта: (1) в summary назови суммарный gap_pct и periods_below_plan; (2) в risks отметь периоды, где revenue_pct ≤ −10%; (3) в recommendations и kpi_action_plan привязывай шаги ровно к тем периодам и метрикам, по которым deviation отрицательное (epc_pct ниже 0 → проблема с воронкой/качеством, cr_pct ниже 0 → проблема со связкой клик→лид, approve_rate_pct ниже 0 → проблема с одобрением). Если traffic_coef упал ниже 1, явно фиксируй это как ограничение плана и НЕ предлагай увеличить цели без плана возврата трафика. Source для evidence — "plan_vs_fact".
 M. dashboard_ux_suggestions — 3-6 коротких предложений по улучшению цифр и интерфейса: какие KPI/фильтры/алерты/графики добавить или упростить, и какой эффект это даст оператору.
 
 [OUTPUT SCHEMA]
@@ -1364,6 +1365,12 @@ function aiTrimPayload($p) {
             }
         }
         unset($ch);
+    }
+    // План/факт серия (monthly): кэпим до последних 18 месяцев — анализ
+    // обычно интересует свежее, а длинный хвост раздувает payload.
+    if (isset($p['plan_vs_fact']['series']) && is_array($p['plan_vs_fact']['series'])
+        && count($p['plan_vs_fact']['series']) > 18) {
+        $p['plan_vs_fact']['series'] = array_slice($p['plan_vs_fact']['series'], -18);
     }
     return $p;
 }
@@ -3214,6 +3221,94 @@ if ($action === 'health') {
                 'configured' => $tgConfigured,
             ],
         ],
+    ], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+// Активная проверка интеграции Leads.su: делает реальный запрос к
+// /webmaster/platforms с лимитом 1 и возвращает HTTP-статус, latency и
+// первую площадку (если получена). Используется кнопкой «Проверить health»
+// и можно дёргать вручную, чтобы убедиться, что токен действительно работает.
+if ($action === 'leads_diag') {
+    $effectiveToken = leadsEffectiveToken($db, $token);
+    $tokenSource = leadsTokenSource($db, $token);
+    if ($effectiveToken === '') {
+        echo json_encode([
+            'status' => 'error',
+            'ok' => false,
+            'reason' => 'no_token',
+            'message' => 'Leads.su token не задан (env LEADS_API_TOKEN или app_settings.leads_api_token).',
+            'token_source' => $tokenSource,
+        ], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+    $url = "https://api.leads.su/webmaster/platforms?token=" . urlencode($effectiveToken) . "&limit=1&offset=0";
+    $startedAt = microtime(true);
+    $ch = curl_init();
+    curl_setopt_array($ch, [
+        CURLOPT_URL => $url,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_TIMEOUT => 15,
+        CURLOPT_SSL_VERIFYPEER => false,
+        CURLOPT_HTTPHEADER => ['Accept: application/json', 'User-Agent: leads-proxy/3.0'],
+    ]);
+    $body = curl_exec($ch);
+    $http = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $curlErr = curl_error($ch);
+    curl_close($ch);
+    $latencyMs = (int)round((microtime(true) - $startedAt) * 1000);
+
+    if ($curlErr) {
+        echo json_encode([
+            'status' => 'error',
+            'ok' => false,
+            'reason' => 'network_error',
+            'message' => 'Сетевая ошибка: ' . $curlErr,
+            'http_status' => $http,
+            'latency_ms' => $latencyMs,
+            'token_source' => $tokenSource,
+        ], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+    $json = json_decode((string)$body, true);
+    $jsonOk = json_last_error() === JSON_ERROR_NONE;
+    $rows = is_array($json) ? ($json['data'] ?? $json['platforms'] ?? $json['items'] ?? []) : [];
+    $apiStatus = is_array($json) ? ($json['status'] ?? '') : '';
+    $apiMessage = is_array($json) ? ($json['message'] ?? '') : '';
+    $apiError = is_array($json) ? ($json['error'] ?? null) : null;
+    $first = (is_array($rows) && isset($rows[0]) && is_array($rows[0])) ? $rows[0] : null;
+    $ok = $http === 200 && $jsonOk && ($apiStatus === '' || $apiStatus === 'success');
+    if (!$ok) {
+        $reason = $http !== 200 ? 'http_' . $http
+            : (!$jsonOk ? 'invalid_json'
+            : ($apiStatus && $apiStatus !== 'success' ? 'api_status_' . $apiStatus : 'unknown'));
+        $msg = $apiMessage ?: (is_array($apiError) && isset($apiError['message']) ? $apiError['message']
+            : (is_string($apiError) ? $apiError : 'Leads.su API ответил с ошибкой.'));
+        echo json_encode([
+            'status' => 'error',
+            'ok' => false,
+            'reason' => $reason,
+            'message' => $msg,
+            'http_status' => $http,
+            'latency_ms' => $latencyMs,
+            'token_source' => $tokenSource,
+            'sample_body' => substr((string)$body, 0, 240),
+        ], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+    echo json_encode([
+        'status' => 'success',
+        'ok' => true,
+        'http_status' => $http,
+        'latency_ms' => $latencyMs,
+        'token_source' => $tokenSource,
+        'platforms_returned' => is_array($rows) ? count($rows) : 0,
+        'first_platform' => $first ? [
+            'id' => (string)($first['id'] ?? $first['platform_id'] ?? ''),
+            'name' => (string)($first['name'] ?? ''),
+        ] : null,
+        'checked_at' => time(),
     ], JSON_UNESCAPED_UNICODE);
     exit;
 }
