@@ -739,6 +739,17 @@ try {
     )');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_funnel_daily_date ON funnel_daily(date)');
 
+    // Маппинг площадок leads.su (source_id) на 5 каналов монетизации.
+    // Если строки нет — площадка считается «online» (общий поток с витрины).
+    // Заполняется руками через UI «Настройки → Каналы» или через action=channel_source_map_save.
+    $safeExec('CREATE TABLE IF NOT EXISTS channel_source_map (
+        source_id TEXT PRIMARY KEY,
+        source_name TEXT,
+        channel TEXT NOT NULL,
+        updated_at INTEGER NOT NULL DEFAULT 0
+    )');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_channel_source_map_channel ON channel_source_map(channel)');
+
     // Кэш результатов глубокого AI-анализа. Ключ — диапазон дат `from|to`,
     // чтобы при перезагрузке страницы пользователь видел тот же отчёт без
     // повторного дорогого запроса к провайдеру. Принудительный пересчёт —
@@ -3459,99 +3470,719 @@ function rejectFunnelSteps() {
     ];
 }
 
+/** Список допустимых id каналов (синхронизирован с rejectChannels()). */
+function rejectChannelIds() {
+    static $ids = null;
+    if ($ids === null) $ids = array_map(function ($c) { return $c['id']; }, rejectChannels());
+    return $ids;
+}
+
+/**
+ * Маппинг source_id → channel. Если source_id отсутствует в channel_source_map,
+ * по умолчанию возвращаем 'online' (общий поток с витрины). Это позволяет
+ * показывать корректную сумму по каналу «Онлайн», даже если админ ещё не
+ * разнёс площадки руками. Возвращает ассоциативный массив [source_id => channel].
+ */
+function loadChannelSourceMap($db) {
+    $map = [];
+    $res = @$db->query('SELECT source_id, channel FROM channel_source_map');
+    if ($res instanceof SQLite3Result) {
+        while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
+            $map[(string)$row['source_id']] = (string)$row['channel'];
+        }
+    }
+    return $map;
+}
+
+/** Расширенный нормализатор канала: проверка по справочнику + дефолт. */
+function normalizeChannelId($ch) {
+    $ch = strtolower(trim((string)$ch));
+    return in_array($ch, rejectChannelIds(), true) ? $ch : 'online';
+}
+
+/**
+ * Подтягивает суточные показы/клики из API Я.Метрики и складывает в
+ * banner_impressions_cache (UPSERT по (date, banner_id, source)).
+ * Если токен не сконфигурирован — возвращает ['error' => ...] и НЕ падает,
+ * чтобы дашборд продолжил отдавать историю из кэша.
+ */
+function ymFetchAndCacheBannerData($db, $startDay, $endDay) {
+    global $YM_COUNTER_ID, $YM_IMPRESSION_GOAL_ID, $YM_CLICK_GOAL_ID;
+    $stmt = $db->prepare('SELECT value FROM ym_settings WHERE key = :key');
+    $stmt->bindValue(':key', 'oauth_token', SQLITE3_TEXT);
+    $res = $stmt->execute();
+    $row = $res->fetchArray(SQLITE3_ASSOC);
+    $ymToken = $row['value'] ?? '';
+    if (!$ymToken) return ['error' => 'YM token not set', 'saved' => 0];
+
+    $metrics = "ym:s:goal{$YM_IMPRESSION_GOAL_ID}users,ym:s:goal{$YM_CLICK_GOAL_ID}users";
+    $apiUrl = "https://api-metrika.yandex.net/stat/v1/data"
+        . "?ids={$YM_COUNTER_ID}"
+        . "&metrics=" . urlencode($metrics)
+        . "&dimensions=ym:s:date"
+        . "&date1={$startDay}&date2={$endDay}"
+        . "&sort=ym:s:date";
+    $data = ymApiGet($apiUrl, $ymToken);
+    if (isset($data['error'])) return ['error' => $data['error'], 'saved' => 0];
+
+    $saved = 0;
+    $now = time();
+    $ins = $db->prepare("INSERT INTO banner_impressions_cache (date, banner_id, source, impressions, clicks, updated_at)
+        VALUES (:date, '', 'ya_metrika', :imp, :clk, :ts)
+        ON CONFLICT(date, banner_id, source) DO UPDATE SET
+            impressions = excluded.impressions,
+            clicks      = excluded.clicks,
+            updated_at  = excluded.updated_at");
+    foreach (($data['data'] ?? []) as $dRow) {
+        $date = $dRow['dimensions'][0]['name'] ?? null;
+        if (!$date) continue;
+        if (strlen($date) === 8 && ctype_digit($date)) {
+            $date = substr($date, 0, 4) . '-' . substr($date, 4, 2) . '-' . substr($date, 6, 2);
+        }
+        $imp = (int)($dRow['metrics'][0] ?? 0);
+        $clk = (int)($dRow['metrics'][1] ?? 0);
+        $ins->bindValue(':date', $date, SQLITE3_TEXT);
+        $ins->bindValue(':imp', $imp, SQLITE3_INTEGER);
+        $ins->bindValue(':clk', $clk, SQLITE3_INTEGER);
+        $ins->bindValue(':ts',  $now, SQLITE3_INTEGER);
+        if ($ins->execute()) $saved++;
+        $ins->reset();
+    }
+    return ['saved' => $saved, 'impression_goal_id' => $YM_IMPRESSION_GOAL_ID, 'click_goal_id' => $YM_CLICK_GOAL_ID];
+}
+
+/**
+ * Возвращает агрегаты воронки за период:
+ *   [step => total, history => [date => [step => value]]]
+ * Шаги 1-2 — banner_impressions_cache (Я.Метрика).
+ * Шаги 3-5 — daily_stats (clicks / conversions / approved).
+ */
+function buildFunnelAggregates($db, $startDate, $endDate) {
+    $dFrom = substr($startDate, 0, 10);
+    $dTo   = substr($endDate, 0, 10);
+    $totals = [1 => 0, 2 => 0, 3 => 0, 4 => 0, 5 => 0];
+    $history = [];
+
+    // --- Я.Метрика: показы (1) и клики (2)
+    $stmt = $db->prepare("SELECT date,
+            SUM(impressions) AS imp,
+            SUM(clicks)      AS clk
+        FROM banner_impressions_cache
+        WHERE date BETWEEN :a AND :b
+        GROUP BY date");
+    $stmt->bindValue(':a', $dFrom, SQLITE3_TEXT);
+    $stmt->bindValue(':b', $dTo,   SQLITE3_TEXT);
+    $res = $stmt->execute();
+    while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
+        $d = $row['date'];
+        $history[$d] = $history[$d] ?? [1 => 0, 2 => 0, 3 => 0, 4 => 0, 5 => 0];
+        $history[$d][1] += (int)$row['imp'];
+        $history[$d][2] += (int)$row['clk'];
+        $totals[1] += (int)$row['imp'];
+        $totals[2] += (int)$row['clk'];
+    }
+
+    // --- leads.su daily_stats: клики (3), конверсии (4), approve (5)
+    // raw_clicks предпочитаем для шага 3, если есть; иначе clicks.
+    $stmt = $db->prepare("SELECT date,
+            SUM(COALESCE(NULLIF(raw_clicks,0), clicks)) AS step3,
+            SUM(conversions) AS step4,
+            SUM(approved)    AS step5
+        FROM daily_stats
+        WHERE substr(date,1,10) BETWEEN :a AND :b
+        GROUP BY substr(date,1,10)");
+    $stmt->bindValue(':a', $dFrom, SQLITE3_TEXT);
+    $stmt->bindValue(':b', $dTo,   SQLITE3_TEXT);
+    $res = $stmt->execute();
+    while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
+        $d = $row['date'];
+        $history[$d] = $history[$d] ?? [1 => 0, 2 => 0, 3 => 0, 4 => 0, 5 => 0];
+        $history[$d][3] += (int)$row['step3'];
+        $history[$d][4] += (int)$row['step4'];
+        $history[$d][5] += (int)$row['step5'];
+        $totals[3] += (int)$row['step3'];
+        $totals[4] += (int)$row['step4'];
+        $totals[5] += (int)$row['step5'];
+    }
+    ksort($history);
+    return ['totals' => $totals, 'history' => $history];
+}
+
 if ($action === 'channels_overview') {
-    // Сводка по 5 каналам: трафик / план / факт / выполнение / расходы / прибыль / EPC.
-    // Реальная агрегация подключается в PR 2 (требует решения по источнику плана и расходов).
-    $channels = rejectChannels();
+    // Реальная сводка: трафик и факт-выручка — из daily_stats через маппинг
+    // source_id → channel; план — из channel_plan; расходы — из channel_costs_log;
+    // EPC = revenue / traffic; gross_profit = revenue - costs.
+    $dFrom = substr($start_date, 0, 10);
+    $dTo   = substr($end_date,   0, 10);
+    $srcMap = loadChannelSourceMap($db);
+
+    $byChannel = [];
+    foreach (rejectChannelIds() as $cid) {
+        $byChannel[$cid] = ['traffic' => 0, 'fact_revenue' => 0.0, 'plan_revenue' => 0.0, 'costs' => 0.0];
+    }
+
+    if ($dFrom && $dTo) {
+        // Факт + трафик по площадкам
+        $stmt = $db->prepare("SELECT source_id,
+                SUM(COALESCE(NULLIF(raw_clicks,0), clicks)) AS traffic,
+                SUM(revenue) AS revenue
+            FROM daily_stats
+            WHERE substr(date,1,10) BETWEEN :a AND :b
+            GROUP BY source_id");
+        $stmt->bindValue(':a', $dFrom, SQLITE3_TEXT);
+        $stmt->bindValue(':b', $dTo,   SQLITE3_TEXT);
+        $res = $stmt->execute();
+        while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
+            $sid = (string)$row['source_id'];
+            $ch  = $srcMap[$sid] ?? 'online';
+            $ch  = in_array($ch, rejectChannelIds(), true) ? $ch : 'online';
+            $byChannel[$ch]['traffic']      += (int)$row['traffic'];
+            $byChannel[$ch]['fact_revenue'] += (float)$row['revenue'];
+        }
+
+        // План по каналу (пересекающие период строки берём целиком — план
+        // обычно задаётся помесячно, и точная пропорция не требуется).
+        $stmt = $db->prepare("SELECT channel, SUM(plan_revenue) AS plan
+            FROM channel_plan
+            WHERE NOT (period_end < :a OR period_start > :b)
+            GROUP BY channel");
+        $stmt->bindValue(':a', $dFrom, SQLITE3_TEXT);
+        $stmt->bindValue(':b', $dTo,   SQLITE3_TEXT);
+        $res = $stmt->execute();
+        while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
+            $ch = normalizeChannelId($row['channel']);
+            $byChannel[$ch]['plan_revenue'] += (float)$row['plan'];
+        }
+
+        // Расходы — суммируем по дням внутри периода.
+        $stmt = $db->prepare("SELECT channel, SUM(cost) AS cost
+            FROM channel_costs_log
+            WHERE date BETWEEN :a AND :b
+            GROUP BY channel");
+        $stmt->bindValue(':a', $dFrom, SQLITE3_TEXT);
+        $stmt->bindValue(':b', $dTo,   SQLITE3_TEXT);
+        $res = $stmt->execute();
+        while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
+            $ch = normalizeChannelId($row['channel']);
+            $byChannel[$ch]['costs'] += (float)$row['cost'];
+        }
+    }
+
+    $hasAnyData = false;
     $rows = [];
-    foreach ($channels as $ch) {
+    foreach (rejectChannels() as $ch) {
+        $b = $byChannel[$ch['id']];
+        $plan = (float)$b['plan_revenue'];
+        $fact = (float)$b['fact_revenue'];
+        $traffic = (int)$b['traffic'];
+        $costs = (float)$b['costs'];
+        $planCompletion = $plan > 0 ? round($fact / $plan * 100, 1) : null;
+        $epc = $traffic > 0 ? round($fact / $traffic, 2) : null;
+        if ($traffic > 0 || $fact > 0 || $plan > 0 || $costs > 0) $hasAnyData = true;
         $rows[] = [
-            'channel'        => $ch['id'],
-            'label'          => $ch['label'],
-            'traffic'        => 0,
-            'plan_revenue'   => 0,
-            'fact_revenue'   => 0,
-            'plan_completion'=> null,   // % выполнения; null = нет плана
-            'costs'          => 0,
-            'gross_profit'   => 0,
-            'epc'            => null,
+            'channel'         => $ch['id'],
+            'label'           => $ch['label'],
+            'traffic'         => $traffic,
+            'plan_revenue'    => round($plan, 2),
+            'fact_revenue'    => round($fact, 2),
+            'plan_completion' => $planCompletion,
+            'costs'           => round($costs, 2),
+            'gross_profit'    => round($fact - $costs, 2),
+            'epc'             => $epc,
         ];
     }
+
     echo json_encode([
         'status'          => 'success',
-        'stub'            => true,
+        'stub'            => !$hasAnyData,
         'start_date'      => $start_date,
         'end_date'        => $end_date,
         'channels'        => $rows,
-        'pending_sources' => ['channel_plan', 'channel_costs_log', 'leads_su_traffic_per_channel'],
+        'pending_sources' => $hasAnyData ? [] : ['channel_plan', 'channel_costs_log', 'daily_stats'],
     ], JSON_UNESCAPED_UNICODE);
     exit;
 }
 
 if ($action === 'funnel_history') {
-    // Воронка 5 шагов + история по дням. Шаги 1..2 — Я.Метрика, 3 — leads.su, 4..5 — CPA.
-    // Реальные счётчики подключаются в PR 3 (требует goal_id для «показ_баннера» / «клик_баннера»).
     $steps = rejectFunnelSteps();
+    $agg = buildFunnelAggregates($db, $start_date, $end_date);
+    $totals = $agg['totals'];
+    $history = $agg['history'];
+
     $stages = [];
+    $prev = null;
     foreach ($steps as $s) {
-        $stages[] = $s + ['value' => 0, 'conversion_from_prev' => null];
+        $val = (int)($totals[$s['step']] ?? 0);
+        $conv = ($prev !== null && $prev > 0) ? round($val / $prev * 100, 2) : null;
+        $stages[] = $s + ['value' => $val, 'conversion_from_prev' => $conv];
+        $prev = $val;
     }
+
+    // История по дням — массив для FE (упорядоченный).
+    $historyArr = [];
+    foreach ($history as $date => $byStep) {
+        $row = ['date' => $date];
+        for ($i = 1; $i <= 5; $i++) $row['step' . $i] = (int)($byStep[$i] ?? 0);
+        $historyArr[] = $row;
+    }
+
+    $hasAny = array_sum($totals) > 0;
     echo json_encode([
         'status'          => 'success',
-        'stub'            => true,
+        'stub'            => !$hasAny,
         'start_date'      => $start_date,
         'end_date'        => $end_date,
         'stages'          => $stages,
-        'history'         => [],
-        'pending_sources' => ['banner_impressions_cache', 'funnel_daily', 'ya_metrika_goals'],
+        'history'         => $historyArr,
+        'pending_sources' => $hasAny ? [] : ['banner_impressions_cache', 'daily_stats'],
     ], JSON_UNESCAPED_UNICODE);
     exit;
 }
 
 if ($action === 'conversion_dynamics') {
     // Линейный график итоговой конверсии (Показ → Approve) + benchmark + аномалии.
-    // Benchmark берём из app_settings.conversion_benchmark_pct (по умолчанию 3.66%).
     $benchmark = (float)settingGet($db, 'conversion_benchmark_pct', '3.66');
     if ($benchmark <= 0) $benchmark = 3.66;
+    // Относительный порог падения: -15% к бенчмарку — аномалия. Настраивается
+    // в app_settings.conversion_anomaly_drop_pct (доля, 0.15 = 15%).
+    $dropThreshold = (float)settingGet($db, 'conversion_anomaly_drop_pct', '0.15');
+    if ($dropThreshold <= 0 || $dropThreshold >= 1) $dropThreshold = 0.15;
+
+    $agg = buildFunnelAggregates($db, $start_date, $end_date);
+    $series = [];
+    foreach ($agg['history'] as $date => $byStep) {
+        $imp = (int)($byStep[1] ?? 0);
+        $app = (int)($byStep[5] ?? 0);
+        if ($imp <= 0) continue; // без показов конверсия не определена
+        $conv = $app / $imp * 100;
+        $anomaly = $conv < $benchmark * (1 - $dropThreshold);
+        $series[] = [
+            'date'           => $date,
+            'conversion_pct' => round($conv, 3),
+            'impressions'    => $imp,
+            'approved'       => $app,
+            'anomaly'        => $anomaly,
+            'delta_pct'      => round($conv - $benchmark, 3),
+        ];
+    }
     echo json_encode([
-        'status'        => 'success',
-        'stub'          => true,
-        'start_date'    => $start_date,
-        'end_date'      => $end_date,
-        'series'        => [],            // [{date, conversion_pct, anomaly:bool}]
-        'benchmark_pct' => $benchmark,
-        'pending_sources' => ['funnel_daily', 'banner_impressions_cache'],
+        'status'                 => 'success',
+        'stub'                   => empty($series),
+        'start_date'             => $start_date,
+        'end_date'               => $end_date,
+        'series'                 => $series,
+        'benchmark_pct'          => $benchmark,
+        'anomaly_drop_threshold' => $dropThreshold,
+        'pending_sources'        => empty($series) ? ['banner_impressions_cache', 'daily_stats'] : [],
     ], JSON_UNESCAPED_UNICODE);
     exit;
 }
 
 if ($action === 'unit_economics_cjm') {
     // CPL / ARPU / Cross-sell / Retention / LTV(24м) по 4 когортам CJM.
-    // Реальный расчёт подключается в PR 4 (требует правил сегментации client_id
-    // и наполнения client_journey ретроспективным cron-пересчётом).
+    // Источник — client_journey (наполняется postback'ами через action=cpa_postback
+    // и ретроспективным action=client_journey_recompute из cron).
     $segments = cjmSegments();
-    $cohorts = [];
+    $dFrom = substr($start_date, 0, 10);
+    $dTo   = substr($end_date,   0, 10);
+
+    // Суммируем расходы периода — они нужны для CPL по когортам пропорционально
+    // числу новых клиентов сегмента (если другой раскладки нет).
+    $totalCosts = 0.0;
+    if ($dFrom && $dTo) {
+        $r = @$db->querySingle("SELECT COALESCE(SUM(cost),0) FROM channel_costs_log WHERE date BETWEEN '"
+            . SQLite3::escapeString($dFrom) . "' AND '" . SQLite3::escapeString($dTo) . "'");
+        $totalCosts = (float)$r;
+    }
+
+    // Агрегат по сегментам client_journey.
+    $byseg = [];
     foreach ($segments as $s) {
+        $byseg[$s['id']] = [
+            'clients'          => 0,
+            'lifetime_revenue' => 0.0,
+            'last_24m_revenue' => 0.0,
+            'retained_30d'     => 0,
+            'retained_90d'     => 0,
+        ];
+    }
+    $totalNew = 0;
+    $res = @$db->query("SELECT segment,
+            COUNT(*) AS clients,
+            COALESCE(SUM(lifetime_revenue),0) AS lifetime_revenue,
+            COALESCE(SUM(last_24m_revenue),0) AS last_24m_revenue,
+            COALESCE(SUM(retained_30d),0)     AS retained_30d,
+            COALESCE(SUM(retained_90d),0)     AS retained_90d
+        FROM client_journey
+        GROUP BY segment");
+    if ($res instanceof SQLite3Result) {
+        while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
+            $seg = (string)$row['segment'];
+            if (!isset($byseg[$seg])) continue;
+            $byseg[$seg]['clients']          = (int)$row['clients'];
+            $byseg[$seg]['lifetime_revenue'] = (float)$row['lifetime_revenue'];
+            $byseg[$seg]['last_24m_revenue'] = (float)$row['last_24m_revenue'];
+            $byseg[$seg]['retained_30d']     = (int)$row['retained_30d'];
+            $byseg[$seg]['retained_90d']     = (int)$row['retained_90d'];
+            if ($seg === 'new') $totalNew = (int)$row['clients'];
+        }
+    }
+    $cohorts = [];
+    $hasAny = false;
+    foreach ($segments as $s) {
+        $b = $byseg[$s['id']];
+        $clients = (int)$b['clients'];
+        if ($clients > 0) $hasAny = true;
+        $arpu = $clients > 0 ? round($b['lifetime_revenue'] / $clients, 2) : null;
+        $ltv  = $clients > 0 ? round($b['last_24m_revenue'] / $clients, 2) : null;
+        // CPL применяется только к когорте «новый клиент»: тратим на привлечение,
+        // потом окупаемся ретеншеном/повторами. Для остальных когорт CPL = 0.
+        $cpl  = ($s['id'] === 'new' && $clients > 0)
+            ? round($totalCosts / max(1, $clients), 2)
+            : null;
+        // Cross-sell — доля повторных конверсий (retained_30d ≥ 1 после первой).
+        $crossSell = $clients > 0
+            ? round($b['retained_30d'] / $clients * 100, 1)
+            : null;
+        $retention = $clients > 0
+            ? round($b['retained_90d'] / $clients * 100, 1)
+            : null;
         $cohorts[] = [
             'segment'        => $s['id'],
             'label'          => $s['label'],
-            'clients'        => 0,
-            'cpl'            => null,
-            'arpu'           => null,
-            'cross_sell_cr'  => null,
-            'retention_rate' => null,
-            'ltv_24m'        => null,
+            'clients'        => $clients,
+            'cpl'            => $cpl,
+            'arpu'           => $arpu,
+            'cross_sell_cr'  => $crossSell,
+            'retention_rate' => $retention,
+            'ltv_24m'        => $ltv,
         ];
     }
     echo json_encode([
         'status'          => 'success',
-        'stub'            => true,
+        'stub'            => !$hasAny,
         'start_date'      => $start_date,
         'end_date'        => $end_date,
         'horizon_months'  => 24,
         'cohorts'         => $cohorts,
-        'pending_sources' => ['client_journey'],
+        'pending_sources' => $hasAny ? [] : ['client_journey', 'cpa_postback'],
     ], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+// ============================================================================
+// CRUD для дашборда «Монетизация отказников»: расходы / план / маппинг площадок.
+// ============================================================================
+
+if ($action === 'channel_costs_list') {
+    $dFrom = substr($start_date, 0, 10);
+    $dTo   = substr($end_date,   0, 10);
+    if ($dFrom && $dTo) {
+        $stmt = $db->prepare('SELECT id, channel, date, cost, note FROM channel_costs_log
+            WHERE date BETWEEN :a AND :b ORDER BY date DESC, channel');
+        $stmt->bindValue(':a', $dFrom, SQLITE3_TEXT);
+        $stmt->bindValue(':b', $dTo,   SQLITE3_TEXT);
+        $res = $stmt->execute();
+    } else {
+        $res = @$db->query('SELECT id, channel, date, cost, note FROM channel_costs_log ORDER BY date DESC LIMIT 200');
+    }
+    $rows = [];
+    if ($res instanceof SQLite3Result) {
+        while ($r = $res->fetchArray(SQLITE3_ASSOC)) $rows[] = $r;
+    }
+    echo json_encode(['status' => 'success', 'data' => $rows], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+if ($action === 'channel_costs_save') {
+    $input = json_decode(file_get_contents('php://input'), true) ?: [];
+    $channel = normalizeChannelId($input['channel'] ?? '');
+    $date    = trim((string)($input['date'] ?? ''));
+    $cost    = (float)($input['cost'] ?? 0);
+    $note    = trim((string)($input['note'] ?? ''));
+    if (!$date || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) {
+        echo json_encode(['status' => 'error', 'error' => 'date required (YYYY-MM-DD)']); exit;
+    }
+    if ($cost < 0) {
+        echo json_encode(['status' => 'error', 'error' => 'cost must be >= 0']); exit;
+    }
+    $stmt = $db->prepare('INSERT INTO channel_costs_log (channel, date, cost, note)
+        VALUES (:c, :d, :v, :n)
+        ON CONFLICT(channel, date) DO UPDATE SET
+            cost = excluded.cost,
+            note = excluded.note');
+    $stmt->bindValue(':c', $channel, SQLITE3_TEXT);
+    $stmt->bindValue(':d', $date,    SQLITE3_TEXT);
+    $stmt->bindValue(':v', $cost,    SQLITE3_FLOAT);
+    $stmt->bindValue(':n', $note,    SQLITE3_TEXT);
+    $stmt->execute();
+    echo json_encode(['status' => 'success']);
+    exit;
+}
+
+if ($action === 'channel_costs_delete') {
+    $id = (int)($_GET['id'] ?? 0);
+    if ($id <= 0) {
+        echo json_encode(['status' => 'error', 'error' => 'id required']); exit;
+    }
+    $stmt = $db->prepare('DELETE FROM channel_costs_log WHERE id = :id');
+    $stmt->bindValue(':id', $id, SQLITE3_INTEGER);
+    $stmt->execute();
+    echo json_encode(['status' => 'success', 'deleted' => $db->changes()]);
+    exit;
+}
+
+if ($action === 'channel_plan_list') {
+    $res = @$db->query('SELECT id, channel, period_start, period_end, plan_revenue
+        FROM channel_plan ORDER BY period_start DESC, channel');
+    $rows = [];
+    if ($res instanceof SQLite3Result) {
+        while ($r = $res->fetchArray(SQLITE3_ASSOC)) $rows[] = $r;
+    }
+    echo json_encode(['status' => 'success', 'data' => $rows], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+if ($action === 'channel_plan_save') {
+    $input = json_decode(file_get_contents('php://input'), true) ?: [];
+    $channel = normalizeChannelId($input['channel'] ?? '');
+    $pFrom   = trim((string)($input['period_start'] ?? ''));
+    $pTo     = trim((string)($input['period_end'] ?? ''));
+    $plan    = (float)($input['plan_revenue'] ?? 0);
+    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $pFrom) || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $pTo)) {
+        echo json_encode(['status' => 'error', 'error' => 'period_start/period_end required (YYYY-MM-DD)']); exit;
+    }
+    $stmt = $db->prepare('INSERT INTO channel_plan (channel, period_start, period_end, plan_revenue)
+        VALUES (:c, :s, :e, :p)
+        ON CONFLICT(channel, period_start, period_end) DO UPDATE SET plan_revenue = excluded.plan_revenue');
+    $stmt->bindValue(':c', $channel, SQLITE3_TEXT);
+    $stmt->bindValue(':s', $pFrom,   SQLITE3_TEXT);
+    $stmt->bindValue(':e', $pTo,     SQLITE3_TEXT);
+    $stmt->bindValue(':p', $plan,    SQLITE3_FLOAT);
+    $stmt->execute();
+    echo json_encode(['status' => 'success']);
+    exit;
+}
+
+if ($action === 'channel_source_map_list') {
+    // Возвращает (а) уже сохранённый маппинг и (б) перечень площадок из
+    // daily_stats без маппинга — чтобы админ видел, что осталось разнести.
+    $rows = [];
+    $res = @$db->query('SELECT m.source_id,
+            COALESCE(m.source_name, ds.source_name) AS source_name,
+            m.channel,
+            COALESCE(ds.clicks_total, 0) AS clicks_total
+        FROM channel_source_map m
+        LEFT JOIN (
+            SELECT source_id, MAX(source_name) AS source_name, SUM(clicks) AS clicks_total
+            FROM daily_stats GROUP BY source_id
+        ) ds ON ds.source_id = m.source_id
+        ORDER BY clicks_total DESC, m.source_id');
+    if ($res instanceof SQLite3Result) {
+        while ($r = $res->fetchArray(SQLITE3_ASSOC)) $rows[] = $r;
+    }
+    $unmapped = [];
+    $res = @$db->query("SELECT source_id, MAX(source_name) AS source_name, SUM(clicks) AS clicks_total
+        FROM daily_stats
+        WHERE source_id NOT IN (SELECT source_id FROM channel_source_map)
+        GROUP BY source_id
+        ORDER BY clicks_total DESC LIMIT 50");
+    if ($res instanceof SQLite3Result) {
+        while ($r = $res->fetchArray(SQLITE3_ASSOC)) $unmapped[] = $r;
+    }
+    echo json_encode(['status' => 'success', 'mapped' => $rows, 'unmapped' => $unmapped], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+if ($action === 'channel_source_map_save') {
+    $input = json_decode(file_get_contents('php://input'), true) ?: [];
+    $items = $input['items'] ?? null;
+    if (!is_array($items)) {
+        echo json_encode(['status' => 'error', 'error' => 'items[] required']); exit;
+    }
+    $now = time();
+    $saved = 0;
+    $stmt = $db->prepare('INSERT INTO channel_source_map (source_id, source_name, channel, updated_at)
+        VALUES (:sid, :sn, :ch, :ts)
+        ON CONFLICT(source_id) DO UPDATE SET
+            source_name = excluded.source_name,
+            channel     = excluded.channel,
+            updated_at  = excluded.updated_at');
+    foreach ($items as $it) {
+        if (!is_array($it)) continue;
+        $sid = trim((string)($it['source_id'] ?? ''));
+        if ($sid === '') continue;
+        $ch  = normalizeChannelId($it['channel'] ?? '');
+        $sn  = (string)($it['source_name'] ?? '');
+        $stmt->bindValue(':sid', $sid, SQLITE3_TEXT);
+        $stmt->bindValue(':sn',  $sn,  SQLITE3_TEXT);
+        $stmt->bindValue(':ch',  $ch,  SQLITE3_TEXT);
+        $stmt->bindValue(':ts',  $now, SQLITE3_INTEGER);
+        if ($stmt->execute()) $saved++;
+        $stmt->reset();
+    }
+    echo json_encode(['status' => 'success', 'saved' => $saved]);
+    exit;
+}
+
+// ============================================================================
+// Сквозная аналитика CJM: tracking link + приём постбеков от Leads.su / МФО.
+// Формат партнёрской ссылки: sub2 = внутренний user_hash клиента (стабильный
+// детерминированный идентификатор без PII). По sub2 идентифицируем клиента
+// при поступлении постбека и обновляем сегмент в client_journey.
+// ============================================================================
+
+if ($action === 'tracking_link') {
+    // Возвращает партнёрскую ссылку с пробросом user_hash в sub2 (либо sub1,
+    // если параметр sub1 явно зарезервирован под другую сегментацию).
+    $base = trim((string)($_GET['base'] ?? ''));
+    $userHash = trim((string)($_GET['user_hash'] ?? ''));
+    $param    = (($_GET['param'] ?? 'sub2') === 'sub1') ? 'aff_sub1' : 'aff_sub2';
+    if ($base === '' || $userHash === '') {
+        echo json_encode(['status' => 'error', 'error' => 'base and user_hash required']); exit;
+    }
+    if (!preg_match('/^[A-Za-z0-9_\-]{1,64}$/', $userHash)) {
+        echo json_encode(['status' => 'error', 'error' => 'user_hash must be [A-Za-z0-9_-]{1,64}']); exit;
+    }
+    $sep = strpos($base, '?') === false ? '?' : '&';
+    $link = $base . $sep . $param . '=' . urlencode($userHash);
+    echo json_encode(['status' => 'success', 'link' => $link, 'param' => $param]);
+    exit;
+}
+
+if ($action === 'cpa_postback') {
+    // Приём постбеков. Принимаем как GET, так и POST/JSON. Поля:
+    //   sub2 / aff_sub2 — наш user_hash клиента (обязательно)
+    //   status          — 'lead' | 'approve' | 'reject' (по умолчанию 'lead')
+    //   amount          — выручка за конверсию (числовое, ≥ 0)
+    //   event_date      — YYYY-MM-DD (по умолчанию сегодня)
+    //   offer_id        — id оффера (опционально, для журналирования)
+    $payload = json_decode(file_get_contents('php://input'), true);
+    if (!is_array($payload)) $payload = [];
+    $src = array_merge($payload, $_GET);
+
+    $userHash = trim((string)($src['sub2'] ?? $src['aff_sub2'] ?? $src['sub1'] ?? $src['aff_sub1'] ?? ''));
+    if ($userHash === '') {
+        http_response_code(400);
+        echo json_encode(['status' => 'error', 'error' => 'sub2/user_hash required']); exit;
+    }
+    if (!preg_match('/^[A-Za-z0-9_\-]{1,64}$/', $userHash)) {
+        http_response_code(400);
+        echo json_encode(['status' => 'error', 'error' => 'sub2 contains forbidden chars']); exit;
+    }
+    $status = strtolower(trim((string)($src['status'] ?? 'lead')));
+    if (!in_array($status, ['lead', 'approve', 'reject'], true)) $status = 'lead';
+    $amount = max(0.0, (float)($src['amount'] ?? 0));
+    $eventDate = trim((string)($src['event_date'] ?? date('Y-m-d')));
+    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $eventDate)) $eventDate = date('Y-m-d');
+    $offerId = trim((string)($src['offer_id'] ?? ''));
+
+    $now = time();
+    // Получаем существующую строку (если есть), чтобы корректно посчитать
+    // сегмент (new/repeat/dormant) и retained_30d/90d.
+    $stmt = $db->prepare('SELECT first_seen, segment, last_action, lifetime_revenue, last_24m_revenue,
+                                  retained_30d, retained_90d
+                          FROM client_journey WHERE client_id = :cid');
+    $stmt->bindValue(':cid', $userHash, SQLITE3_TEXT);
+    $existing = $stmt->execute()->fetchArray(SQLITE3_ASSOC);
+
+    $firstSeen = $existing ? (string)$existing['first_seen'] : $eventDate;
+    $prevAction = $existing ? (string)$existing['last_action'] : '';
+    $prevSegment = $existing ? (string)$existing['segment'] : 'new';
+    $lifetime    = $existing ? (float)$existing['lifetime_revenue'] : 0.0;
+    $last24m     = $existing ? (float)$existing['last_24m_revenue'] : 0.0;
+    $ret30       = $existing ? (int)$existing['retained_30d'] : 0;
+    $ret90       = $existing ? (int)$existing['retained_90d'] : 0;
+
+    if ($status === 'approve') {
+        $lifetime += $amount;
+        $last24m  += $amount;
+    }
+
+    // Новая сегментация: новый при первом контакте; повторный — если уже была
+    // одобренная конверсия в прошлом; спящий — если разрыв между событиями ≥ 90 дней;
+    // отказной — если приходит явный reject.
+    $segment = $prevSegment ?: 'new';
+    if (!$existing) {
+        $segment = 'new';
+    } else {
+        $gapDays = (strtotime($eventDate) - strtotime($firstSeen)) / 86400;
+        if ($status === 'reject') {
+            $segment = 'reject';
+        } elseif ($status === 'approve') {
+            $segment = ($lifetime > $amount) ? 'repeat' : ($gapDays >= 90 ? 'dormant' : 'new');
+        } elseif ($gapDays >= 90) {
+            $segment = 'dormant';
+        }
+    }
+
+    // Retention: считаем «прижился ли клиент» к датам +30 / +90 от first_seen.
+    $daysFromFirst = (strtotime($eventDate) - strtotime($firstSeen)) / 86400;
+    if ($status === 'approve' && $daysFromFirst >= 1 && $daysFromFirst <= 30) $ret30 = 1;
+    if ($status === 'approve' && $daysFromFirst >= 1 && $daysFromFirst <= 90) $ret90 = 1;
+
+    $stmt = $db->prepare('INSERT INTO client_journey
+            (client_id, first_seen, segment, last_action, lifetime_revenue, last_24m_revenue,
+             retained_30d, retained_90d, updated_at)
+        VALUES (:cid, :fs, :seg, :la, :lr, :l24, :r30, :r90, :ts)
+        ON CONFLICT(client_id) DO UPDATE SET
+            segment          = excluded.segment,
+            last_action      = excluded.last_action,
+            lifetime_revenue = excluded.lifetime_revenue,
+            last_24m_revenue = excluded.last_24m_revenue,
+            retained_30d     = MAX(client_journey.retained_30d, excluded.retained_30d),
+            retained_90d     = MAX(client_journey.retained_90d, excluded.retained_90d),
+            updated_at       = excluded.updated_at');
+    $stmt->bindValue(':cid', $userHash, SQLITE3_TEXT);
+    $stmt->bindValue(':fs',  $firstSeen, SQLITE3_TEXT);
+    $stmt->bindValue(':seg', $segment, SQLITE3_TEXT);
+    $stmt->bindValue(':la',  $status . '@' . $eventDate . ($offerId ? '#' . $offerId : ''), SQLITE3_TEXT);
+    $stmt->bindValue(':lr',  $lifetime, SQLITE3_FLOAT);
+    $stmt->bindValue(':l24', $last24m,  SQLITE3_FLOAT);
+    $stmt->bindValue(':r30', $ret30, SQLITE3_INTEGER);
+    $stmt->bindValue(':r90', $ret90, SQLITE3_INTEGER);
+    $stmt->bindValue(':ts',  $now,  SQLITE3_INTEGER);
+    $stmt->execute();
+    echo json_encode(['status' => 'success', 'client_id' => $userHash, 'segment' => $segment]);
+    exit;
+}
+
+if ($action === 'client_journey_recompute') {
+    // Ретроспективный пересчёт сегментов: пометить клиентов без активности > 90д
+    // как 'dormant'; обнулить last_24m_revenue если её первая конверсия старше 24м.
+    $now = time();
+    $changed = 0;
+    $cutoffDormant = date('Y-m-d', strtotime('-90 days'));
+    $cutoff24m     = date('Y-m-d', strtotime('-24 months'));
+
+    $stmt = $db->prepare("UPDATE client_journey
+        SET segment = 'dormant', updated_at = :ts
+        WHERE segment IN ('new','repeat')
+          AND substr(COALESCE(last_action,''),-10) < :cd
+          AND substr(COALESCE(last_action,''),-10) != ''");
+    $stmt->bindValue(':ts', $now, SQLITE3_INTEGER);
+    $stmt->bindValue(':cd', $cutoffDormant, SQLITE3_TEXT);
+    $stmt->execute();
+    $changed += $db->changes();
+
+    $stmt = $db->prepare('UPDATE client_journey
+        SET last_24m_revenue = 0, updated_at = :ts
+        WHERE first_seen < :c24 AND last_24m_revenue > 0');
+    $stmt->bindValue(':ts',  $now, SQLITE3_INTEGER);
+    $stmt->bindValue(':c24', $cutoff24m, SQLITE3_TEXT);
+    $stmt->execute();
+    $changed += $db->changes();
+
+    echo json_encode(['status' => 'success', 'changed' => $changed]);
+    exit;
+}
+
+// Подтянуть свежие данные Я.Метрики в banner_impressions_cache (вызывается из cron).
+if ($action === 'ym_cache_banner') {
+    $dFrom = substr($start_date, 0, 10) ?: date('Y-m-d', strtotime('-7 days'));
+    $dTo   = substr($end_date,   0, 10) ?: date('Y-m-d');
+    $res = ymFetchAndCacheBannerData($db, $dFrom, $dTo);
+    echo json_encode(['status' => isset($res['error']) ? 'error' : 'success'] + $res);
     exit;
 }
 

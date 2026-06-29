@@ -862,6 +862,75 @@
     .plan-status-success { color: var(--ok); font-weight: 600; }
     .plan-status-danger  { color: var(--bad); font-weight: 600; }
     .plan-status-neutral { color: var(--text-dim); }
+
+    /* ----- Универсальная модалка для ввода расходов и т.п. ----- */
+    .modal-backdrop {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.55);
+      display: none; align-items: center; justify-content: center; z-index: 1000;
+      backdrop-filter: blur(2px);
+    }
+    .modal-backdrop.is-open { display: flex; }
+    .modal-box {
+      background: var(--surface-solid);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--r-card);
+      box-shadow: var(--shadow-pop);
+      max-width: 520px; width: calc(100% - 32px); max-height: 90vh;
+      display: flex; flex-direction: column;
+    }
+    .modal-box header {
+      padding: 14px 18px; border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .modal-box header h3 { color: var(--text); font-weight: 600; font-size: 16px; }
+    .modal-box header button.close-x {
+      background: none; border: 0; color: var(--text-dim); font-size: 20px; cursor: pointer;
+      line-height: 1; padding: 4px 8px; border-radius: 6px;
+    }
+    .modal-box header button.close-x:hover { color: var(--text); background: var(--surface-thin); }
+    .modal-box .modal-body { padding: 18px; overflow: auto; }
+    .modal-box .modal-footer {
+      padding: 12px 18px; border-top: 1px solid var(--border);
+      display: flex; justify-content: flex-end; gap: 8px;
+    }
+    .form-field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
+    .form-field label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .04em; }
+    .form-field input, .form-field select, .form-field textarea {
+      background: var(--surface-thin); border: 1px solid var(--border-strong);
+      border-radius: var(--r-chip); padding: 8px 10px; color: var(--text);
+      font-size: 14px; font-family: inherit;
+    }
+    .form-field input:focus, .form-field select:focus, .form-field textarea:focus {
+      outline: none; border-color: var(--accent);
+    }
+
+    /* ----- Воронка: цветовое кодирование конверсий ----- */
+    .funnel-conv-pill {
+      display: inline-flex; align-items: center; gap: 4px;
+      font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px;
+      border: 1px solid var(--border);
+    }
+    .funnel-conv-pill.ok   { background: rgba(48,209,88,.12);   color: var(--ok);  border-color: rgba(48,209,88,.30); }
+    .funnel-conv-pill.warn { background: rgba(255,159,10,.12);  color: #FF9F0A;    border-color: rgba(255,159,10,.30); }
+    .funnel-conv-pill.bad  { background: rgba(255,69,58,.12);   color: var(--bad); border-color: rgba(255,69,58,.30); }
+    .funnel-conv-pill.muted{ background: var(--surface-thin);   color: var(--text-dim); }
+    .funnel-step-arrow { padding: 8px 0; }
+    .funnel-stage strong.kpi { font-feature-settings: "tnum" 1, "lnum" 1; }
+
+    /* Бенчмарк-badge для динамики конверсии */
+    .benchmark-badge {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600;
+      background: rgba(245,158,11,.12); color: #F59E0B; border: 1px solid rgba(245,158,11,.30);
+    }
+    .anomaly-summary {
+      margin-top: 8px; padding: 8px 12px; border-radius: var(--r-chip);
+      background: rgba(255,69,58,.08); border: 1px solid rgba(255,69,58,.25);
+      color: var(--text); font-size: 12px;
+    }
+    .anomaly-summary.is-ok {
+      background: rgba(48,209,88,.08); border-color: rgba(48,209,88,.25);
+    }
     .funnel-badge {
       align-self: center;
       border-radius: 980px;
@@ -1492,7 +1561,14 @@
     <!-- SUB-TAB 1: Channels Overview -->
     <div id="rsub-channels" class="reject-sub active space-y-6">
       <div class="card">
-        <h3 class="text-white font-semibold mb-3">Эффективность каналов</h3>
+        <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+          <h3 class="text-white font-semibold">Эффективность каналов</h3>
+          <div class="flex flex-wrap gap-2">
+            <button class="btn" type="button" onclick="openChannelCostModal()">+ Расход по каналу</button>
+            <button class="btn" type="button" style="background:#475569" onclick="openChannelPlanModal()">План выручки</button>
+            <button class="btn" type="button" style="background:#475569" onclick="openChannelSourceMapModal()">Маппинг площадок</button>
+          </div>
+        </div>
         <div class="overflow-auto">
           <table class="w-full text-sm" id="channelsTable">
             <thead>
@@ -1502,8 +1578,12 @@
                 <th class="px-2 py-2 text-right">Выручка ПЛАН, ₽</th>
                 <th class="px-2 py-2 text-right">Выручка ФАКТ, ₽</th>
                 <th class="px-2 py-2 text-right">Выполнение плана</th>
-                <th class="px-2 py-2 text-right">Расходы, ₽</th>
-                <th class="px-2 py-2 text-right">Валовая прибыль, ₽</th>
+                <th class="px-2 py-2 text-right">Расходы, ₽
+                  <i class="info-tip" tabindex="0" role="img" aria-label="Введённые вручную расходы на канал (СМС, e-mail, печать, площадки и т.п.). Управляются кнопкой «+ Расход по каналу»." title="Введённые вручную расходы на канал (СМС, e-mail, печать, площадки и т.п.). Управляются кнопкой «+ Расход по каналу»."></i>
+                </th>
+                <th class="px-2 py-2 text-right">Валовая прибыль, ₽
+                  <i class="info-tip" tabindex="0" role="img" aria-label="Валовая прибыль = Выручка ФАКТ − Расходы канала." title="Валовая прибыль = Выручка ФАКТ − Расходы канала."></i>
+                </th>
                 <th class="px-2 py-2 text-right">EPC, ₽</th>
               </tr>
             </thead>
@@ -1515,6 +1595,27 @@
       <div class="card">
         <h3 class="text-white font-semibold mb-3">Сравнение каналов (план vs факт)</h3>
         <div class="chart-wrap" style="height:320px"><canvas id="channelsBarChart"></canvas></div>
+      </div>
+      <div class="card">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="text-white font-semibold">Журнал расходов (текущий период)</h3>
+          <span class="text-xs text-slate-500" id="channelCostsCount"></span>
+        </div>
+        <div class="overflow-auto">
+          <table class="w-full text-sm" id="channelCostsTable">
+            <thead>
+              <tr class="text-left text-slate-400">
+                <th class="px-2 py-2">Дата</th>
+                <th class="px-2 py-2">Канал</th>
+                <th class="px-2 py-2 text-right">Сумма, ₽</th>
+                <th class="px-2 py-2">Комментарий</th>
+                <th class="px-2 py-2 text-right">Действие</th>
+              </tr>
+            </thead>
+            <tbody><!-- renderChannelCostsList() --></tbody>
+          </table>
+        </div>
+        <p class="text-[11px] text-slate-500 mt-2">Показаны расходы внутри выбранного диапазона дат. Удалённая запись восстановлению не подлежит.</p>
       </div>
     </div>
 
@@ -1911,6 +2012,92 @@ CR_plan       = baseCR,   AR_plan = baseAR
           <dd>Кнопки «Тренд», «План / факт», «Прошлый период», «Аномалии», «Зависимости» можно включать в любых сочетаниях. «Без слоёв» — чистый факт.</dd>
         </dl>
       </section>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Универсальные модалки дашборда «Монетизация отказного трафика» ===== -->
+<div id="channelCostModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="channelCostModalTitle">
+  <div class="modal-box">
+    <header>
+      <h3 id="channelCostModalTitle">Ввод расхода по каналу</h3>
+      <button type="button" class="close-x" onclick="closeChannelCostModal()" aria-label="Закрыть">×</button>
+    </header>
+    <div class="modal-body">
+      <div class="form-field">
+        <label for="ccmChannel">Канал</label>
+        <select id="ccmChannel"></select>
+      </div>
+      <div class="form-field">
+        <label for="ccmDate">Дата (YYYY-MM-DD)</label>
+        <input id="ccmDate" type="date" />
+      </div>
+      <div class="form-field">
+        <label for="ccmCost">Сумма расхода, ₽</label>
+        <input id="ccmCost" type="number" min="0" step="0.01" placeholder="например, 12 500" />
+      </div>
+      <div class="form-field">
+        <label for="ccmNote">Комментарий</label>
+        <textarea id="ccmNote" rows="2" placeholder="например, СМС-рассылка по базе октябрь"></textarea>
+      </div>
+      <p class="text-[11px] text-slate-500">При повторном вводе на ту же пару (канал, дата) старая сумма перезаписывается.</p>
+      <p id="ccmError" class="text-xs mt-2 hidden" style="color: var(--bad);"></p>
+    </div>
+    <div class="modal-footer">
+      <button type="button" class="btn" style="background:#475569" onclick="closeChannelCostModal()">Отмена</button>
+      <button type="button" class="btn" onclick="saveChannelCost()">Сохранить</button>
+    </div>
+  </div>
+</div>
+
+<div id="channelPlanModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="channelPlanModalTitle">
+  <div class="modal-box">
+    <header>
+      <h3 id="channelPlanModalTitle">План выручки по каналу</h3>
+      <button type="button" class="close-x" onclick="closeChannelPlanModal()" aria-label="Закрыть">×</button>
+    </header>
+    <div class="modal-body">
+      <div class="form-field">
+        <label for="cpmChannel">Канал</label>
+        <select id="cpmChannel"></select>
+      </div>
+      <div class="grid grid-cols-2 gap-3">
+        <div class="form-field">
+          <label for="cpmFrom">Период с</label>
+          <input id="cpmFrom" type="date" />
+        </div>
+        <div class="form-field">
+          <label for="cpmTo">Период по</label>
+          <input id="cpmTo" type="date" />
+        </div>
+      </div>
+      <div class="form-field">
+        <label for="cpmAmount">Плановая выручка, ₽</label>
+        <input id="cpmAmount" type="number" min="0" step="0.01" />
+      </div>
+      <p id="cpmError" class="text-xs mt-2 hidden" style="color: var(--bad);"></p>
+    </div>
+    <div class="modal-footer">
+      <button type="button" class="btn" style="background:#475569" onclick="closeChannelPlanModal()">Отмена</button>
+      <button type="button" class="btn" onclick="saveChannelPlan()">Сохранить</button>
+    </div>
+  </div>
+</div>
+
+<div id="channelSourceMapModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="csmModalTitle">
+  <div class="modal-box" style="max-width:680px">
+    <header>
+      <h3 id="csmModalTitle">Маппинг площадок на каналы</h3>
+      <button type="button" class="close-x" onclick="closeChannelSourceMapModal()" aria-label="Закрыть">×</button>
+    </header>
+    <div class="modal-body">
+      <p class="text-xs text-slate-500 mb-3">Площадки без маппинга по умолчанию засчитываются в канал «Онлайн (Витрина / Сайт)». Изменения отражаются на сводке после нажатия «Сохранить».</p>
+      <div id="csmListBox" class="space-y-2"></div>
+      <p id="csmError" class="text-xs mt-2 hidden" style="color: var(--bad);"></p>
+    </div>
+    <div class="modal-footer">
+      <button type="button" class="btn" style="background:#475569" onclick="closeChannelSourceMapModal()">Отмена</button>
+      <button type="button" class="btn" onclick="saveChannelSourceMap()">Сохранить</button>
     </div>
   </div>
 </div>
@@ -8211,25 +8398,221 @@ async function loadAndRenderChannels() {
     const pctTxt = (pct === null || pct === undefined) ? '—' : `${Number(pct).toFixed(1)}%`;
     const epc = r.epc;
     const epcTxt = (epc === null || epc === undefined) ? '—' : `${Number(epc).toFixed(2)}`;
+    const gp = Number(r.gross_profit || 0);
+    const gpCls = gp > 0 ? 'plan-status-success' : (gp < 0 ? 'plan-status-danger' : 'plan-status-neutral');
+    const epcTip = epc !== null && epc !== undefined
+      ? `EPC = выручка ${Math.round(r.fact_revenue || 0).toLocaleString('ru-RU')} ₽ / ${Number(r.traffic || 0).toLocaleString('ru-RU')} клик(ов)`
+      : 'EPC недоступен — нет трафика по каналу за период.';
     return `<tr>
       <td class="px-2 py-2">${escapeHtml(r.label)}</td>
       <td class="px-2 py-2 text-right">${Number(r.traffic || 0).toLocaleString('ru-RU')}</td>
       <td class="px-2 py-2 text-right">${Math.round(r.plan_revenue || 0).toLocaleString('ru-RU')}</td>
       <td class="px-2 py-2 text-right">${Math.round(r.fact_revenue || 0).toLocaleString('ru-RU')}</td>
-      <td class="px-2 py-2 text-right ${planStatusClass(pct)}">${pctTxt}</td>
+      <td class="px-2 py-2 text-right ${planStatusClass(pct)}" title="План ${Math.round(r.plan_revenue || 0).toLocaleString('ru-RU')} ₽, факт ${Math.round(r.fact_revenue || 0).toLocaleString('ru-RU')} ₽">${pctTxt}</td>
       <td class="px-2 py-2 text-right">${Math.round(r.costs || 0).toLocaleString('ru-RU')}</td>
-      <td class="px-2 py-2 text-right">${Math.round(r.gross_profit || 0).toLocaleString('ru-RU')}</td>
-      <td class="px-2 py-2 text-right">${epcTxt}</td>
+      <td class="px-2 py-2 text-right ${gpCls}" title="Валовая прибыль = выручка − расходы">${Math.round(gp).toLocaleString('ru-RU')}</td>
+      <td class="px-2 py-2 text-right" title="${escapeHtml(epcTip)}">${epcTxt}</td>
     </tr>`;
   }).join('');
   tbody.innerHTML = rows;
   const hint = document.getElementById('channelsTableHint');
   if (hint) {
     hint.textContent = data.stub
-      ? 'Каркас: реальные значения подключаются после загрузки channel_plan / channel_costs_log и маппинга трафика leads.su → канал.'
+      ? 'Пока нет данных за выбранный период. Загрузите трафик из Leads.su (вкладка «Дашборд») и Я.Метрики (вкладка «Баннер»), затем введите расходы по каналам кнопкой «+ Расход по каналу».'
       : '';
   }
   renderChannelsBarChart(data.channels || []);
+  // Параллельно подгружаем журнал расходов под таблицей.
+  loadAndRenderChannelCostsList();
+}
+
+// Подгружает список расходов канала за период и рисует под таблицей.
+async function loadAndRenderChannelCostsList() {
+  const tbody = document.querySelector('#channelCostsTable tbody');
+  const cnt = document.getElementById('channelCostsCount');
+  if (!tbody) return;
+  const { from, to } = rejectMonCurrentPeriod();
+  const qs = new URLSearchParams({ action: 'channel_costs_list' });
+  if (from) qs.set('start_date', from);
+  if (to)   qs.set('end_date',   to);
+  try {
+    const r = await fetch(`${API_BASE}?${qs.toString()}`, { cache: 'no-store' });
+    const j = await r.json();
+    const items = j.data || [];
+    if (cnt) cnt.textContent = items.length ? `${items.length} запис(ей)` : 'Пусто';
+    if (!items.length) {
+      tbody.innerHTML = '<tr><td colspan="5" class="px-2 py-3 text-xs text-slate-500 text-center">Расходов за период пока не введено.</td></tr>';
+      return;
+    }
+    const chanLabel = id => (CHANNELS.find(c => c.id === id) || {}).label || id;
+    tbody.innerHTML = items.map(it => `
+      <tr>
+        <td class="px-2 py-2">${escapeHtml(it.date)}</td>
+        <td class="px-2 py-2">${escapeHtml(chanLabel(it.channel))}</td>
+        <td class="px-2 py-2 text-right">${Math.round(Number(it.cost || 0)).toLocaleString('ru-RU')}</td>
+        <td class="px-2 py-2 text-slate-400">${escapeHtml(it.note || '')}</td>
+        <td class="px-2 py-2 text-right">
+          <button type="button" class="text-xs" style="color: var(--bad); cursor:pointer; background:none; border:0;" onclick="deleteChannelCost(${Number(it.id)})">Удалить</button>
+        </td>
+      </tr>`).join('');
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="5" class="px-2 py-2 text-xs" style="color: var(--bad);">Ошибка загрузки: ${escapeHtml(String(e))}</td></tr>`;
+  }
+}
+
+async function deleteChannelCost(id) {
+  if (!id || !confirm('Удалить запись о расходе?')) return;
+  try {
+    await fetch(`${API_BASE}?action=channel_costs_delete&id=${id}`, { cache: 'no-store' });
+    rejectMonState.cache.channels = null;
+    await loadAndRenderChannels();
+  } catch (e) { alert('Не удалось удалить: ' + e); }
+}
+
+// -------- Модалка ввода расхода --------
+function fillChannelSelect(selectEl) {
+  if (!selectEl) return;
+  selectEl.innerHTML = CHANNELS.map(c => `<option value="${c.id}">${escapeHtml(c.label)}</option>`).join('');
+}
+function openChannelCostModal() {
+  const m = document.getElementById('channelCostModal');
+  if (!m) return;
+  fillChannelSelect(document.getElementById('ccmChannel'));
+  document.getElementById('ccmDate').value = (rejectMonCurrentPeriod().to || new Date().toISOString().slice(0,10));
+  document.getElementById('ccmCost').value = '';
+  document.getElementById('ccmNote').value = '';
+  const err = document.getElementById('ccmError'); if (err) { err.classList.add('hidden'); err.textContent = ''; }
+  m.classList.add('is-open');
+}
+function closeChannelCostModal() {
+  document.getElementById('channelCostModal')?.classList.remove('is-open');
+}
+async function saveChannelCost() {
+  const channel = document.getElementById('ccmChannel').value;
+  const date    = document.getElementById('ccmDate').value;
+  const cost    = parseFloat(document.getElementById('ccmCost').value);
+  const note    = document.getElementById('ccmNote').value;
+  const err     = document.getElementById('ccmError');
+  const showErr = msg => { if (err) { err.textContent = msg; err.classList.remove('hidden'); } };
+  if (!date) return showErr('Укажите дату.');
+  if (isNaN(cost) || cost < 0) return showErr('Сумма расхода должна быть числом ≥ 0.');
+  try {
+    const r = await fetch(`${API_BASE}?action=channel_costs_save`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channel, date, cost, note }),
+    });
+    const j = await r.json();
+    if (j.status !== 'success') return showErr(j.error || 'Не удалось сохранить.');
+    closeChannelCostModal();
+    rejectMonState.cache.channels = null;
+    await loadAndRenderChannels();
+  } catch (e) { showErr('Сетевая ошибка: ' + e); }
+}
+
+// -------- Модалка плана выручки --------
+function openChannelPlanModal() {
+  const m = document.getElementById('channelPlanModal'); if (!m) return;
+  fillChannelSelect(document.getElementById('cpmChannel'));
+  const { from, to } = rejectMonCurrentPeriod();
+  const today = new Date();
+  const firstDay = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().slice(0,10);
+  const lastDay  = new Date(today.getFullYear(), today.getMonth() + 1, 0).toISOString().slice(0,10);
+  document.getElementById('cpmFrom').value = from || firstDay;
+  document.getElementById('cpmTo').value   = to   || lastDay;
+  document.getElementById('cpmAmount').value = '';
+  const err = document.getElementById('cpmError'); if (err) { err.classList.add('hidden'); err.textContent = ''; }
+  m.classList.add('is-open');
+}
+function closeChannelPlanModal() { document.getElementById('channelPlanModal')?.classList.remove('is-open'); }
+async function saveChannelPlan() {
+  const channel = document.getElementById('cpmChannel').value;
+  const period_start = document.getElementById('cpmFrom').value;
+  const period_end   = document.getElementById('cpmTo').value;
+  const plan_revenue = parseFloat(document.getElementById('cpmAmount').value);
+  const err = document.getElementById('cpmError');
+  const showErr = msg => { if (err) { err.textContent = msg; err.classList.remove('hidden'); } };
+  if (!period_start || !period_end) return showErr('Заполните даты периода.');
+  if (isNaN(plan_revenue) || plan_revenue < 0) return showErr('Плановая сумма должна быть ≥ 0.');
+  try {
+    const r = await fetch(`${API_BASE}?action=channel_plan_save`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channel, period_start, period_end, plan_revenue }),
+    });
+    const j = await r.json();
+    if (j.status !== 'success') return showErr(j.error || 'Не удалось сохранить.');
+    closeChannelPlanModal();
+    rejectMonState.cache.channels = null;
+    await loadAndRenderChannels();
+  } catch (e) { showErr('Сетевая ошибка: ' + e); }
+}
+
+// -------- Модалка маппинга площадок -> канал --------
+let _csmLastUnmapped = [];
+async function openChannelSourceMapModal() {
+  const m = document.getElementById('channelSourceMapModal'); if (!m) return;
+  const box = document.getElementById('csmListBox');
+  if (box) box.innerHTML = '<p class="text-xs text-slate-500">Загрузка…</p>';
+  m.classList.add('is-open');
+  try {
+    const r = await fetch(`${API_BASE}?action=channel_source_map_list`, { cache: 'no-store' });
+    const j = await r.json();
+    _csmLastUnmapped = (j.unmapped || []).slice();
+    const all = [
+      ...(j.mapped || []).map(x => ({...x, _mapped: true})),
+      ...(j.unmapped || []).map(x => ({...x, channel: 'online', _mapped: false})),
+    ];
+    if (!all.length) {
+      box.innerHTML = '<p class="text-xs text-slate-500">Пока нет ни одной площадки в daily_stats. Сначала подтяните статистику Leads.su.</p>';
+      return;
+    }
+    const opts = CHANNELS.map(c => `<option value="${c.id}">${escapeHtml(c.label)}</option>`).join('');
+    box.innerHTML = all.map(it => {
+      const tag = it._mapped ? '<span class="text-[10px] text-emerald-400 ml-1">[сохранено]</span>' : '<span class="text-[10px] text-amber-400 ml-1">[новое]</span>';
+      return `
+      <div class="flex flex-wrap items-center gap-2 border border-slate-700 rounded px-2 py-2" data-sid="${escapeHtml(String(it.source_id))}" data-sn="${escapeHtml(String(it.source_name || ''))}">
+        <div class="flex-1 min-w-[180px]">
+          <div class="text-sm text-white">${escapeHtml(it.source_name || ('#' + it.source_id))}${tag}</div>
+          <div class="text-[11px] text-slate-500">id ${escapeHtml(String(it.source_id))} · ${Number(it.clicks_total || 0).toLocaleString('ru-RU')} клик(ов)</div>
+        </div>
+        <select class="csm-select bg-slate-800 border border-slate-700 rounded px-2 py-1 text-sm text-white">${opts}</select>
+      </div>`;
+    }).join('');
+    // Выставляем актуальные значения select
+    Array.from(box.querySelectorAll('[data-sid]')).forEach((row, idx) => {
+      const sel = row.querySelector('select');
+      if (sel) sel.value = all[idx].channel || 'online';
+    });
+  } catch (e) {
+    box.innerHTML = `<p class="text-xs" style="color: var(--bad);">Ошибка загрузки: ${escapeHtml(String(e))}</p>`;
+  }
+}
+function closeChannelSourceMapModal() { document.getElementById('channelSourceMapModal')?.classList.remove('is-open'); }
+async function saveChannelSourceMap() {
+  const box = document.getElementById('csmListBox');
+  const err = document.getElementById('csmError');
+  if (!box) return;
+  const items = Array.from(box.querySelectorAll('[data-sid]')).map(row => ({
+    source_id: row.dataset.sid,
+    source_name: row.dataset.sn,
+    channel: row.querySelector('select')?.value || 'online',
+  }));
+  try {
+    const r = await fetch(`${API_BASE}?action=channel_source_map_save`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items }),
+    });
+    const j = await r.json();
+    if (j.status !== 'success') {
+      if (err) { err.textContent = j.error || 'Ошибка сохранения.'; err.classList.remove('hidden'); }
+      return;
+    }
+    closeChannelSourceMapModal();
+    rejectMonState.cache.channels = null;
+    await loadAndRenderChannels();
+  } catch (e) {
+    if (err) { err.textContent = 'Сетевая ошибка: ' + e; err.classList.remove('hidden'); }
+  }
 }
 
 let _channelsBarChart = null;
@@ -8251,8 +8634,15 @@ function renderChannelsBarChart(channels) {
     },
     options: {
       indexAxis: 'y', responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { position: 'bottom' } },
-      scales: { x: { beginAtZero: true } },
+      plugins: {
+        legend: { position: 'bottom' },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => `${ctx.dataset.label}: ${Number(ctx.parsed.x || 0).toLocaleString('ru-RU')} ₽`,
+          },
+        },
+      },
+      scales: { x: { beginAtZero: true, ticks: { callback: v => Number(v).toLocaleString('ru-RU') } } },
     },
   });
 }
@@ -8267,7 +8657,20 @@ async function loadAndRenderFunnel() {
   renderRejectFunnel(funnel.stages || []);
   const bench = document.getElementById('rejectBenchmarkValue');
   if (bench) bench.textContent = (dyn.benchmark_pct ?? 3.66).toFixed(2);
-  renderConversionDynamicsChart(dyn.series || [], dyn.benchmark_pct ?? 3.66);
+  renderConversionDynamicsChart(dyn.series || [], dyn.benchmark_pct ?? 3.66, dyn.anomaly_drop_threshold ?? 0.15);
+}
+
+// Цветовая шкала для конверсии «шаг → шаг». Пороги интуитивные:
+//   ≥ 50% — зелёный (отличная конверсия между этапами)
+//   ≥ 15% — нейтральный
+//   ≥ 5%  — янтарный (стоит обратить внимание)
+//   < 5%  — красный (узкое место)
+function funnelConvClass(pct) {
+  if (pct === null || pct === undefined || isNaN(pct)) return 'muted';
+  if (pct >= 50) return 'ok';
+  if (pct >= 15) return 'muted';
+  if (pct >= 5)  return 'warn';
+  return 'bad';
 }
 
 function renderRejectFunnel(stages) {
@@ -8283,7 +8686,7 @@ function renderRejectFunnel(stages) {
     parts.push(`<div class="funnel-stage ${zoneCls}">
       <div class="flex justify-between gap-3 mb-2">
         <span><span class="text-slate-400 text-xs mr-2">Шаг ${s.step}</span>${escapeHtml(s.label)}</span>
-        <strong>${v.toLocaleString('ru-RU')}</strong>
+        <strong class="kpi">${v.toLocaleString('ru-RU')}</strong>
       </div>
       <div class="funnel-stage-bar"><div class="funnel-stage-fill" style="width:${w}%"></div></div>
       ${s.note ? `<small class="text-slate-500 block mt-2">${escapeHtml(s.note)}</small>` : ''}
@@ -8291,8 +8694,13 @@ function renderRejectFunnel(stages) {
     if (i < stages.length - 1) {
       const next = stages[i + 1];
       const tip  = renderFunnelTooltip(s, next);
+      const a = Number(s.value || 0);
+      const b = Number(next.value || 0);
+      const pct = a > 0 ? (b / a * 100) : null;
+      const cls = funnelConvClass(pct);
+      const pctTxt = pct === null ? '—' : `${pct.toFixed(1)}%`;
       parts.push(`<div class="funnel-step-arrow" tabindex="0" aria-label="${escapeHtml(tip)}">
-        ↓
+        <span class="funnel-conv-pill ${cls}">↓ ${pctTxt}</span>
         <div class="funnel-step-tooltip">${tip}</div>
       </div>`);
     }
@@ -8301,7 +8709,7 @@ function renderRejectFunnel(stages) {
 }
 
 let _conversionDynamicsChart = null;
-function renderConversionDynamicsChart(series, benchmark) {
+function renderConversionDynamicsChart(series, benchmark, dropThreshold) {
   const ctx = document.getElementById('conversionDynamicsChart');
   if (!ctx || typeof Chart === 'undefined') return;
   const labels = series.map(p => p.date);
@@ -8309,7 +8717,9 @@ function renderConversionDynamicsChart(series, benchmark) {
   const bench  = labels.map(() => Number(benchmark || 0));
   // Аномалии подсвечиваем красным; обычные точки — приглушённые.
   const pointColors = series.map(p => p.anomaly ? '#FF453A' : 'rgba(56,189,248,0.85)');
-  const pointRadii  = series.map(p => p.anomaly ? 5 : 2);
+  const pointBorders = series.map(p => p.anomaly ? '#FFFFFF' : 'rgba(56,189,248,0.85)');
+  const pointRadii  = series.map(p => p.anomaly ? 6 : 3);
+  const pointHover  = series.map(p => p.anomaly ? 8 : 5);
   if (_conversionDynamicsChart) { _conversionDynamicsChart.destroy(); _conversionDynamicsChart = null; }
   _conversionDynamicsChart = new Chart(ctx, {
     type: 'line',
@@ -8317,12 +8727,15 @@ function renderConversionDynamicsChart(series, benchmark) {
       labels,
       datasets: [
         {
-          label: 'Конверсия, %',
+          label: 'Конверсия (Показ → Approve), %',
           data: values,
           borderColor: 'rgba(56,189,248,0.85)',
           backgroundColor: 'rgba(56,189,248,0.10)',
           pointBackgroundColor: pointColors,
+          pointBorderColor: pointBorders,
+          pointBorderWidth: 1,
           pointRadius: pointRadii,
+          pointHoverRadius: pointHover,
           tension: 0.25, fill: true,
         },
         {
@@ -8336,10 +8749,52 @@ function renderConversionDynamicsChart(series, benchmark) {
     },
     options: {
       responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { position: 'bottom' } },
-      scales: { y: { beginAtZero: true } },
+      plugins: {
+        legend: { position: 'bottom' },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => {
+              const i = ctx.dataIndex;
+              if (ctx.datasetIndex === 1) return `Benchmark: ${Number(ctx.parsed.y).toFixed(2)}%`;
+              const p = series[i] || {};
+              const conv = Number(p.conversion_pct || 0);
+              const delta = conv - Number(benchmark || 0);
+              const deltaSign = delta >= 0 ? '+' : '';
+              const lines = [
+                `Конверсия: ${conv.toFixed(3)}%  (${deltaSign}${delta.toFixed(2)} к бенчмарку)`,
+                `Показы: ${Number(p.impressions || 0).toLocaleString('ru-RU')}`,
+                `Approve: ${Number(p.approved || 0).toLocaleString('ru-RU')}`,
+              ];
+              if (p.anomaly) lines.push(`⚠ Падение ≥ ${Math.round((dropThreshold || 0.15) * 100)}% от бенчмарка`);
+              return lines;
+            },
+          },
+        },
+      },
+      scales: {
+        y: {
+          beginAtZero: true,
+          ticks: { callback: v => `${Number(v).toFixed(2)}%` },
+        },
+      },
     },
   });
+  // Сводка по аномалиям под графиком.
+  const wrap = ctx.parentElement;
+  if (wrap) {
+    let summary = wrap.parentElement.querySelector('.anomaly-summary');
+    const anomalies = series.filter(p => p.anomaly).length;
+    const txt = anomalies > 0
+      ? `Аномалий: ${anomalies} из ${series.length} (конверсия упала ниже бенчмарка на ${Math.round((dropThreshold || 0.15) * 100)}% или больше).`
+      : (series.length ? `Аномалий не обнаружено — ${series.length} дн. в норме относительно бенчмарка.` : 'Недостаточно данных для построения графика.');
+    if (!summary) {
+      summary = document.createElement('div');
+      summary.className = 'anomaly-summary';
+      wrap.parentElement.appendChild(summary);
+    }
+    summary.classList.toggle('is-ok', anomalies === 0);
+    summary.textContent = txt;
+  }
 }
 
 // ----- Подвкладка 3: Юнит-экономика по CJM -----
@@ -8357,7 +8812,11 @@ async function loadAndRenderUnitEco() {
     grid.innerHTML = '<p class="text-xs text-slate-500 col-span-2">Нет данных по выбранным сегментам.</p>';
     return;
   }
-  const fmt = (v, suffix = '') => (v === null || v === undefined) ? '—' : `${Number(v).toLocaleString('ru-RU', { maximumFractionDigits: 2 })}${suffix}`;
+  const fmtMoney = v => (v === null || v === undefined) ? '—' : `${Math.round(Number(v)).toLocaleString('ru-RU')} ₽`;
+  const fmtPct   = v => (v === null || v === undefined) ? '—' : `${Number(v).toFixed(1)}%`;
+  // Цветовое кодирование retention: ≥60% зелёный, ≥30% нейтральный, иначе красный.
+  const retCls = v => (v === null || v === undefined) ? 'text-slate-300'
+    : (v >= 60 ? 'text-emerald-400' : (v >= 30 ? 'text-slate-300' : 'text-red-400'));
   grid.innerHTML = visible.map(c => `
     <div class="card">
       <div class="flex items-center justify-between mb-3">
@@ -8365,11 +8824,11 @@ async function loadAndRenderUnitEco() {
         <span class="text-xs text-slate-400">${Number(c.clients || 0).toLocaleString('ru-RU')} клиентов</span>
       </div>
       <dl class="grid grid-cols-2 gap-y-2 text-sm">
-        <dt class="text-slate-400">CPL</dt><dd class="text-right">${fmt(c.cpl, ' ₽')}</dd>
-        <dt class="text-slate-400">ARPU</dt><dd class="text-right">${fmt(c.arpu, ' ₽')}</dd>
-        <dt class="text-slate-400">Cross-sell CR</dt><dd class="text-right">${fmt(c.cross_sell_cr, '%')}</dd>
-        <dt class="text-slate-400">Retention</dt><dd class="text-right">${fmt(c.retention_rate, '%')}</dd>
-        <dt class="text-slate-400">LTV (${data.horizon_months || 24} мес)</dt><dd class="text-right">${fmt(c.ltv_24m, ' ₽')}</dd>
+        <dt class="text-slate-400" title="Cost Per Lead — расходы на канал / новых клиентов в когорте">CPL <i class="info-tip" aria-label="Cost Per Lead — стоимость привлечения одного клиента (расходы канала / новые клиенты). Считается только для когорты «Новый клиент»." title="Cost Per Lead — стоимость привлечения одного клиента (расходы канала / новые клиенты). Считается только для когорты «Новый клиент»."></i></dt><dd class="text-right">${fmtMoney(c.cpl)}</dd>
+        <dt class="text-slate-400" title="Average Revenue Per User за всё время жизни клиента">ARPU <i class="info-tip" aria-label="Average Revenue Per User — средняя выручка с клиента когорты за всё время жизни (lifetime revenue / clients)." title="Average Revenue Per User — средняя выручка с клиента когорты за всё время жизни."></i></dt><dd class="text-right">${fmtMoney(c.arpu)}</dd>
+        <dt class="text-slate-400" title="Доля клиентов с повторной целевой конверсией в первые 30 дней">Cross-sell CR</dt><dd class="text-right">${fmtPct(c.cross_sell_cr)}</dd>
+        <dt class="text-slate-400" title="Доля клиентов с повторной активностью на горизонте 90 дней">Retention <i class="info-tip" aria-label="Доля клиентов когорты, вернувшихся с целевым действием в течение 90 дней после первого касания." title="Доля клиентов когорты, вернувшихся с целевым действием в течение 90 дней после первого касания."></i></dt><dd class="text-right ${retCls(c.retention_rate)}">${fmtPct(c.retention_rate)}</dd>
+        <dt class="text-slate-400" title="Lifetime Value на горизонте ${data.horizon_months || 24} мес">LTV (${data.horizon_months || 24} мес)</dt><dd class="text-right">${fmtMoney(c.ltv_24m)}</dd>
       </dl>
     </div>
   `).join('');
