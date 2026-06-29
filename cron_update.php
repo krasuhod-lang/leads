@@ -58,6 +58,32 @@ if (php_sapi_name() === 'cli') {
     file_put_contents(__DIR__ . '/cron.log', $ymLogMessage, FILE_APPEND);
     echo $ymLogMessage;
 
+    // 2b. Кэш Я.Метрики для воронки CJM (banner_impressions_cache).
+    // Используется dashboard-эндпоинтами funnel_history / conversion_dynamics —
+    // отдельный кэш, чтобы скорость отрисовки воронки не зависела от живого API.
+    $_GET = [];
+    $_GET['action'] = 'ym_cache_banner';
+    $_GET['start_date'] = $startDay;
+    $_GET['end_date']   = $endDay;
+
+    ob_start();
+    include __DIR__ . '/leads-proxy.php';
+    $ymCacheResponse = ob_get_clean();
+    file_put_contents(__DIR__ . '/cron.log',
+        date('Y-m-d H:i:s') . " [CLI] YM Cache {$startDay} → {$endDay}: {$ymCacheResponse}\n", FILE_APPEND);
+    echo "YM Cache: {$ymCacheResponse}\n";
+
+    // 2c. Ретроспективный пересчёт когорт CJM (dormant/24m).
+    $_GET = [];
+    $_GET['action'] = 'client_journey_recompute';
+
+    ob_start();
+    include __DIR__ . '/leads-proxy.php';
+    $cjmResponse = ob_get_clean();
+    file_put_contents(__DIR__ . '/cron.log',
+        date('Y-m-d H:i:s') . " [CLI] CJM recompute: {$cjmResponse}\n", FILE_APPEND);
+    echo "CJM recompute: {$cjmResponse}\n";
+
     // 3. Обновление кэша офферов с рыночными показателями (раз в час достаточно).
     $_GET = [];
     $_GET['action'] = 'fetch_offers_market';
