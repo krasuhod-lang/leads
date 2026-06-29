@@ -1167,11 +1167,21 @@ function saveReportRows($db, $rows, $offerMap) {
             approved = excluded.approved,
             revenue = excluded.revenue');
 
+    $missingUniqueClicks = 0;
+    $totalRows = 0;
     foreach ($rows as $row) {
         // Нормализация даты: API может вернуть "2024-01-15" или "2024-01-15 00:00:00".
         // В UNIQUE-ключе нужна именно дата без времени, иначе один и тот же день
         // схлопнется в две разные строки при разных форматах.
-        $rawDate = $row['period_day'] ?? $row['period'] ?? null;
+        // ВАЖНО: leads.su /reports/summary при grouping=day всё равно отдаёт ключ
+        // `period_hour` (см. пример ответа в API LEADS.pdf, стр. 82). Если не
+        // учитывать `period_hour`, все строки cron-пути молча выкидываются.
+        $rawDate = $row['period_day']
+            ?? $row['period_hour']
+            ?? $row['periodday']
+            ?? $row['period']
+            ?? $row['date']
+            ?? null;
         if (!$rawDate) continue;
         $date = substr((string)$rawDate, 0, 10);
         if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) continue;
@@ -1202,9 +1212,20 @@ function saveReportRows($db, $rows, $offerMap) {
         }
 
         $sub1 = $row['aff_sub1'] ?? $row['sub1'] ?? '';
-        $clicks = (int)($row['unique_clicks'] ?? $row['clicks'] ?? 0);
-        // raw clicks: сначала clicks (если API дал и unique_clicks, и clicks),
-        // иначе используем то же значение (хотя бы не ноль).
+        // EPC и трафик считаем строго по уникальным кликам. Если поле
+        // `unique_clicks` отсутствует в ответе API (раньше тут был тихий
+        // фолбэк на общие `clicks` — он подменял уникальные общими и ломал
+        // расчёт EPC), фиксируем 0 и логируем — лучше явный ноль и алерт,
+        // чем неверно заниженный EPC, посчитанный от общих кликов.
+        $totalRows++;
+        if (array_key_exists('unique_clicks', $row) && $row['unique_clicks'] !== null) {
+            $clicks = (int)$row['unique_clicks'];
+        } else {
+            $clicks = 0;
+            $missingUniqueClicks++;
+        }
+        // raw_clicks — общие клики из API; храним для диагностики, но в EPC
+        // не используем. Если API не вернул `clicks`, дублируем из unique.
         $rawClicks = (int)($row['clicks'] ?? $row['unique_clicks'] ?? 0);
         $conversions = (int)($row['unique_conversions'] ?? $row['conversions'] ?? 0);
         $approved = (int)($row['conversions_approved'] ?? $row['conversionsapproved'] ?? 0);
@@ -1223,6 +1244,16 @@ function saveReportRows($db, $rows, $offerMap) {
         $stmt->bindValue(':revenue', $revenue, SQLITE3_FLOAT);
         if ($stmt->execute()) $inserted++;
         $stmt->reset();
+    }
+    // Если ни в одной строке ответа API не было поля `unique_clicks`, это
+    // признак, что leads.su отдаёт только общие клики (другая версия API /
+    // нет доступа к unique_clicks по аккаунту). В таком случае EPC окажется
+    // нулевым — фиксируем громкий warning в php_errors.log, чтобы оператор
+    // увидел проблему сразу, а не задним числом по «странным» цифрам в UI.
+    if ($totalRows > 0 && $missingUniqueClicks === $totalRows) {
+        error_log("saveReportRows: leads.su ответил без unique_clicks ни в одной из {$totalRows} строк — clicks=0 для всего батча, EPC будет нулевым. Проверьте доступ аккаунта к unique_clicks в /reports/summary.");
+    } elseif ($missingUniqueClicks > 0) {
+        error_log("saveReportRows: leads.su не вернул unique_clicks в {$missingUniqueClicks} из {$totalRows} строк — затронутые строки сохранены с clicks=0.");
     }
     return $inserted;
 }
