@@ -2908,16 +2908,29 @@ async function loadFromAPI(opts = {}) {
     }
     prog(95, 'Обработка данных...');
     originalData = [];
+    let missingUniqueClicks = 0;
     for (const row of reportData) {
       const rawDate = row.period_day || row.period_hour || row.periodday || row.period || row.date || null;
       const dateStr = parseDateSmart(rawDate);
       if (!dateStr) continue;
       const offerId = String(row.offer_id ?? row.offerid ?? '');
       const platformId = String(row.platform_id ?? row.platformid ?? '');
-      // Уникальные клики идут в `clicks` и используются для EPC/CR.
-      // raw_clicks храним лишь как технический бэкап того, что отдал API.
+      // raw_clicks — общие клики из API, храним для диагностики.
       const rawClicks = Number(row.clicks ?? row.uniqueclicks ?? row.unique_clicks ?? 0);
-      const clicks = Number(row.unique_clicks ?? row.uniqueclicks ?? row.clicks ?? 0);
+      // Уникальные клики — основа для EPC/CR. Раньше тут был тихий фолбэк
+      // на общие `row.clicks`, из-за чего при отсутствии `unique_clicks` в
+      // ответе API в БД попадали общие клики и EPC занижался. Теперь, если
+      // `unique_clicks` (и его camel-вариант) реально отсутствует, ставим 0
+      // и считаем такие строки — оператор увидит warning в консоли.
+      let clicks;
+      if (row.unique_clicks != null) {
+        clicks = Number(row.unique_clicks);
+      } else if (row.uniqueclicks != null) {
+        clicks = Number(row.uniqueclicks);
+      } else {
+        clicks = 0;
+        missingUniqueClicks++;
+      }
       const conversions = Number(row.unique_conversions ?? row.conversions ?? row.uniqueconversions ?? 0);
       const approved = Number(row.conversions_approved ?? row.conversionsapproved ?? 0);
       const revenue = Number(row.payout ?? 0);
@@ -2937,6 +2950,10 @@ async function loadFromAPI(opts = {}) {
         source: sourceName, source_id: platformId || 'all', sub1,
         clicks, raw_clicks: rawClicks, conversions, approved, revenue
       });
+    }
+    if (missingUniqueClicks > 0) {
+      const tag = missingUniqueClicks === reportData.length ? 'ALL' : `${missingUniqueClicks}/${reportData.length}`;
+      console.warn(`[loadFromAPI] leads.su /reports/summary вернул ответ без unique_clicks в ${tag} строк — clicks=0 для этих строк, EPC будет занижен/нулевым. Проверьте доступ аккаунта к unique_clicks.`);
     }
     // Deduplicate originalData by composite key (date + source_id + offer_id + offer + sub1)
     originalData = deduplicateData(originalData, false);
