@@ -661,6 +661,84 @@ try {
         value TEXT
     )');
 
+    // ============================================================================
+    // Дашборд монетизации отказного трафика — каркас (PR 1).
+    // Таблицы создаются заранее, чтобы FE/AI-аналитика могли писать в них по
+    // мере появления реальных источников (Я.Метрика, DWH/1C, постбеки CPA).
+    // ============================================================================
+
+    // План выручки по каналу за период. period_start/period_end — ISO даты;
+    // обычно это месяц, но допускается произвольный диапазон (квартал, неделя).
+    // channel — одно из значений из справочника CHANNELS (offline/online/mobile/email/push).
+    $safeExec('CREATE TABLE IF NOT EXISTS channel_plan (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        channel TEXT NOT NULL,
+        period_start TEXT NOT NULL,
+        period_end TEXT NOT NULL,
+        plan_revenue REAL NOT NULL DEFAULT 0,
+        UNIQUE(channel, period_start, period_end)
+    )');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_channel_plan_period ON channel_plan(period_start, period_end)');
+
+    // Суточные расходы по каналу: СМС-отправки × тариф, печать, стоимость
+    // сервиса e-mail и т.п. Источник — DWH / 1C / биллинг провайдеров.
+    $safeExec('CREATE TABLE IF NOT EXISTS channel_costs_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        channel TEXT NOT NULL,
+        date TEXT NOT NULL,
+        cost REAL NOT NULL DEFAULT 0,
+        note TEXT,
+        UNIQUE(channel, date)
+    )');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_channel_costs_date ON channel_costs_log(date)');
+
+    // Кэш Я.Метрики по баннерам: уникальные показы (visitors) и клики
+    // (целевые визиты) за день. Обновляется из cron_update.php.
+    $safeExec('CREATE TABLE IF NOT EXISTS banner_impressions_cache (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        date TEXT NOT NULL,
+        banner_id TEXT NOT NULL DEFAULT \'\',
+        source TEXT NOT NULL DEFAULT \'\',
+        impressions INTEGER NOT NULL DEFAULT 0,
+        clicks INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL DEFAULT 0,
+        UNIQUE(date, banner_id, source)
+    )');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_banner_imp_date ON banner_impressions_cache(date)');
+
+    // Витрина клиентских путей для CJM-юнит-экономики. Заполняется ежесуточно
+    // ретроспективным пересчётом (cron_update.php), чтобы LTV/Retention считались
+    // на накопленных данных, а не линейным делением.
+    $safeExec('CREATE TABLE IF NOT EXISTS client_journey (
+        client_id TEXT PRIMARY KEY,
+        first_seen TEXT NOT NULL,
+        segment TEXT NOT NULL DEFAULT \'new\',
+        last_action TEXT,
+        lifetime_revenue REAL NOT NULL DEFAULT 0,
+        last_24m_revenue REAL NOT NULL DEFAULT 0,
+        retained_30d INTEGER NOT NULL DEFAULT 0,
+        retained_90d INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL DEFAULT 0
+    )');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_client_journey_segment ON client_journey(segment)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_client_journey_first_seen ON client_journey(first_seen)');
+
+    // Предсобранная воронка по шагам/каналам/датам. Шаги 1..5:
+    //   1 — показ баннера (Я.Метрика, internal)
+    //   2 — клик по баннеру / переход на витрину (Я.Метрика, internal)
+    //   3 — клик по офферу партнёра (leads.su daily_stats, internal)
+    //   4 — заявка на стороне МФО (CPA postback, external)
+    //   5 — одобренная заявка / approve (CPA postback, external)
+    $safeExec('CREATE TABLE IF NOT EXISTS funnel_daily (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        date TEXT NOT NULL,
+        step INTEGER NOT NULL,
+        channel TEXT NOT NULL DEFAULT \'all\',
+        value INTEGER NOT NULL DEFAULT 0,
+        UNIQUE(date, step, channel)
+    )');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_funnel_daily_date ON funnel_daily(date)');
+
     // Кэш результатов глубокого AI-анализа. Ключ — диапазон дат `from|to`,
     // чтобы при перезагрузке страницы пользователь видел тот же отчёт без
     // повторного дорогого запроса к провайдеру. Принудительный пересчёт —
@@ -3336,6 +3414,144 @@ if ($action === 'save_settings') {
         $stmt->reset();
     }
     echo json_encode(['status' => 'success']);
+    exit;
+}
+
+// ============================================================================
+// Дашборд монетизации отказного трафика — backend-stubs (PR 1 каркаса).
+// Все четыре эндпоинта возвращают корректно типизированный «пустой» каркас
+// данных + флаг stub:true и список pending_sources. Это позволяет FE рендерить
+// все три подвкладки без 500-ошибок до момента, когда в PR 2..4 будут
+// подключены реальные источники (Я.Метрика, channel_plan, channel_costs_log,
+// постбеки CPA, client_journey). НЕ возвращаем выдуманные цифры — топ-менеджмент
+// не должен видеть «синтетических» KPI.
+// ============================================================================
+
+/** Канонический справочник 5 каналов монетизации (синхронизирован с FE CHANNELS). */
+function rejectChannels() {
+    return [
+        ['id' => 'offline', 'label' => 'Офлайн (Офисы продаж)'],
+        ['id' => 'online',  'label' => 'Онлайн (Витрина / Сайт)'],
+        ['id' => 'mobile',  'label' => 'Мобильное приложение'],
+        ['id' => 'email',   'label' => 'E-mail рассылки'],
+        ['id' => 'push',    'label' => 'Push-уведомления'],
+    ];
+}
+
+/** Канонический справочник 4 сегментов CJM (синхронизирован с FE CJM_SEGMENTS). */
+function cjmSegments() {
+    return [
+        ['id' => 'new',     'label' => 'Новый клиент'],
+        ['id' => 'repeat',  'label' => 'Повторный клиент'],
+        ['id' => 'dormant', 'label' => 'Спящий клиент'],
+        ['id' => 'reject',  'label' => 'Отказной / Непрофильный'],
+    ];
+}
+
+/** Канонические шаги воронки CJM (1..5) с зонами ответственности. */
+function rejectFunnelSteps() {
+    return [
+        ['step' => 1, 'label' => 'Показ баннера',                'zone' => 'internal', 'source' => 'ya_metrika',  'note' => 'Погрешность данных Яндекс.Метрики ~5%'],
+        ['step' => 2, 'label' => 'Клик по баннеру / витрина',    'zone' => 'internal', 'source' => 'ya_metrika',  'note' => ''],
+        ['step' => 3, 'label' => 'Клик по офферу партнёра',      'zone' => 'internal', 'source' => 'leads_su',    'note' => ''],
+        ['step' => 4, 'label' => 'Заявка на стороне МФО',        'zone' => 'external', 'source' => 'cpa_postback','note' => ''],
+        ['step' => 5, 'label' => 'Одобренная заявка (Approve)',  'zone' => 'external', 'source' => 'cpa_postback','note' => 'Точка монетизации'],
+    ];
+}
+
+if ($action === 'channels_overview') {
+    // Сводка по 5 каналам: трафик / план / факт / выполнение / расходы / прибыль / EPC.
+    // Реальная агрегация подключается в PR 2 (требует решения по источнику плана и расходов).
+    $channels = rejectChannels();
+    $rows = [];
+    foreach ($channels as $ch) {
+        $rows[] = [
+            'channel'        => $ch['id'],
+            'label'          => $ch['label'],
+            'traffic'        => 0,
+            'plan_revenue'   => 0,
+            'fact_revenue'   => 0,
+            'plan_completion'=> null,   // % выполнения; null = нет плана
+            'costs'          => 0,
+            'gross_profit'   => 0,
+            'epc'            => null,
+        ];
+    }
+    echo json_encode([
+        'status'          => 'success',
+        'stub'            => true,
+        'start_date'      => $start_date,
+        'end_date'        => $end_date,
+        'channels'        => $rows,
+        'pending_sources' => ['channel_plan', 'channel_costs_log', 'leads_su_traffic_per_channel'],
+    ], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+if ($action === 'funnel_history') {
+    // Воронка 5 шагов + история по дням. Шаги 1..2 — Я.Метрика, 3 — leads.su, 4..5 — CPA.
+    // Реальные счётчики подключаются в PR 3 (требует goal_id для «показ_баннера» / «клик_баннера»).
+    $steps = rejectFunnelSteps();
+    $stages = [];
+    foreach ($steps as $s) {
+        $stages[] = $s + ['value' => 0, 'conversion_from_prev' => null];
+    }
+    echo json_encode([
+        'status'          => 'success',
+        'stub'            => true,
+        'start_date'      => $start_date,
+        'end_date'        => $end_date,
+        'stages'          => $stages,
+        'history'         => [],
+        'pending_sources' => ['banner_impressions_cache', 'funnel_daily', 'ya_metrika_goals'],
+    ], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+if ($action === 'conversion_dynamics') {
+    // Линейный график итоговой конверсии (Показ → Approve) + benchmark + аномалии.
+    // Benchmark берём из app_settings.conversion_benchmark_pct (по умолчанию 3.66%).
+    $benchmark = (float)settingGet($db, 'conversion_benchmark_pct', '3.66');
+    if ($benchmark <= 0) $benchmark = 3.66;
+    echo json_encode([
+        'status'        => 'success',
+        'stub'          => true,
+        'start_date'    => $start_date,
+        'end_date'      => $end_date,
+        'series'        => [],            // [{date, conversion_pct, anomaly:bool}]
+        'benchmark_pct' => $benchmark,
+        'pending_sources' => ['funnel_daily', 'banner_impressions_cache'],
+    ], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+if ($action === 'unit_economics_cjm') {
+    // CPL / ARPU / Cross-sell / Retention / LTV(24м) по 4 когортам CJM.
+    // Реальный расчёт подключается в PR 4 (требует правил сегментации client_id
+    // и наполнения client_journey ретроспективным cron-пересчётом).
+    $segments = cjmSegments();
+    $cohorts = [];
+    foreach ($segments as $s) {
+        $cohorts[] = [
+            'segment'        => $s['id'],
+            'label'          => $s['label'],
+            'clients'        => 0,
+            'cpl'            => null,
+            'arpu'           => null,
+            'cross_sell_cr'  => null,
+            'retention_rate' => null,
+            'ltv_24m'        => null,
+        ];
+    }
+    echo json_encode([
+        'status'          => 'success',
+        'stub'            => true,
+        'start_date'      => $start_date,
+        'end_date'        => $end_date,
+        'horizon_months'  => 24,
+        'cohorts'         => $cohorts,
+        'pending_sources' => ['client_journey'],
+    ], JSON_UNESCAPED_UNICODE);
     exit;
 }
 

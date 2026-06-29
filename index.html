@@ -811,6 +811,57 @@
       transition: width var(--t-base) var(--ease-apple);
     }
     .funnel-stage-fill { background: var(--accent); }
+    /* ----- Каркас «Монетизация отказников»: зоны ответственности воронки ----- */
+    .funnel-stage--internal { background: var(--surface-thin); }
+    .funnel-stage--internal .funnel-stage-fill { background: var(--accent); }
+    .funnel-stage--external {
+      /* Штриховка для зон, где конверсия зависит от партнёра/МФО, а не от нас. */
+      background-color: var(--surface-thin);
+      background-image: repeating-linear-gradient(
+        135deg,
+        transparent 0 6px,
+        rgba(255,255,255,0.045) 6px 12px
+      );
+      opacity: 0.92;
+    }
+    [data-theme="light"] .funnel-stage--external {
+      background-image: repeating-linear-gradient(
+        135deg,
+        transparent 0 6px,
+        rgba(0,0,0,0.045) 6px 12px
+      );
+    }
+    .funnel-stage--external .funnel-stage-fill { background: var(--text-faint); }
+    .funnel-zone-legend {
+      display: inline-flex; align-items: center; gap: 6px;
+      font-size: 11px; color: var(--text-dim);
+    }
+    .funnel-zone-legend .swatch {
+      width: 14px; height: 10px; border-radius: 3px; border: 1px solid var(--border);
+    }
+    .funnel-zone-legend.zone-internal .swatch { background: var(--accent-soft); }
+    .funnel-zone-legend.zone-external .swatch {
+      background-image: repeating-linear-gradient(135deg, transparent 0 3px, rgba(255,255,255,0.18) 3px 6px);
+    }
+    .funnel-step-arrow {
+      position: relative; text-align: center; color: var(--text-dim);
+      font-size: 11px; padding: 2px 0; cursor: help;
+    }
+    .funnel-step-tooltip {
+      position: absolute; bottom: calc(100% + 6px); left: 50%; transform: translateX(-50%);
+      background: var(--surface-solid); color: var(--text);
+      border: 1px solid var(--border-strong); border-radius: var(--r-chip);
+      padding: 8px 12px; font-size: 12px; white-space: nowrap;
+      box-shadow: var(--shadow-pop); opacity: 0; pointer-events: none;
+      transition: opacity var(--t-fast) var(--ease-apple);
+      z-index: 50;
+    }
+    .funnel-step-arrow:hover .funnel-step-tooltip,
+    .funnel-step-arrow:focus-within .funnel-step-tooltip { opacity: 1; }
+    /* ----- Каркас: цветовое кодирование выполнения плана ----- */
+    .plan-status-success { color: var(--ok); font-weight: 600; }
+    .plan-status-danger  { color: var(--bad); font-weight: 600; }
+    .plan-status-neutral { color: var(--text-dim); }
     .funnel-badge {
       align-self: center;
       border-radius: 980px;
@@ -982,6 +1033,7 @@
     <button class="tab-btn" data-tab="ar-matrix" onclick="switchTab('ar-matrix')">AR-матрица</button>
     <button class="tab-btn" data-tab="compare" onclick="switchTab('compare')">Сравнение</button>
     <button class="tab-btn" data-tab="banner" onclick="switchTab('banner')">Баннер</button>
+    <button class="tab-btn" data-tab="reject-mon" onclick="switchTab('reject-mon')">Монетизация отказников</button>
     <button class="tab-btn" data-tab="ai" onclick="switchTab('ai')">AI-аналитика<span id="aiKeyIndicator" class="tab-dot off" title="Статус AI-ключа неизвестен">●</span></button>
     <button class="tab-btn" data-tab="events" onclick="switchTab('events')">События<span id="eventsUnreadBadge" class="tab-badge hidden">0</span></button>
   </div>
@@ -1407,6 +1459,97 @@
         <button id="uploadBannerBtn" class="btn">Загрузить и обновить</button>
       </div>
       <div id="bannerUploadMsg" class="mt-3 text-sm hidden"></div>
+    </div>
+  </div>
+
+  <!-- TAB: REJECT-TRAFFIC MONETIZATION (каркас, PR 1) -->
+  <div id="tab-reject-mon" class="tab-content space-y-6">
+    <!-- Локальная панель фильтров: сегмент CJM применяется ко всем 3 подвкладкам.
+         Период берётся из глобального диапазона дат (общий со всеми вкладками). -->
+    <div class="card">
+      <div class="flex flex-wrap items-center gap-3 justify-between">
+        <div>
+          <h2 class="text-white font-bold text-lg">Монетизация отказного трафика</h2>
+          <p class="text-xs text-slate-500 mt-1">Воронка CJM, 5 каналов удержания, юнит-экономика по когортам.</p>
+        </div>
+        <div class="flex flex-wrap gap-2 items-center">
+          <label class="text-xs text-slate-400">Сегмент CJM:</label>
+          <div id="rejectSegmentFilter" class="flex flex-wrap gap-1" role="group" aria-label="Фильтр по сегменту CJM"></div>
+        </div>
+      </div>
+      <div id="rejectStubBanner" class="mt-3 hidden text-xs text-slate-400 border border-dashed border-slate-700 rounded-lg px-3 py-2">
+        Данные подключаются поэтапно (Я.Метрика, DWH/1C, постбеки CPA). Пока что виджеты показывают каркас.
+      </div>
+    </div>
+
+    <!-- Подвкладки внутри блока «Монетизация отказников» -->
+    <div id="rejectSubTabBar" class="flex gap-1 border-b border-slate-700">
+      <button class="tab-btn active" data-rsub="channels" onclick="switchRejectSubTab('channels')">Сводка по 5 каналам</button>
+      <button class="tab-btn"        data-rsub="funnel"   onclick="switchRejectSubTab('funnel')">Воронка и динамика</button>
+      <button class="tab-btn"        data-rsub="uniteco"  onclick="switchRejectSubTab('uniteco')">Юнит-экономика (CJM)</button>
+    </div>
+
+    <!-- SUB-TAB 1: Channels Overview -->
+    <div id="rsub-channels" class="reject-sub active space-y-6">
+      <div class="card">
+        <h3 class="text-white font-semibold mb-3">Эффективность каналов</h3>
+        <div class="overflow-auto">
+          <table class="w-full text-sm" id="channelsTable">
+            <thead>
+              <tr class="text-left text-slate-400">
+                <th class="px-2 py-2">Канал</th>
+                <th class="px-2 py-2 text-right">Трафик</th>
+                <th class="px-2 py-2 text-right">Выручка ПЛАН, ₽</th>
+                <th class="px-2 py-2 text-right">Выручка ФАКТ, ₽</th>
+                <th class="px-2 py-2 text-right">Выполнение плана</th>
+                <th class="px-2 py-2 text-right">Расходы, ₽</th>
+                <th class="px-2 py-2 text-right">Валовая прибыль, ₽</th>
+                <th class="px-2 py-2 text-right">EPC, ₽</th>
+              </tr>
+            </thead>
+            <tbody><!-- renderChannelsOverview() --></tbody>
+          </table>
+        </div>
+        <p id="channelsTableHint" class="text-[11px] text-slate-500 mt-2"></p>
+      </div>
+      <div class="card">
+        <h3 class="text-white font-semibold mb-3">Сравнение каналов (план vs факт)</h3>
+        <div class="chart-wrap" style="height:320px"><canvas id="channelsBarChart"></canvas></div>
+      </div>
+    </div>
+
+    <!-- SUB-TAB 2: Funnel & Conversion Dynamics -->
+    <div id="rsub-funnel" class="reject-sub space-y-6 hidden">
+      <div class="card">
+        <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+          <h3 class="text-white font-semibold">Воронка клиентского пути (CJM)</h3>
+          <div class="flex gap-3">
+            <span class="funnel-zone-legend zone-internal"><span class="swatch"></span>Наша зона ответственности</span>
+            <span class="funnel-zone-legend zone-external"><span class="swatch"></span>Зона партнёра/МФО</span>
+          </div>
+        </div>
+        <div id="rejectFunnelBox" class="funnel-visual"></div>
+      </div>
+      <div class="card">
+        <div class="flex items-center justify-between gap-3 mb-3">
+          <h3 class="text-white font-semibold">Динамика итоговой конверсии (Показ → Approve)</h3>
+          <div class="text-xs text-slate-400">
+            Benchmark: <span id="rejectBenchmarkValue">—</span>%
+            <i class="info-tip" tabindex="0" role="img" aria-label="Бенчмарк итоговой конверсии — редактируется в Настройках (conversion_benchmark_pct), исторический максимум 3.66%." title="Бенчмарк итоговой конверсии — редактируется в Настройках (conversion_benchmark_pct), исторический максимум 3.66%."></i>
+          </div>
+        </div>
+        <div class="chart-wrap" style="height:320px"><canvas id="conversionDynamicsChart"></canvas></div>
+        <p class="text-[11px] text-slate-500 mt-2">Точки, выделенные цветом — аномалии (резкие падения/всплески).</p>
+      </div>
+    </div>
+
+    <!-- SUB-TAB 3: Unit Economics by CJM -->
+    <div id="rsub-uniteco" class="reject-sub space-y-6 hidden">
+      <div class="card">
+        <h3 class="text-white font-semibold mb-2">Юнит-экономика по когортам</h3>
+        <p class="text-xs text-slate-500 mb-4">CPL, ARPU, Cross-sell, Retention и LTV(24м) считаются в разрезе сегментов CJM, а не средним по всему трафику.</p>
+        <div id="rejectCohortGrid" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>
+      </div>
     </div>
   </div>
 
@@ -2103,6 +2246,11 @@ function switchTab(tabName) {
   try { localStorage.setItem(LAST_TAB_KEY, tabName); } catch (_) {}
   // Открытие «Событий» помечает все события прочитанными.
   if (tabName === 'events') markEventsRead();
+  // Каркас «Монетизация отказников» — переинициализируем активную подвкладку
+  // при открытии вкладки (фильтры/период могли измениться).
+  if (tabName === 'reject-mon') {
+    try { rejectMonState.cache = { channels: null, funnel: null, dynamics: null, uniteco: null }; renderRejectActiveSub(); } catch (_) {}
+  }
   setTimeout(() => window.dispatchEvent(new Event('resize')), 100);
 }
 
@@ -7906,8 +8054,338 @@ window.addEventListener('DOMContentLoaded', () => {
   } catch (e) { console.debug('aiSettings init skipped:', e); }
   startAutoRefresh();
   autoLoadSavedStats();
+  // Каркас «Монетизация отказников» — подвкладки, фильтр сегментов, первичный рендер.
+  try { rejectMonInit(); } catch (e) { console.debug('rejectMonInit skipped:', e); }
   // Восстанавливаем последнюю открытую вкладку (после инициализации контента).
   restoreLastTab();
+});
+
+// ============================================================================
+// «Монетизация отказного трафика» — каркас (PR 1).
+// Справочники, состояние, рендер подвкладок. Сетевые ответы помечены
+// stub:true — пока что показываем «прочерки» и шаблон, без выдуманных KPI.
+// Реальные данные подключаются в PR 2..4 (см. описание PR).
+// ============================================================================
+const CHANNELS = [
+  { id: 'offline', label: 'Офлайн (Офисы продаж)' },
+  { id: 'online',  label: 'Онлайн (Витрина / Сайт)' },
+  { id: 'mobile',  label: 'Мобильное приложение' },
+  { id: 'email',   label: 'E-mail рассылки' },
+  { id: 'push',    label: 'Push-уведомления' },
+];
+const CJM_SEGMENTS = [
+  { id: 'new',     label: 'Новый клиент' },
+  { id: 'repeat',  label: 'Повторный клиент' },
+  { id: 'dormant', label: 'Спящий клиент' },
+  { id: 'reject',  label: 'Отказной / Непрофильный' },
+];
+// Единое состояние фильтров для всех 3 подвкладок «Монетизации отказников».
+const rejectMonState = {
+  activeSub: 'channels',
+  // Пустой Set означает «все сегменты» (трактуется как отсутствие фильтра).
+  segments: new Set(),
+  // Кэш ответов backend-stub по подвкладкам, чтобы переключение не перезапрашивало.
+  cache: { channels: null, funnel: null, dynamics: null, uniteco: null },
+};
+
+// Возвращает CSS-класс для ячейки «Выполнение плана»:
+//   ≥100 % → success (зелёный), <80 % → danger (красный), иначе neutral.
+function planStatusClass(pct) {
+  if (pct === null || pct === undefined || isNaN(pct)) return 'plan-status-neutral';
+  if (pct >= 100) return 'plan-status-success';
+  if (pct < 80)   return 'plan-status-danger';
+  return 'plan-status-neutral';
+}
+
+// Шаблон тултипа конверсии между шагами воронки.
+// Используется в onmouseenter каждой стрелки. Возвращает HTML-строку.
+function renderFunnelTooltip(fromStage, toStage) {
+  if (!fromStage || !toStage) return '';
+  const a = Number(fromStage.value || 0);
+  const b = Number(toStage.value || 0);
+  const pct = a > 0 ? (b / a * 100) : 0;
+  return `Конверсия ${pct.toFixed(1)}% (${escapeHtml(fromStage.label)}: ${a.toLocaleString('ru-RU')} → ${escapeHtml(toStage.label)}: ${b.toLocaleString('ru-RU')})`;
+}
+
+function rejectMonInit() {
+  // Рендерим чипы фильтра сегментов CJM.
+  const filterBox = document.getElementById('rejectSegmentFilter');
+  if (filterBox && !filterBox.dataset.ready) {
+    filterBox.dataset.ready = '1';
+    const chips = [{ id: '__all__', label: 'Все' }, ...CJM_SEGMENTS];
+    filterBox.innerHTML = chips.map(c =>
+      `<button type="button" class="quick-range-btn ${c.id === '__all__' ? 'active' : ''}" data-seg="${c.id}">${escapeHtml(c.label)}</button>`
+    ).join('');
+    filterBox.addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-seg]');
+      if (!btn) return;
+      const id = btn.dataset.seg;
+      if (id === '__all__') {
+        rejectMonState.segments.clear();
+      } else {
+        if (rejectMonState.segments.has(id)) rejectMonState.segments.delete(id);
+        else rejectMonState.segments.add(id);
+      }
+      // Обновляем визуальное состояние чипов.
+      filterBox.querySelectorAll('button[data-seg]').forEach(b => {
+        const bid = b.dataset.seg;
+        const active = bid === '__all__'
+          ? rejectMonState.segments.size === 0
+          : rejectMonState.segments.has(bid);
+        b.classList.toggle('active', active);
+      });
+      // Инвалидируем кэш — фильтр глобально применяется ко всем подвкладкам.
+      rejectMonState.cache = { channels: null, funnel: null, dynamics: null, uniteco: null };
+      renderRejectActiveSub();
+    });
+  }
+  // Первичный рендер активной подвкладки (по умолчанию channels).
+  renderRejectActiveSub();
+}
+
+function switchRejectSubTab(name) {
+  rejectMonState.activeSub = name;
+  document.querySelectorAll('#rejectSubTabBar .tab-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.rsub === name);
+  });
+  document.querySelectorAll('.reject-sub').forEach(el => {
+    const match = el.id === 'rsub-' + name;
+    el.classList.toggle('active', match);
+    el.classList.toggle('hidden', !match);
+  });
+  renderRejectActiveSub();
+}
+
+function renderRejectActiveSub() {
+  switch (rejectMonState.activeSub) {
+    case 'channels': loadAndRenderChannels(); break;
+    case 'funnel':   loadAndRenderFunnel();   break;
+    case 'uniteco':  loadAndRenderUnitEco();  break;
+  }
+}
+
+// Текущий период — берём из глобальных инпутов dateFrom/dateTo, чтобы фильтры
+// действительно работали ко всем 3 подвкладкам без локальной копии.
+function rejectMonCurrentPeriod() {
+  const from = document.getElementById('dateFrom')?.value || '';
+  const to   = document.getElementById('dateTo')?.value   || '';
+  return { from, to };
+}
+
+function rejectMonBuildQS(action) {
+  const { from, to } = rejectMonCurrentPeriod();
+  const segs = Array.from(rejectMonState.segments).join(',');
+  const qs = new URLSearchParams({ action });
+  if (from) qs.set('start_date', from);
+  if (to)   qs.set('end_date',   to);
+  if (segs) qs.set('segments',   segs);
+  return `${API_BASE}?${qs.toString()}`;
+}
+
+async function rejectMonFetch(action, cacheKey) {
+  if (rejectMonState.cache[cacheKey]) return rejectMonState.cache[cacheKey];
+  try {
+    const r = await fetch(rejectMonBuildQS(action), { cache: 'no-store' });
+    const j = await r.json();
+    rejectMonState.cache[cacheKey] = j;
+    return j;
+  } catch (e) {
+    console.debug('rejectMonFetch failed', action, e);
+    return { status: 'error', stub: true, error: String(e) };
+  }
+}
+
+function showRejectStubBanner(show) {
+  const el = document.getElementById('rejectStubBanner');
+  if (el) el.classList.toggle('hidden', !show);
+}
+
+// ----- Подвкладка 1: Сводка по 5 каналам -----
+async function loadAndRenderChannels() {
+  const data = await rejectMonFetch('channels_overview', 'channels');
+  showRejectStubBanner(!!data.stub);
+  const tbody = document.querySelector('#channelsTable tbody');
+  if (!tbody) return;
+  const rows = (data.channels || []).map(r => {
+    const pct = r.plan_completion;
+    const pctTxt = (pct === null || pct === undefined) ? '—' : `${Number(pct).toFixed(1)}%`;
+    const epc = r.epc;
+    const epcTxt = (epc === null || epc === undefined) ? '—' : `${Number(epc).toFixed(2)}`;
+    return `<tr>
+      <td class="px-2 py-2">${escapeHtml(r.label)}</td>
+      <td class="px-2 py-2 text-right">${Number(r.traffic || 0).toLocaleString('ru-RU')}</td>
+      <td class="px-2 py-2 text-right">${Math.round(r.plan_revenue || 0).toLocaleString('ru-RU')}</td>
+      <td class="px-2 py-2 text-right">${Math.round(r.fact_revenue || 0).toLocaleString('ru-RU')}</td>
+      <td class="px-2 py-2 text-right ${planStatusClass(pct)}">${pctTxt}</td>
+      <td class="px-2 py-2 text-right">${Math.round(r.costs || 0).toLocaleString('ru-RU')}</td>
+      <td class="px-2 py-2 text-right">${Math.round(r.gross_profit || 0).toLocaleString('ru-RU')}</td>
+      <td class="px-2 py-2 text-right">${epcTxt}</td>
+    </tr>`;
+  }).join('');
+  tbody.innerHTML = rows;
+  const hint = document.getElementById('channelsTableHint');
+  if (hint) {
+    hint.textContent = data.stub
+      ? 'Каркас: реальные значения подключаются после загрузки channel_plan / channel_costs_log и маппинга трафика leads.su → канал.'
+      : '';
+  }
+  renderChannelsBarChart(data.channels || []);
+}
+
+let _channelsBarChart = null;
+function renderChannelsBarChart(channels) {
+  const ctx = document.getElementById('channelsBarChart');
+  if (!ctx || typeof Chart === 'undefined') return;
+  const labels = channels.map(c => c.label);
+  const planArr = channels.map(c => Number(c.plan_revenue || 0));
+  const factArr = channels.map(c => Number(c.fact_revenue || 0));
+  if (_channelsBarChart) { _channelsBarChart.destroy(); _channelsBarChart = null; }
+  _channelsBarChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        { label: 'План, ₽', data: planArr, backgroundColor: 'rgba(148,163,184,0.55)' },
+        { label: 'Факт, ₽', data: factArr, backgroundColor: 'rgba(52,211,153,0.85)' },
+      ],
+    },
+    options: {
+      indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { position: 'bottom' } },
+      scales: { x: { beginAtZero: true } },
+    },
+  });
+}
+
+// ----- Подвкладка 2: Воронка и динамика конверсии -----
+async function loadAndRenderFunnel() {
+  const [funnel, dyn] = await Promise.all([
+    rejectMonFetch('funnel_history', 'funnel'),
+    rejectMonFetch('conversion_dynamics', 'dynamics'),
+  ]);
+  showRejectStubBanner(!!(funnel.stub || dyn.stub));
+  renderRejectFunnel(funnel.stages || []);
+  const bench = document.getElementById('rejectBenchmarkValue');
+  if (bench) bench.textContent = (dyn.benchmark_pct ?? 3.66).toFixed(2);
+  renderConversionDynamicsChart(dyn.series || [], dyn.benchmark_pct ?? 3.66);
+}
+
+function renderRejectFunnel(stages) {
+  const box = document.getElementById('rejectFunnelBox');
+  if (!box) return;
+  if (!stages.length) { box.innerHTML = '<p class="text-xs text-slate-500">Нет данных по воронке за выбранный период.</p>'; return; }
+  const maxVal = Math.max(1, ...stages.map(s => Number(s.value || 0)));
+  const parts = [];
+  stages.forEach((s, i) => {
+    const v = Number(s.value || 0);
+    const w = Math.max(0, Math.min(100, v / maxVal * 100));
+    const zoneCls = s.zone === 'external' ? 'funnel-stage--external' : 'funnel-stage--internal';
+    parts.push(`<div class="funnel-stage ${zoneCls}">
+      <div class="flex justify-between gap-3 mb-2">
+        <span><span class="text-slate-400 text-xs mr-2">Шаг ${s.step}</span>${escapeHtml(s.label)}</span>
+        <strong>${v.toLocaleString('ru-RU')}</strong>
+      </div>
+      <div class="funnel-stage-bar"><div class="funnel-stage-fill" style="width:${w}%"></div></div>
+      ${s.note ? `<small class="text-slate-500 block mt-2">${escapeHtml(s.note)}</small>` : ''}
+    </div>`);
+    if (i < stages.length - 1) {
+      const next = stages[i + 1];
+      const tip  = renderFunnelTooltip(s, next);
+      parts.push(`<div class="funnel-step-arrow" tabindex="0" aria-label="${escapeHtml(tip)}">
+        ↓
+        <div class="funnel-step-tooltip">${tip}</div>
+      </div>`);
+    }
+  });
+  box.innerHTML = parts.join('');
+}
+
+let _conversionDynamicsChart = null;
+function renderConversionDynamicsChart(series, benchmark) {
+  const ctx = document.getElementById('conversionDynamicsChart');
+  if (!ctx || typeof Chart === 'undefined') return;
+  const labels = series.map(p => p.date);
+  const values = series.map(p => Number(p.conversion_pct || 0));
+  const bench  = labels.map(() => Number(benchmark || 0));
+  // Аномалии подсвечиваем красным; обычные точки — приглушённые.
+  const pointColors = series.map(p => p.anomaly ? '#FF453A' : 'rgba(56,189,248,0.85)');
+  const pointRadii  = series.map(p => p.anomaly ? 5 : 2);
+  if (_conversionDynamicsChart) { _conversionDynamicsChart.destroy(); _conversionDynamicsChart = null; }
+  _conversionDynamicsChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: 'Конверсия, %',
+          data: values,
+          borderColor: 'rgba(56,189,248,0.85)',
+          backgroundColor: 'rgba(56,189,248,0.10)',
+          pointBackgroundColor: pointColors,
+          pointRadius: pointRadii,
+          tension: 0.25, fill: true,
+        },
+        {
+          label: `Benchmark ${Number(benchmark || 0).toFixed(2)}%`,
+          data: bench,
+          borderColor: 'rgba(245,158,11,0.85)',
+          borderDash: [6, 4], borderWidth: 1.5,
+          pointRadius: 0, fill: false,
+        },
+      ],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { position: 'bottom' } },
+      scales: { y: { beginAtZero: true } },
+    },
+  });
+}
+
+// ----- Подвкладка 3: Юнит-экономика по CJM -----
+async function loadAndRenderUnitEco() {
+  const data = await rejectMonFetch('unit_economics_cjm', 'uniteco');
+  showRejectStubBanner(!!data.stub);
+  const grid = document.getElementById('rejectCohortGrid');
+  if (!grid) return;
+  const cohorts = (data.cohorts || []);
+  // Применяем фильтр сегментов: пустой Set = все.
+  const visible = rejectMonState.segments.size === 0
+    ? cohorts
+    : cohorts.filter(c => rejectMonState.segments.has(c.segment));
+  if (!visible.length) {
+    grid.innerHTML = '<p class="text-xs text-slate-500 col-span-2">Нет данных по выбранным сегментам.</p>';
+    return;
+  }
+  const fmt = (v, suffix = '') => (v === null || v === undefined) ? '—' : `${Number(v).toLocaleString('ru-RU', { maximumFractionDigits: 2 })}${suffix}`;
+  grid.innerHTML = visible.map(c => `
+    <div class="card">
+      <div class="flex items-center justify-between mb-3">
+        <h4 class="text-white font-semibold">${escapeHtml(c.label)}</h4>
+        <span class="text-xs text-slate-400">${Number(c.clients || 0).toLocaleString('ru-RU')} клиентов</span>
+      </div>
+      <dl class="grid grid-cols-2 gap-y-2 text-sm">
+        <dt class="text-slate-400">CPL</dt><dd class="text-right">${fmt(c.cpl, ' ₽')}</dd>
+        <dt class="text-slate-400">ARPU</dt><dd class="text-right">${fmt(c.arpu, ' ₽')}</dd>
+        <dt class="text-slate-400">Cross-sell CR</dt><dd class="text-right">${fmt(c.cross_sell_cr, '%')}</dd>
+        <dt class="text-slate-400">Retention</dt><dd class="text-right">${fmt(c.retention_rate, '%')}</dd>
+        <dt class="text-slate-400">LTV (${data.horizon_months || 24} мес)</dt><dd class="text-right">${fmt(c.ltv_24m, ' ₽')}</dd>
+      </dl>
+    </div>
+  `).join('');
+}
+
+// При смене глобального периода — сбрасываем кэш каркаса и перерисовываем
+// активную подвкладку, чтобы фильтры действительно применялись глобально.
+['dateFrom', 'dateTo'].forEach(id => {
+  document.addEventListener('change', (e) => {
+    if (e.target && e.target.id === id) {
+      rejectMonState.cache = { channels: null, funnel: null, dynamics: null, uniteco: null };
+      if (document.getElementById('tab-reject-mon')?.classList.contains('active')) {
+        renderRejectActiveSub();
+      }
+    }
+  });
 });
 </script>
 </body>
