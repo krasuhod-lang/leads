@@ -211,7 +211,10 @@ function aiLog($event, array $context = []) {
     // Дублируем в php_errors.log только важные/ошибочные события, иначе
     // успешные прогоны быстро забивают системный лог хостинга.
     static $importantEvents = [
-        'config_loaded'                 => true, // первый запуск после деплоя — полезно видеть
+        // config_loaded НЕ дублируем в php_errors.log: на shared-хостинге
+        // PHP-воркер перечитывает скрипт на каждом запросе, и это INFO-событие
+        // забивает системный лог сотнями строк в минуту, маскируя реальные
+        // ошибки. В ai.log оно по-прежнему пишется — там и смотреть после деплоя.
         'ai_diag_no_key'                => true,
         'ai_analyze_no_key'             => true,
         'ai_analyze_bad_payload'        => true,
