@@ -1319,6 +1319,7 @@
         </div>
       </div>
       <p class="text-sm text-slate-400 mb-4">Источник: <code>/webmaster/offers?extendedFields=1</code> → <code>detail_stats.system.other_epc</code> (общий по бирже EPC) и <code>detail_stats.your.other_epc</code> (ваш). Помогает понять, стоит ли продолжать использовать оффер: если ваш EPC ниже рыночного — есть потенциал роста или проблема с трафиком. <span class="text-slate-500">«Потенциал ₽» = ваши клики по офферу × (EPC рынка − ваш EPC) — оценка дополнительной выручки при выходе на рыночный уровень.</span></p>
+      <div id="marketSummary" class="hidden grid grid-cols-2 md:grid-cols-4 gap-3 mb-4"></div>
       <div class="overflow-auto" style="max-height:600px">
         <table class="w-full text-sm" id="marketOffersTable"><thead><tr>
           <th class="sort-th" onclick="sortTable('marketOffersTable','name')">Оффер ↕</th>
@@ -1555,7 +1556,6 @@
     <div id="rejectSubTabBar" class="flex gap-1 border-b border-slate-700">
       <button class="tab-btn active" data-rsub="channels" onclick="switchRejectSubTab('channels')">Сводка по 5 каналам</button>
       <button class="tab-btn"        data-rsub="funnel"   onclick="switchRejectSubTab('funnel')">Воронка и динамика</button>
-      <button class="tab-btn"        data-rsub="uniteco"  onclick="switchRejectSubTab('uniteco')">Юнит-экономика (CJM)</button>
     </div>
 
     <!-- SUB-TAB 1: Channels Overview -->
@@ -1644,14 +1644,7 @@
       </div>
     </div>
 
-    <!-- SUB-TAB 3: Unit Economics by CJM -->
-    <div id="rsub-uniteco" class="reject-sub space-y-6 hidden">
-      <div class="card">
-        <h3 class="text-white font-semibold mb-2">Юнит-экономика по когортам</h3>
-        <p class="text-xs text-slate-500 mb-4">CPL, ARPU, Cross-sell, Retention и LTV(24м) считаются в разрезе сегментов CJM, а не средним по всему трафику.</p>
-        <div id="rejectCohortGrid" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>
-      </div>
-    </div>
+    <!-- SUB-TAB 3 (Unit Economics by CJM) removed by request -->
   </div>
 
   <!-- TAB: AI ANALYTICS (issue 7) -->
@@ -2436,7 +2429,7 @@ function switchTab(tabName) {
   // Каркас «Монетизация отказников» — переинициализируем активную подвкладку
   // при открытии вкладки (фильтры/период могли измениться).
   if (tabName === 'reject-mon') {
-    try { rejectMonState.cache = { channels: null, funnel: null, dynamics: null, uniteco: null }; renderRejectActiveSub(); } catch (_) {}
+    try { rejectMonState.cache = { channels: null, funnel: null, dynamics: null }; renderRejectActiveSub(); } catch (_) {}
   }
   setTimeout(() => window.dispatchEvent(new Event('resize')), 100);
 }
@@ -2921,10 +2914,10 @@ async function loadFromAPI(opts = {}) {
       if (!dateStr) continue;
       const offerId = String(row.offer_id ?? row.offerid ?? '');
       const platformId = String(row.platform_id ?? row.platformid ?? '');
-      // Сырые клики — для честного сравнения с рыночным EPC, который провайдер
-      // считает по обычным clicks, а не unique_clicks.
+      // Уникальные клики идут в `clicks` и используются для EPC/CR.
+      // raw_clicks храним лишь как технический бэкап того, что отдал API.
       const rawClicks = Number(row.clicks ?? row.uniqueclicks ?? row.unique_clicks ?? 0);
-      const clicks = Number(row.unique_clicks ?? row.clicks ?? row.uniqueclicks ?? 0);
+      const clicks = Number(row.unique_clicks ?? row.uniqueclicks ?? row.clicks ?? 0);
       const conversions = Number(row.unique_conversions ?? row.conversions ?? row.uniqueconversions ?? 0);
       const approved = Number(row.conversions_approved ?? row.conversionsapproved ?? 0);
       const revenue = Number(row.payout ?? 0);
@@ -3835,11 +3828,13 @@ function renderSub1Table() {
 function renderMarketTable() {
   const tbody = document.querySelector('#marketOffersTable tbody');
   if (!tbody) return;
+  const sumEl = document.getElementById('marketSummary');
   const all = Object.values(offerMarketMap);
   if (!all.length) {
     tbody.innerHTML = '<tr><td colspan="9" class="text-center text-slate-500 py-4">Нет данных. Нажмите «Обновить с Leads.su».</td></tr>';
     const ts = document.getElementById('marketUpdatedAt');
     if (ts) ts.textContent = '';
+    if (sumEl) { sumEl.classList.add('hidden'); sumEl.innerHTML = ''; }
     return;
   }
   // updated_at — берём максимальный из кэша
@@ -3853,6 +3848,62 @@ function renderMarketTable() {
   for (const r of globalRawData) {
     if (r.offer_id) clicksByOfferId[String(r.offer_id)] = (clicksByOfferId[String(r.offer_id)] || 0) + (r.clicks || 0);
     if (r.offer)    clicksByOfferName[r.offer]         = (clicksByOfferName[r.offer]         || 0) + (r.clicks || 0);
+  }
+  // Сводка по рынку: медиана EPC/CR/AR по офферам с known market_epc>0
+  // (медиана устойчивее к выбросам, чем среднее по горстке нишевых офферов)
+  // + наш агрегированный EPC по тем же офферам = SUM(revenue) / SUM(unique_clicks)
+  // из текущего среза globalRawData. Это и есть «средний EPC по рынку leads.su»
+  // и его сопоставление с нашим фактическим EPC за выбранный период.
+  if (sumEl) {
+    const median = (arr) => {
+      const s = arr.filter(v => Number.isFinite(v) && v > 0).slice().sort((a, b) => a - b);
+      if (!s.length) return 0;
+      const m = Math.floor(s.length / 2);
+      return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+    };
+    const mEpcVals = all.map(o => Number(o.market_epc) || 0);
+    const mCrVals  = all.map(o => Number(o.market_cr)  || 0);
+    const mArVals  = all.map(o => Number(o.market_ar)  || 0);
+    const medEpc = median(mEpcVals);
+    const medCr  = median(mCrVals);
+    const medAr  = median(mArVals);
+    const offersWithEpc = mEpcVals.filter(v => v > 0).length;
+    // Наш фактический EPC за период — только по офферам, по которым leads.su
+    // отдаёт рыночный EPC (чтобы сравнение было like-for-like).
+    let ourClicks = 0, ourRevenue = 0;
+    for (const r of (globalRawData || [])) {
+      const m = getOfferMarket(r);
+      if (!m || !(Number(m.market_epc) > 0)) continue;
+      ourClicks  += Number(r.clicks)  || 0;
+      ourRevenue += Number(r.revenue) || 0;
+    }
+    const ourEpc = ourClicks > 0 ? ourRevenue / ourClicks : 0;
+    const delta = (medEpc > 0 && ourEpc > 0) ? (ourEpc - medEpc) : null;
+    const deltaPct = (medEpc > 0 && ourEpc > 0) ? ((ourEpc - medEpc) / medEpc * 100) : null;
+    const deltaCls = delta === null ? 'text-slate-300'
+                   : delta >= 0 ? 'text-emerald-400' : 'text-red-400';
+    const fmtPct = v => v === null || !Number.isFinite(v) ? '—' : `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`;
+    const card = (label, value, sub, cls = 'text-white') => `
+      <div class="bg-slate-900/60 border border-slate-700 rounded p-3">
+        <div class="text-xs text-slate-400">${label}</div>
+        <div class="text-lg font-bold ${cls}">${value}</div>
+        ${sub ? `<div class="text-[11px] text-slate-500 mt-0.5">${sub}</div>` : ''}
+      </div>`;
+    sumEl.innerHTML = [
+      card('Медиана EPC рынка',
+           medEpc > 0 ? `${medEpc.toFixed(2)} ₽` : '—',
+           `по ${offersWithEpc} офферам leads.su`),
+      card('Наш EPC за период',
+           ourEpc > 0 ? `${ourEpc.toFixed(2)} ₽` : '—',
+           ourClicks > 0 ? `${ourClicks.toLocaleString('ru-RU')} уникальных кликов` : 'нет данных по кликам'),
+      card('Мы vs рынок (медиана)',
+           delta === null ? '—' : `${delta >= 0 ? '+' : ''}${delta.toFixed(2)} ₽ <span class="text-sm">(${fmtPct(deltaPct)})</span>`,
+           '', deltaCls),
+      card('Медиана CR / AR рынка',
+           (medCr > 0 || medAr > 0) ? `${medCr.toFixed(2)}% / ${medAr.toFixed(2)}%` : '—',
+           'для бенчмарка качества трафика'),
+    ].join('');
+    sumEl.classList.remove('hidden');
   }
   // Build rows with computed delta
   let rows = Object.entries(offerMarketMap).map(([oid, o]) => {
@@ -8272,7 +8323,7 @@ const rejectMonState = {
   // Пустой Set означает «все сегменты» (трактуется как отсутствие фильтра).
   segments: new Set(),
   // Кэш ответов backend-stub по подвкладкам, чтобы переключение не перезапрашивало.
-  cache: { channels: null, funnel: null, dynamics: null, uniteco: null },
+  cache: { channels: null, funnel: null, dynamics: null },
 };
 
 // Возвращает CSS-класс для ячейки «Выполнение плана»:
@@ -8322,7 +8373,7 @@ function rejectMonInit() {
         b.classList.toggle('active', active);
       });
       // Инвалидируем кэш — фильтр глобально применяется ко всем подвкладкам.
-      rejectMonState.cache = { channels: null, funnel: null, dynamics: null, uniteco: null };
+      rejectMonState.cache = { channels: null, funnel: null, dynamics: null };
       renderRejectActiveSub();
     });
   }
@@ -8347,7 +8398,6 @@ function renderRejectActiveSub() {
   switch (rejectMonState.activeSub) {
     case 'channels': loadAndRenderChannels(); break;
     case 'funnel':   loadAndRenderFunnel();   break;
-    case 'uniteco':  loadAndRenderUnitEco();  break;
   }
 }
 
@@ -8797,49 +8847,15 @@ function renderConversionDynamicsChart(series, benchmark, dropThreshold) {
   }
 }
 
-// ----- Подвкладка 3: Юнит-экономика по CJM -----
-async function loadAndRenderUnitEco() {
-  const data = await rejectMonFetch('unit_economics_cjm', 'uniteco');
-  showRejectStubBanner(!!data.stub);
-  const grid = document.getElementById('rejectCohortGrid');
-  if (!grid) return;
-  const cohorts = (data.cohorts || []);
-  // Применяем фильтр сегментов: пустой Set = все.
-  const visible = rejectMonState.segments.size === 0
-    ? cohorts
-    : cohorts.filter(c => rejectMonState.segments.has(c.segment));
-  if (!visible.length) {
-    grid.innerHTML = '<p class="text-xs text-slate-500 col-span-2">Нет данных по выбранным сегментам.</p>';
-    return;
-  }
-  const fmtMoney = v => (v === null || v === undefined) ? '—' : `${Math.round(Number(v)).toLocaleString('ru-RU')} ₽`;
-  const fmtPct   = v => (v === null || v === undefined) ? '—' : `${Number(v).toFixed(1)}%`;
-  // Цветовое кодирование retention: ≥60% зелёный, ≥30% нейтральный, иначе красный.
-  const retCls = v => (v === null || v === undefined) ? 'text-slate-300'
-    : (v >= 60 ? 'text-emerald-400' : (v >= 30 ? 'text-slate-300' : 'text-red-400'));
-  grid.innerHTML = visible.map(c => `
-    <div class="card">
-      <div class="flex items-center justify-between mb-3">
-        <h4 class="text-white font-semibold">${escapeHtml(c.label)}</h4>
-        <span class="text-xs text-slate-400">${Number(c.clients || 0).toLocaleString('ru-RU')} клиентов</span>
-      </div>
-      <dl class="grid grid-cols-2 gap-y-2 text-sm">
-        <dt class="text-slate-400" title="Cost Per Lead — расходы на канал / новых клиентов в когорте">CPL <i class="info-tip" aria-label="Cost Per Lead — стоимость привлечения одного клиента (расходы канала / новые клиенты). Считается только для когорты «Новый клиент»." title="Cost Per Lead — стоимость привлечения одного клиента (расходы канала / новые клиенты). Считается только для когорты «Новый клиент»."></i></dt><dd class="text-right">${fmtMoney(c.cpl)}</dd>
-        <dt class="text-slate-400" title="Average Revenue Per User за всё время жизни клиента">ARPU <i class="info-tip" aria-label="Average Revenue Per User — средняя выручка с клиента когорты за всё время жизни (lifetime revenue / clients)." title="Average Revenue Per User — средняя выручка с клиента когорты за всё время жизни."></i></dt><dd class="text-right">${fmtMoney(c.arpu)}</dd>
-        <dt class="text-slate-400" title="Доля клиентов с повторной целевой конверсией в первые 30 дней">Cross-sell CR</dt><dd class="text-right">${fmtPct(c.cross_sell_cr)}</dd>
-        <dt class="text-slate-400" title="Доля клиентов с повторной активностью на горизонте 90 дней">Retention <i class="info-tip" aria-label="Доля клиентов когорты, вернувшихся с целевым действием в течение 90 дней после первого касания." title="Доля клиентов когорты, вернувшихся с целевым действием в течение 90 дней после первого касания."></i></dt><dd class="text-right ${retCls(c.retention_rate)}">${fmtPct(c.retention_rate)}</dd>
-        <dt class="text-slate-400" title="Lifetime Value на горизонте ${data.horizon_months || 24} мес">LTV (${data.horizon_months || 24} мес)</dt><dd class="text-right">${fmtMoney(c.ltv_24m)}</dd>
-      </dl>
-    </div>
-  `).join('');
-}
+// Подвкладка «Юнит-экономика (CJM)» удалена по запросу: tab + loadAndRenderUnitEco
+// вынесены из UI. Backend action `unit_economics_cjm` оставлен на случай возврата.
 
 // При смене глобального периода — сбрасываем кэш каркаса и перерисовываем
 // активную подвкладку, чтобы фильтры действительно применялись глобально.
 ['dateFrom', 'dateTo'].forEach(id => {
   document.addEventListener('change', (e) => {
     if (e.target && e.target.id === id) {
-      rejectMonState.cache = { channels: null, funnel: null, dynamics: null, uniteco: null };
+      rejectMonState.cache = { channels: null, funnel: null, dynamics: null };
       if (document.getElementById('tab-reject-mon')?.classList.contains('active')) {
         renderRejectActiveSub();
       }

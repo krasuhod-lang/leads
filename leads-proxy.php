@@ -1144,9 +1144,9 @@ function ymApiGet($url, $ymToken) {
  * platform_id — syntheticSourceId(source_name). Те же функции применяются
  * в save_stats, поэтому оба пути сходятся.
  *
- * `clicks`     — unique_clicks (для UI и расчёта AR/CR).
- * `raw_clicks` — обычные clicks (для честного сравнения с рыночным EPC,
- *                который провайдер считает по сырым кликам).
+ * `clicks`     — unique_clicks (для UI, расчёта AR/CR и EPC).
+ * `raw_clicks` — обычные clicks из API; храним только для диагностики.
+ *                EPC и трафик считаем по `clicks` (уникальным).
  */
 function saveReportRows($db, $rows, $offerMap) {
     $inserted = 0;
@@ -2650,9 +2650,11 @@ function aiBacktestRun($db) {
             $stmtCheck->close();
             if ($exists) { $report['skipped_done']++; continue; }
             // Считаем факт за горизонт прогноза — тоже через prepared statement.
+            // EPC считаем по уникальным кликам (clicks), как и в UI/AI —
+            // raw_clicks остаётся в БД только для исторической диагностики.
             $stmtFact = $db->prepare('SELECT
-                    COALESCE(SUM(revenue),0)     AS rev,
-                    COALESCE(SUM(raw_clicks),0)  AS clk
+                    COALESCE(SUM(revenue),0) AS rev,
+                    COALESCE(SUM(clicks),0)  AS clk
                 FROM daily_stats
                 WHERE date >= :tf AND date <= :tt');
             $stmtFact->bindValue(':tf', $targetFrom, SQLITE3_TEXT);
@@ -3583,9 +3585,9 @@ function buildFunnelAggregates($db, $startDate, $endDate) {
     }
 
     // --- leads.su daily_stats: клики (3), конверсии (4), approve (5)
-    // raw_clicks предпочитаем для шага 3, если есть; иначе clicks.
+    // Считаем по уникальным кликам (clicks) — единая база для EPC и воронки.
     $stmt = $db->prepare("SELECT date,
-            SUM(COALESCE(NULLIF(raw_clicks,0), clicks)) AS step3,
+            SUM(clicks)      AS step3,
             SUM(conversions) AS step4,
             SUM(approved)    AS step5
         FROM daily_stats
@@ -3622,9 +3624,9 @@ if ($action === 'channels_overview') {
     }
 
     if ($dFrom && $dTo) {
-        // Факт + трафик по площадкам
+        // Факт + трафик по площадкам. Трафик и EPC — по уникальным кликам.
         $stmt = $db->prepare("SELECT source_id,
-                SUM(COALESCE(NULLIF(raw_clicks,0), clicks)) AS traffic,
+                SUM(clicks)  AS traffic,
                 SUM(revenue) AS revenue
             FROM daily_stats
             WHERE substr(date,1,10) BETWEEN :a AND :b
