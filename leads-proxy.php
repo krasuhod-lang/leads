@@ -937,15 +937,77 @@ try {
 // ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 
 /**
- * Выполняет GET-запрос к API Leads.su с обработкой ошибок
+ * Файл межпроцессной «остывалки» для API Leads.su. Когда апстрим отвечает 429
+ * (rate limit) — все остальные процессы (cron / UI / AI / refresh из браузера)
+ * должны узнать об этом и не долбить API ещё чаще. Перед каждым вызовом
+ * apiGet() читаем timestamp «не звонить раньше», на 429 — записываем его.
+ */
+function leadsApiCooldownFile() {
+    return __DIR__ . '/leads_api_cooldown.txt';
+}
+
+function leadsApiCooldownUntil() {
+    $f = leadsApiCooldownFile();
+    if (!is_file($f)) return 0;
+    $raw = @file_get_contents($f);
+    if ($raw === false) return 0;
+    $ts = (int)trim($raw);
+    return $ts > 0 ? $ts : 0;
+}
+
+function leadsApiCooldownSet($seconds) {
+    $seconds = max(1, min(120, (int)$seconds)); // защитный диапазон 1..120s
+    $until = time() + $seconds;
+    // Не сокращаем уже выставленный более длинный cooldown.
+    $existing = leadsApiCooldownUntil();
+    if ($until > $existing) {
+        @file_put_contents(leadsApiCooldownFile(), (string)$until, LOCK_EX);
+    }
+}
+
+/**
+ * Выполняет GET-запрос к API Leads.su с обработкой ошибок.
+ *
+ * Защита от перегрузки API (поддержка leads.su пишет, что аккаунт превышает
+ * лимит обращений):
+ *   1) межпроцессный cooldown — если недавно поймали 429, ждём до момента,
+ *      записанного в `leads_api_cooldown.txt` (общий для cron / UI / AI).
+ *      Если ожидание дольше 30 с — не блокируем фронт, возвращаем 429 сразу.
+ *   2) внутрипроцессный pacing — между последовательными вызовами в одном
+ *      запросе ставим минимум 200 мс. На update_stats это десятки страниц
+ *      summary × N площадок — без пауз залп получается слишком плотный.
+ *   3) до 5 ретраев с экспоненциальной задержкой (1s, 2s, 4s, 8s) и уважением
+ *      заголовка `Retry-After` (cap 60s).
  */
 function apiGet($url, $timeout = 30) {
-    // Авторетраи на 429 (rate limit) и 5xx (transient). Leads.su периодически
-    // отдаёт 429, особенно когда параллельно работают cron + UI + ручной
-    // refresh — раньше первый же 429 «пробивался» наружу, фронт показывал 502
-    // Bad Gateway. Теперь делаем до 3 попыток с экспоненциальной задержкой;
-    // если у ответа есть Retry-After (sec или HTTP-date) — уважаем её.
-    $maxAttempts = 3;
+    // (1) Межпроцессный cooldown — общий через файл.
+    $cooldownUntil = leadsApiCooldownUntil();
+    if ($cooldownUntil > time()) {
+        $waitSec = $cooldownUntil - time();
+        if ($waitSec > 30) {
+            // Слишком долгое ожидание — фронту лучше получить 429 и
+            // показать пользователю «попробуйте позже», чем висеть.
+            return [
+                'error'    => 'HTTP 429 (rate limit cooldown active)',
+                'status'   => 429,
+                'response' => '',
+                'retry_after' => $waitSec,
+            ];
+        }
+        sleep($waitSec);
+    }
+
+    // (2) Внутрипроцессный pacing: не чаще ~5 rps в одном PHP-процессе.
+    static $lastCallAt = 0.0;
+    $minIntervalUs = 200000; // 200 ms
+    if ($lastCallAt > 0.0) {
+        $sinceUs = (int) ((microtime(true) - $lastCallAt) * 1e6);
+        if ($sinceUs < $minIntervalUs) {
+            usleep($minIntervalUs - $sinceUs);
+        }
+    }
+
+    $maxAttempts = 5;
     $attempt = 0;
     $lastResponse = '';
     $lastHttpCode = 0;
@@ -954,6 +1016,7 @@ function apiGet($url, $timeout = 30) {
 
     while ($attempt < $maxAttempts) {
         $attempt++;
+        $lastCallAt = microtime(true);
         $ch = curl_init();
         curl_setopt_array($ch, [
             CURLOPT_URL => $url,
@@ -982,7 +1045,7 @@ function apiGet($url, $timeout = 30) {
             // с лёгкой задержкой; transient-ошибки сети так же стоит ретраить,
             // как и 429.
             if ($attempt < $maxAttempts) {
-                usleep(500000 * $attempt); // 0.5s, 1s
+                usleep(500000 * $attempt); // 0.5s, 1s, 1.5s, 2s
                 continue;
             }
             return ['error' => "CURL error: $error"];
@@ -999,32 +1062,57 @@ function apiGet($url, $timeout = 30) {
         // Retry только на 429 и 5xx — это transient. 4xx (кроме 429) — это
         // ошибка запроса (плохой токен, неверный параметр), ретраить смысла нет.
         $isRetryable = ($httpCode === 429) || ($httpCode >= 500 && $httpCode < 600);
+
+        // На 429 — ставим межпроцессный cooldown, чтобы параллельные cron / UI /
+        // AI запросы не долбили API дальше. Длительность берём из Retry-After,
+        // иначе — 5 с по умолчанию (с экспонентой по числу попыток).
+        if ($httpCode === 429) {
+            $cooldownSec = 5 * $attempt;
+            if ($lastHeaders !== '' && preg_match('/^Retry-After:\s*(.+)$/mi', $lastHeaders, $m)) {
+                $val = trim($m[1]);
+                if (ctype_digit($val)) {
+                    $cooldownSec = max($cooldownSec, (int)$val);
+                } else {
+                    $ts = strtotime($val);
+                    if ($ts !== false) $cooldownSec = max($cooldownSec, $ts - time());
+                }
+            }
+            leadsApiCooldownSet($cooldownSec);
+        }
+
         if (!$isRetryable || $attempt >= $maxAttempts) {
             break;
         }
 
         // Уважаем Retry-After: число секунд или HTTP-date.
-        $delayMs = 500 * (1 << ($attempt - 1)); // 500ms, 1s, 2s
+        // Экспонента: 1s, 2s, 4s, 8s — даём API «вздохнуть» при перегрузке.
+        $delayMs = 1000 * (1 << ($attempt - 1));
         if ($lastHeaders !== '' && preg_match('/^Retry-After:\s*(.+)$/mi', $lastHeaders, $m)) {
             $val = trim($m[1]);
             if (ctype_digit($val)) {
-                $delayMs = max($delayMs, min(10000, (int)$val * 1000));
+                $delayMs = max($delayMs, min(60000, (int)$val * 1000));
             } else {
                 $ts = strtotime($val);
                 if ($ts !== false) {
                     $delaySec = max(0, $ts - time());
-                    $delayMs = max($delayMs, min(10000, $delaySec * 1000));
+                    $delayMs = max($delayMs, min(60000, $delaySec * 1000));
                 }
             }
         }
         usleep($delayMs * 1000);
+        $lastCallAt = microtime(true);
     }
 
-    return [
+    $result = [
         'error'    => "HTTP $lastHttpCode",
         'status'   => $lastHttpCode,
         'response' => substr($lastResponse, 0, 500),
     ];
+    if ($lastHttpCode === 429) {
+        $cool = leadsApiCooldownUntil() - time();
+        if ($cool > 0) $result['retry_after'] = $cool;
+    }
+    return $result;
 }
 
 /**
@@ -5734,7 +5822,8 @@ if (isset($result['error'])) {
     $status = isset($result['status']) ? (int)$result['status'] : 0;
     if ($status === 429) {
         http_response_code(429);
-        header('Retry-After: 5');
+        $retryAfter = isset($result['retry_after']) ? max(1, (int)$result['retry_after']) : 5;
+        header('Retry-After: ' . $retryAfter);
     } else {
         http_response_code(502);
     }
