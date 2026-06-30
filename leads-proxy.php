@@ -467,6 +467,23 @@ try {
         PRIMARY KEY(date, source_id)
     )');
 
+    // «Истинные» уникальные клики за день в разрезе оффера (без platform/sub1).
+    // Аналог daily_unique_clicks, но группировка идёт по офферу: leads.su в режиме
+    // /reports/summary?grouping=day&fields=offer_id (без platform_id и aff_sub1)
+    // считает уникальность посетителей по дню × офферу. Только такие значения
+    // аддитивны по сумме офферов и дат и совпадают с цифрой «уникальные клики»
+    // по офферу в кабинете leads.su. Используются в таблице «Офферы» дашборда
+    // вместо суммирования bucket-unique-clicks по детальным строкам daily_stats
+    // (которое переоценивает трафик, см. saveReportRows).
+    $safeExec('CREATE TABLE IF NOT EXISTS daily_unique_clicks_by_offer (
+        date TEXT NOT NULL,
+        offer_id TEXT NOT NULL DEFAULT \'\',
+        offer_name TEXT,
+        unique_clicks INTEGER DEFAULT 0,
+        raw_clicks INTEGER DEFAULT 0,
+        PRIMARY KEY(date, offer_id)
+    )');
+
     // Кэш офферов (offer_id → имя + рыночные показатели EPC).
     // Используется для (а) повторного резолва имён в "Unknown"-записях,
     // (б) хранения общерыночной статистики (detail_stats.system.other_epc и пр.).
@@ -1320,6 +1337,58 @@ function saveUniqueClicksRows($db, $rows, $defaultSourceId = '', $defaultSourceN
         $stmt->bindValue(':date', $date, SQLITE3_TEXT);
         $stmt->bindValue(':source_id', $sourceId, SQLITE3_TEXT);
         $stmt->bindValue(':source_name', $sourceName, SQLITE3_TEXT);
+        $stmt->bindValue(':unique_clicks', $unique, SQLITE3_INTEGER);
+        $stmt->bindValue(':raw_clicks', $raw, SQLITE3_INTEGER);
+        if ($stmt->execute()) $inserted++;
+        $stmt->reset();
+    }
+    return $inserted;
+}
+
+/**
+ * Сохраняет «истинные» уникальные клики за день в разрезе оффера в
+ * daily_unique_clicks_by_offer. Источник — отдельный вызов
+ * /reports/summary?grouping=day&fields=offer_id БЕЗ platform_id и aff_sub1:
+ * только в этом режиме leads.su уникализирует посетителей по (день × оффер),
+ * как в строке оффера в личном кабинете. Сумма по офферам и дням аддитивна.
+ */
+function saveUniqueClicksByOfferRows($db, $rows, $offerMap = []) {
+    if (!$rows) return 0;
+    $stmt = $db->prepare('INSERT INTO daily_unique_clicks_by_offer
+        (date, offer_id, offer_name, unique_clicks, raw_clicks)
+        VALUES (:date, :offer_id, :offer_name, :unique_clicks, :raw_clicks)
+        ON CONFLICT(date, offer_id) DO UPDATE SET
+            offer_name = COALESCE(NULLIF(excluded.offer_name, \'\'), daily_unique_clicks_by_offer.offer_name),
+            unique_clicks = excluded.unique_clicks,
+            raw_clicks = excluded.raw_clicks');
+    $inserted = 0;
+    foreach ($rows as $row) {
+        $rawDate = $row['period_day']
+            ?? $row['period_hour']
+            ?? $row['periodday']
+            ?? $row['period']
+            ?? $row['date']
+            ?? null;
+        if (!$rawDate) continue;
+        $date = substr((string)$rawDate, 0, 10);
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) continue;
+
+        $rawOfferId = $row['offer_id'] ?? $row['offerid'] ?? '';
+        $offerId = ($rawOfferId !== '' && $rawOfferId !== null) ? (string)$rawOfferId : '';
+        if ($offerId === '') continue; // без offer_id запись бесполезна для агрегата
+
+        $offerName = '';
+        if (!empty($offerMap[$offerId])) $offerName = (string)$offerMap[$offerId];
+        if ($offerName === '') $offerName = (string)($row['offer_name'] ?? $row['offername'] ?? $row['offer'] ?? '');
+
+        $unique = array_key_exists('unique_clicks', $row) && $row['unique_clicks'] !== null
+            ? (int)$row['unique_clicks']
+            : 0;
+        $raw = (int)($row['clicks'] ?? $row['unique_clicks'] ?? 0);
+
+        $stmt->bindValue(':date', $date, SQLITE3_TEXT);
+        $stmt->bindValue(':offer_id', $offerId, SQLITE3_TEXT);
+        $stmt->bindValue(':offer_name', $offerName, SQLITE3_TEXT);
         $stmt->bindValue(':unique_clicks', $unique, SQLITE3_INTEGER);
         $stmt->bindValue(':raw_clicks', $raw, SQLITE3_INTEGER);
         if ($stmt->execute()) $inserted++;
@@ -2868,6 +2937,35 @@ if ($action === 'get_unique_clicks') {
     exit;
 }
 
+// 1d. «Истинные» уникальные клики per (date, offer_id) — для таблицы офферов.
+// См. saveUniqueClicksByOfferRows() / daily_unique_clicks_by_offer.
+if ($action === 'get_unique_clicks_by_offer') {
+    if (!$start_date || !$end_date) {
+        echo json_encode(['error' => 'start_date and end_date required']);
+        exit;
+    }
+    $stmt = $db->prepare('SELECT d.date, d.offer_id,
+        CASE
+            WHEN o.name IS NOT NULL AND o.name != \'\'
+                 AND (d.offer_name IS NULL OR d.offer_name = \'\' OR d.offer_name LIKE \'Offer #%\')
+            THEN o.name
+            ELSE COALESCE(d.offer_name, \'\')
+        END AS offer_name,
+        d.unique_clicks, d.raw_clicks
+        FROM daily_unique_clicks_by_offer d
+        LEFT JOIN offers_cache o ON o.offer_id = d.offer_id AND d.offer_id != \'\' AND d.offer_id NOT LIKE \'name:%\'
+        WHERE d.date BETWEEN :start AND :end ORDER BY d.date');
+    $stmt->bindValue(':start', $start_date, SQLITE3_TEXT);
+    $stmt->bindValue(':end', $end_date, SQLITE3_TEXT);
+    $res = $stmt->execute();
+    $rows = [];
+    while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
+        $rows[] = $row;
+    }
+    echo json_encode(['status' => 'success', 'data' => $rows]);
+    exit;
+}
+
 // 1c. Лёгкий бэкфилл «истинных» уникальных кликов за произвольный диапазон.
 // Дёргает только второй проход /reports/summary?grouping=day (БЕЗ offer_id/sub1)
 // — ровно так, как считается «уникальные клики» в верхней сводке кабинета
@@ -2928,9 +3026,43 @@ if ($action === 'refresh_unique_clicks') {
         }
     }
 
+    // Дополнительный проход: «истинные» уникальные клики per (date, offer_id).
+    // Запрос с fields=offer_id БЕЗ platform_id и aff_sub1 — только так leads.su
+    // уникализирует посетителей по дню × офферу (как в строке оффера ЛК).
+    // Берём из локального кэша только offer_id → name, чтобы не дёргать /offers.
+    $offerMap = [];
+    $resOffers = @$db->query("SELECT offer_id, name FROM offers_cache WHERE offer_id != '' AND offer_id NOT LIKE 'name:%'");
+    if ($resOffers instanceof SQLite3Result) {
+        while ($r = $resOffers->fetchArray(SQLITE3_ASSOC)) {
+            if (!empty($r['offer_id'])) $offerMap[(string)$r['offer_id']] = (string)($r['name'] ?? '');
+        }
+    }
+    $savedUniqueByOffer = 0;
+    $offset = 0;
+    $limit = 500;
+    while (true) {
+        $url = "https://api.leads.su/webmaster/reports/summary?token={$token}"
+             . "&start_date=" . urlencode($apiStart)
+             . "&end_date="   . urlencode($apiEnd)
+             . "&grouping=day"
+             . "&fields=" . urlencode('offer_id')
+             . "&offset={$offset}&limit={$limit}";
+        $data = apiGet($url);
+        if (isset($data['error'])) {
+            $apiErrors[] = ['scope' => 'unique_clicks_by_offer', 'error' => $data['error']];
+            error_log("refresh_unique_clicks(by_offer): error " . json_encode($data['error']));
+            break;
+        }
+        $rows = $data['data'] ?? [];
+        $savedUniqueByOffer += saveUniqueClicksByOfferRows($db, $rows, $offerMap);
+        if (count($rows) < $limit) break;
+        $offset += $limit;
+    }
+
     echo json_encode([
         'status' => 'success',
         'saved_unique_clicks' => $savedUnique,
+        'saved_unique_clicks_by_offer' => $savedUniqueByOffer,
         'platforms_processed' => count($platforms),
         'errors' => $apiErrors,
     ]);
@@ -3134,10 +3266,36 @@ if ($action === 'update_stats') {
         }
     }
 
+    // Третий проход: «истинные» уникальные клики per (date, offer_id) без
+    // platform_id и aff_sub1 — для аддитивной суммы по офферам в таблице
+    // «Офферы» дашборда (как в строке оффера в кабинете leads.su).
+    $savedUniqueByOffer = 0;
+    $offset = 0;
+    $limit = 500;
+    while (true) {
+        $url = "https://api.leads.su/webmaster/reports/summary?token={$token}"
+             . "&start_date=" . urlencode($apiStart)
+             . "&end_date="   . urlencode($apiEnd)
+             . "&grouping={$grouping}"
+             . "&fields=" . urlencode('offer_id')
+             . "&offset={$offset}&limit={$limit}";
+        $data = apiGet($url);
+        if (isset($data['error'])) {
+            $apiErrors[] = ['scope' => 'unique_clicks_by_offer', 'error' => $data['error']];
+            error_log("update_stats(unique_by_offer): error " . json_encode($data['error']));
+            break;
+        }
+        $rows = $data['data'] ?? [];
+        $savedUniqueByOffer += saveUniqueClicksByOfferRows($db, $rows, $offerMap);
+        if (count($rows) < $limit) break;
+        $offset += $limit;
+    }
+
     echo json_encode([
         'status' => 'success',
         'saved' => $saved,
         'saved_unique_clicks' => $savedUnique,
+        'saved_unique_clicks_by_offer' => $savedUniqueByOffer,
         'platforms_processed' => count($platforms),
         'errors' => $apiErrors,
     ]);

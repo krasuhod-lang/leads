@@ -2168,6 +2168,12 @@ let planBaselineData = [];
 // дашборда / EPC / CR — единственный аддитивный по площадкам/датам срез
 // уникальных кликов, сходящийся с цифрой в кабинете leads.su.
 let globalUniqueClicks = [];
+// «Истинные» уникальные клики per (date, offer_id) из daily_unique_clicks_by_offer
+// — для таблицы «Офферы». Аддитивны по сумме офферов и дней (как в строке оффера
+// в кабинете leads.su). Используются вместо суммирования bucket-unique-clicks
+// из daily_stats, которое переоценивает трафик из-за повтора посетителей
+// в разрезе offer×sub1.
+let globalUniqueClicksByOffer = [];
 let planFactState = { from: '', to: '', baselineFrom: '', baselineTo: '', days: 0 };
 let offerMarketMap = {}; // offer_id → { name, market_epc, market_cr, market_ar, your_epc, your_cr }
 let offerMarketByName = {}; // offer_name → market data (для рядов без offer_id из старой БД)
@@ -2886,6 +2892,26 @@ async function fetchUniqueClicks(start, end) {
   return [];
 }
 
+// «Истинные» уникальные клики per (date, offer_id) — для таблицы офферов.
+// Возвращает массив {date, offer_id, offer, unique_clicks, raw_clicks}.
+// При ошибке/пустом ответе возвращает [], renderTables делает fallback к
+// сумме bucket-clicks из globalRawData.
+async function fetchUniqueClicksByOffer(start, end) {
+  try {
+    const json = await fetchJsonSafe(buildApiUrl({ action: 'get_unique_clicks_by_offer', start_date: start, end_date: end }));
+    if (json.status === 'success' && Array.isArray(json.data)) {
+      return json.data.map(r => ({
+        date: r.date,
+        offer_id: String(r.offer_id || ''),
+        offer: r.offer_name || '',
+        unique_clicks: Number(r.unique_clicks) || 0,
+        raw_clicks: Number(r.raw_clicks) || 0
+      }));
+    }
+  } catch(e) { console.warn('fetchUniqueClicksByOffer:', e); }
+  return [];
+}
+
 async function fetchStatsRange(start, end) {
   const rows = await fetchSavedStats(start, end);
   if (!rows || !rows.length) return [];
@@ -3328,22 +3354,31 @@ async function autoLoadSavedStats() {
   // Подтягиваем рыночные EPC офферов из кэша
   await loadOfferMarketData();
   const saved = await fetchSavedStats(dFrom, dTo);
-  // «Истинные» уникальные клики per (date, platform) для KPI первого блока.
-  // Грузим параллельно с saved-данными; пустой массив = тихий fallback.
-  globalUniqueClicks = await fetchUniqueClicks(dFrom, dTo);
-  // Если daily_unique_clicks не покрывает выбранный диапазон (cron обновляет
-  // только последние 3 дня — на исторических периодах агрегат может быть
-  // пуст или частичен), фоном дозаливаем недостающие дни через лёгкий
-  // эндпоинт refresh_unique_clicks (только второй проход, без детализации).
-  // Без этого KPI «Клики» падает на bucket-sum из daily_stats и переоценивает
-  // трафик на 20-60% против цифры в кабинете leads.su.
-  if (uniqueClicksCoverageIncomplete(globalUniqueClicks, dFrom, dTo)) {
+  // «Истинные» уникальные клики per (date, platform) для KPI первого блока,
+  // и per (date, offer) — для таблицы офферов. Грузим параллельно с saved-данными;
+  // пустой массив = тихий fallback к bucket-сумме.
+  [globalUniqueClicks, globalUniqueClicksByOffer] = await Promise.all([
+    fetchUniqueClicks(dFrom, dTo),
+    fetchUniqueClicksByOffer(dFrom, dTo),
+  ]);
+  // Если daily_unique_clicks(_by_offer) не покрывают выбранный диапазон (cron
+  // обновляет только последние 3 дня — на исторических периодах агрегат может
+  // быть пуст или частичен), фоном дозаливаем недостающие дни через лёгкий
+  // эндпоинт refresh_unique_clicks (он делает оба прохода: по платформам и
+  // по офферам). Без этого KPI «Клики» и колонка «Клики» в таблице офферов
+  // падают на bucket-sum и переоценивают трафик на 20-60% против ЛК.
+  const needsBackfill = uniqueClicksCoverageIncomplete(globalUniqueClicks, dFrom, dTo)
+    || uniqueClicksCoverageIncomplete(globalUniqueClicksByOffer, dFrom, dTo);
+  if (needsBackfill) {
     try {
       const refresh = await fetchJsonSafe(buildApiUrl({
         action: 'refresh_unique_clicks', start_date: dFrom, end_date: dTo
       }));
       if (refresh && refresh.status === 'success') {
-        globalUniqueClicks = await fetchUniqueClicks(dFrom, dTo);
+        [globalUniqueClicks, globalUniqueClicksByOffer] = await Promise.all([
+          fetchUniqueClicks(dFrom, dTo),
+          fetchUniqueClicksByOffer(dFrom, dTo),
+        ]);
       }
     } catch(e) { console.warn('refresh_unique_clicks failed:', e); }
   }
@@ -3888,6 +3923,53 @@ function renderTables() {
     offMap[key].approved += r.approved;
     offMap[key].revenue += r.revenue;
   }
+
+  // Подменяем bucket-sum clicks на «истинные» уникальные клики из leads.su
+  // (daily_unique_clicks / daily_unique_clicks_by_offer) — это аддитивные срезы,
+  // совпадающие с цифрами в кабинете leads.su. Между «Площадками» и «Офферами»
+  // суммирования нет: каждая таблица берёт свой независимый агрегат.
+  const dFrom = (document.getElementById('dateFrom') || {}).value || '';
+  const dTo   = (document.getElementById('dateTo')   || {}).value || '';
+  // Площадки: сумма unique_clicks по date×source_id в выбранном диапазоне.
+  const trueClicksBySource = {};
+  if (Array.isArray(globalUniqueClicks) && globalUniqueClicks.length) {
+    // Маппинг source_id → канонический source-name из globalRawData,
+    // чтобы ключи совпадали с ключами srcMap (mergeSourceName уже применён).
+    const idToName = {};
+    for (const r of globalRawData) {
+      const sid = r.source_id || 'all';
+      if (sid && r.source && !idToName[sid]) idToName[sid] = r.source;
+    }
+    for (const u of globalUniqueClicks) {
+      if (dFrom && u.date < dFrom) continue;
+      if (dTo && u.date > dTo) continue;
+      const name = idToName[u.source_id] || u.source || '';
+      if (!name) continue;
+      trueClicksBySource[name] = (trueClicksBySource[name] || 0) + (u.unique_clicks || 0);
+    }
+  }
+  // Офферы: используем агрегат только когда нет среза по площадке —
+  // daily_unique_clicks_by_offer уникализирует по date×offer без platform.
+  const trueClicksByOffer = {};
+  const trueClicksByOfferId = {};
+  const canUseTrueOfferClicks = (selSrc === 'all')
+    && Array.isArray(globalUniqueClicksByOffer)
+    && globalUniqueClicksByOffer.length > 0;
+  if (canUseTrueOfferClicks) {
+    // Маппинг offer_id → канонический offer-name из globalRawData.
+    const idToOfferName = {};
+    for (const r of globalRawData) {
+      if (r.offer_id && r.offer && !idToOfferName[r.offer_id]) idToOfferName[r.offer_id] = r.offer;
+    }
+    for (const u of globalUniqueClicksByOffer) {
+      if (dFrom && u.date < dFrom) continue;
+      if (dTo && u.date > dTo) continue;
+      const name = idToOfferName[u.offer_id] || u.offer || '';
+      if (u.offer_id) trueClicksByOfferId[u.offer_id] = (trueClicksByOfferId[u.offer_id] || 0) + (u.unique_clicks || 0);
+      if (name) trueClicksByOffer[name] = (trueClicksByOffer[name] || 0) + (u.unique_clicks || 0);
+    }
+  }
+
   const doSort = (arr, sc) => arr.sort((a,b) => {
     let va=a[sc.field], vb=b[sc.field];
     if (typeof va==='string') return sc.desc ? vb.localeCompare(va) : va.localeCompare(vb);
@@ -3896,14 +3978,23 @@ function renderTables() {
   let sRows = Object.entries(srcMap).map(([n,v]) => {
     const baseline = planBaselineData.filter(r => r.source === n);
     const plan = planFromRows(baseline, planFactState.days || 1);
-    return {name:n, clicks:v.clicks, conversions:v.conversions, approved:v.approved, revenue:v.revenue, epc:v.clicks?(v.revenue/v.clicks):0, approveRate:v.conversions?(v.approved/v.conversions*100):0, plan};
+    const trueClicks = trueClicksBySource[n];
+    const clicks = (trueClicks != null) ? trueClicks : v.clicks;
+    return {name:n, clicks, conversions:v.conversions, approved:v.approved, revenue:v.revenue, epc:clicks?(v.revenue/clicks):0, approveRate:v.conversions?(v.approved/v.conversions*100):0, plan};
   });
   let oRows = Object.entries(offMap).map(([n,v]) => {
-    const epc = v.clicks ? (v.revenue/v.clicks) : 0;
+    let clicks = v.clicks;
+    if (canUseTrueOfferClicks) {
+      const byId = v.offer_id ? trueClicksByOfferId[v.offer_id] : undefined;
+      const byName = trueClicksByOffer[n];
+      if (byId != null) clicks = byId;
+      else if (byName != null) clicks = byName;
+    }
+    const epc = clicks ? (v.revenue/clicks) : 0;
     const market = (v.offer_id && offerMarketMap[v.offer_id]) || offerMarketByName[n] || null;
     const marketEpc = market ? market.market_epc : 0;
     return {
-      name: n, clicks: v.clicks, conversions: v.conversions, approved: v.approved, revenue: v.revenue,
+      name: n, clicks, conversions: v.conversions, approved: v.approved, revenue: v.revenue,
       epc, approveRate: v.conversions ? (v.approved/v.conversions*100) : 0,
       marketEpc, epcDelta: marketEpc > 0 ? (epc - marketEpc) : 0
     };
