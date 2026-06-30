@@ -1734,29 +1734,29 @@ function saveUniqueClicksByOfferRows($db, $rows, $offerMap = []) {
  * Сохраняет «общую сводку кабинета» leads.su за день в daily_account_totals.
  * Источник — /webmaster/reports/summary?grouping=day без `fields` и без
  * platform_id, как рекомендует поддержка Leads.su (п.1-3 их инструкции). Этот
- * ответ возвращает ту же цифру, что показывает верхний блок ЛК — суммарные
- * unique_clicks/payout/pending_payout по ВСЕМУ кабинету независимо от
- * площадок. Используется для KPI первого блока дашборда (когда фильтры
- * площадки/sub1 = "all"), чтобы цифры дашборда сходились с цифрами в ЛК.
+ * ответ должен возвращать ту же цифру, что показывает верхний блок ЛК —
+ * суммарные unique_clicks/payout/pending_payout по ВСЕМУ кабинету
+ * независимо от площадок. Используется для KPI первого блока дашборда (когда
+ * фильтры площадки/sub1 = "all"), чтобы цифры дашборда сходились с цифрами в ЛК.
  *
- * Не суммирует данные по платформам — это и есть фишка: один и тот же
- * посетитель, кликнувший на двух площадках, в общем отчёте считается
- * как один уникальный клик (схлопывается), и расхождение с per-platform
- * суммой может достигать 20-30%.
+ * ВАЖНО: даже /reports/summary иногда возвращает несколько строк на один день
+ * (например, при неявной группировке по goal_id или при пагинации, когда
+ * страница режется поперёк дня). Простой `ON CONFLICT(date) DO UPDATE` в этом
+ * случае оставлял в БД только ПОСЛЕДНЮЮ строку дня — фактически данные одной
+ * площадки/цели вместо всего кабинета (это и был баг «первый блок KPI
+ * показывает одну площадку»). Поэтому сначала агрегируем все строки страницы
+ * по дате в памяти (SUM по всем числовым полям, включая unique_clicks), а
+ * затем уже UPSERT-им один раз на дату. Если API всё-таки вернул ровно одну
+ * строку на день — поведение не меняется.
  */
 function saveAccountTotalsRows($db, $rows) {
     if (!$rows) return 0;
-    $stmt = $db->prepare('INSERT INTO daily_account_totals
-        (date, unique_clicks, raw_clicks, payout, pending_payout, conversions, approved)
-        VALUES (:date, :unique_clicks, :raw_clicks, :payout, :pending_payout, :conversions, :approved)
-        ON CONFLICT(date) DO UPDATE SET
-            unique_clicks = excluded.unique_clicks,
-            raw_clicks = excluded.raw_clicks,
-            payout = excluded.payout,
-            pending_payout = excluded.pending_payout,
-            conversions = excluded.conversions,
-            approved = excluded.approved');
-    $inserted = 0;
+
+    // Aggregation buffer: date => sums. Все страницы пагинации уже сводятся
+    // в один массив на стороне вызывающего (см. fetchAndSaveAccountTotals),
+    // поэтому за один вызов saveAccountTotalsRows мы видим полный набор
+    // строк периода и можем безопасно REPLACE через UPSERT (см. ниже).
+    $byDate = [];
     foreach ($rows as $row) {
         $rawDate = $row['period_day']
             ?? $row['period_hour']
@@ -1768,22 +1768,58 @@ function saveAccountTotalsRows($db, $rows) {
         $date = substr((string)$rawDate, 0, 10);
         if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) continue;
 
-        $unique = array_key_exists('unique_clicks', $row) && $row['unique_clicks'] !== null
-            ? (int)$row['unique_clicks']
-            : 0;
-        $raw = (int)($row['clicks'] ?? $row['unique_clicks'] ?? 0);
-        $payout = (float)($row['payout'] ?? 0);
-        $pendingPayout = (float)($row['pending_payout'] ?? $row['pendingpayout'] ?? 0);
-        $conversions = (int)($row['unique_conversions'] ?? $row['conversions'] ?? 0);
-        $approved = (int)($row['conversions_approved'] ?? $row['conversionsapproved'] ?? 0);
+        if (!isset($byDate[$date])) {
+            $byDate[$date] = [
+                'unique_clicks'  => 0,
+                'raw_clicks'     => 0,
+                'payout'         => 0.0,
+                'pending_payout' => 0.0,
+                'conversions'    => 0,
+                'approved'       => 0,
+            ];
+        }
+        // Уникальные клики: суммируем по строкам внутри одного дня. В идеале
+        // API при отсутствии `fields` отдаёт ровно одну строку на день
+        // (по всему кабинету) — тогда SUM = эта строка. Если API режет день
+        // по неявному измерению (goal_id, страницы пагинации), сумма строк
+        // даёт «общекабинетные» цифры, пригодные для первого блока KPI.
+        if (array_key_exists('unique_clicks', $row) && $row['unique_clicks'] !== null) {
+            $byDate[$date]['unique_clicks'] += (int)$row['unique_clicks'];
+        }
+        $byDate[$date]['raw_clicks']     += (int)($row['clicks'] ?? $row['unique_clicks'] ?? 0);
+        $byDate[$date]['payout']         += (float)($row['payout'] ?? 0);
+        $byDate[$date]['pending_payout'] += (float)($row['pending_payout'] ?? $row['pendingpayout'] ?? 0);
+        $byDate[$date]['conversions']    += (int)($row['unique_conversions'] ?? $row['conversions'] ?? 0);
+        $byDate[$date]['approved']       += (int)($row['conversions_approved'] ?? $row['conversionsapproved'] ?? 0);
+    }
+    if (!$byDate) return 0;
 
+    // UPSERT с REPLACE-семантикой: внутри одного вызова saveAccountTotalsRows
+    // мы уже агрегировали все строки страницы по дате выше, поэтому каждая
+    // дата в $byDate представлена ровно одной итоговой суммой и должна ЗАМЕНИТЬ
+    // то, что было в БД (а не прибавиться к нему — иначе повторный refresh
+    // удвоил бы цифры). Объединение строк нескольких страниц пагинации лежит
+    // на вызывающей стороне (см. fetchAndSaveAccountTotals): она собирает
+    // все страницы в один массив и вызывает saveAccountTotalsRows один раз.
+    $stmt = $db->prepare('INSERT INTO daily_account_totals
+        (date, unique_clicks, raw_clicks, payout, pending_payout, conversions, approved)
+        VALUES (:date, :unique_clicks, :raw_clicks, :payout, :pending_payout, :conversions, :approved)
+        ON CONFLICT(date) DO UPDATE SET
+            unique_clicks  = excluded.unique_clicks,
+            raw_clicks     = excluded.raw_clicks,
+            payout         = excluded.payout,
+            pending_payout = excluded.pending_payout,
+            conversions    = excluded.conversions,
+            approved       = excluded.approved');
+    $inserted = 0;
+    foreach ($byDate as $date => $sums) {
         $stmt->bindValue(':date', $date, SQLITE3_TEXT);
-        $stmt->bindValue(':unique_clicks', $unique, SQLITE3_INTEGER);
-        $stmt->bindValue(':raw_clicks', $raw, SQLITE3_INTEGER);
-        $stmt->bindValue(':payout', $payout, SQLITE3_FLOAT);
-        $stmt->bindValue(':pending_payout', $pendingPayout, SQLITE3_FLOAT);
-        $stmt->bindValue(':conversions', $conversions, SQLITE3_INTEGER);
-        $stmt->bindValue(':approved', $approved, SQLITE3_INTEGER);
+        $stmt->bindValue(':unique_clicks', (int)$sums['unique_clicks'], SQLITE3_INTEGER);
+        $stmt->bindValue(':raw_clicks', (int)$sums['raw_clicks'], SQLITE3_INTEGER);
+        $stmt->bindValue(':payout', (float)$sums['payout'], SQLITE3_FLOAT);
+        $stmt->bindValue(':pending_payout', (float)$sums['pending_payout'], SQLITE3_FLOAT);
+        $stmt->bindValue(':conversions', (int)$sums['conversions'], SQLITE3_INTEGER);
+        $stmt->bindValue(':approved', (int)$sums['approved'], SQLITE3_INTEGER);
         if ($stmt->execute()) $inserted++;
         $stmt->reset();
     }
@@ -1806,11 +1842,15 @@ function saveAccountTotalsRows($db, $rows) {
  * от зацикливания, если API внезапно перестанет уменьшать count.
  */
 function fetchAndSaveAccountTotals($db, $token, $apiStart, $apiEnd) {
-    $saved = 0;
     $errors = [];
     $offset = 0;
     $limit = 500;
     $maxIterations = 200;
+    // Собираем строки всех страниц пагинации в один массив, чтобы потом
+    // вызвать saveAccountTotalsRows один раз — там агрегация по дате идёт
+    // в памяти, и REPLACE-UPSERT не дублирует данные при повторном refresh
+    // того же диапазона (см. комментарий в saveAccountTotalsRows).
+    $allRows = [];
     for ($i = 0; $i < $maxIterations; $i++) {
         $url = "https://api.leads.su/webmaster/reports/summary?token={$token}"
              . "&start_date=" . urlencode($apiStart)
@@ -1824,13 +1864,16 @@ function fetchAndSaveAccountTotals($db, $token, $apiStart, $apiEnd) {
             break;
         }
         $rows = $data['data'] ?? [];
-        $saved += saveAccountTotalsRows($db, $rows);
+        if ($rows) {
+            $allRows = array_merge($allRows, $rows);
+        }
         if (count($rows) < $limit) break;
         $offset += $limit;
         if ($i === $maxIterations - 1) {
             error_log("fetchAndSaveAccountTotals: hit max iterations ({$maxIterations}) at offset={$offset} — возможна зацикленная пагинация leads.su");
         }
     }
+    $saved = saveAccountTotalsRows($db, $allRows);
     return [$saved, $errors];
 }
 // Идея, заимствованная из DSPy: вместо "сырого" prompt-а описываем «сигнатуру»
