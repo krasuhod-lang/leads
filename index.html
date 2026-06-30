@@ -863,6 +863,26 @@
     .plan-status-danger  { color: var(--bad); font-weight: 600; }
     .plan-status-neutral { color: var(--text-dim); }
 
+    /* ----- Плановая ячейка: auto/manual badges и inline-edit ----- */
+    .plan-cell { cursor: pointer; transition: background .15s; }
+    .plan-cell:hover { background: rgba(148,163,184,0.08); }
+    .plan-cell .plan-content { display: inline-flex; align-items: center; gap: 6px; justify-content: flex-end; }
+    .plan-cell-auto .plan-value { color: #94a3b8; font-style: italic; }
+    .plan-cell-manual .plan-value { color: #e2e8f0; font-weight: 600; }
+    .plan-badge { font-size: 10px; padding: 1px 5px; border-radius: 4px; line-height: 1.2; }
+    .plan-badge-auto { background: rgba(148,163,184,.15); color: #94a3b8; }
+    .plan-badge-manual { background: rgba(56,189,248,.15); color: #38bdf8; }
+    .plan-reset-btn {
+      background: none; border: 1px solid rgba(148,163,184,.3); color: #94a3b8;
+      cursor: pointer; padding: 0 5px; border-radius: 4px; font-size: 11px; line-height: 1.4;
+    }
+    .plan-reset-btn:hover { color: #e2e8f0; border-color: rgba(148,163,184,.6); }
+    .plan-edit-input {
+      width: 100%; max-width: 120px; padding: 2px 6px; text-align: right;
+      background: #0f172a; color: #e2e8f0; border: 1px solid rgba(56,189,248,.5);
+      border-radius: 4px; font: inherit;
+    }
+
     /* ----- Универсальная модалка для ввода расходов и т.п. ----- */
     .modal-backdrop {
       position: fixed; inset: 0; background: rgba(0,0,0,0.55);
@@ -1174,7 +1194,6 @@
       <div id="bannerRelationLayers" class="flex flex-wrap gap-2 mb-3" aria-label="Слои графика баннера">
         <button class="layer-toggle active" data-layer="trend" aria-pressed="true" onclick="toggleBannerRelationLayer('trend')">Линии тренда</button>
         <button class="layer-toggle active" data-layer="ma" aria-pressed="true" onclick="toggleBannerRelationLayer('ma')">Скользящая средняя</button>
-        <button class="layer-toggle active" data-layer="bounces" aria-pressed="true" onclick="toggleBannerRelationLayer('bounces')">Отказники</button>
       </div>
       <div class="chart-wrap" style="height:360px"><canvas id="rejectRevenueChart"></canvas></div>
       <div id="rejectRevenueInsight"></div>
@@ -1573,7 +1592,9 @@
                 <th class="px-2 py-2 text-right">Трафик
                   <i class="info-tip" tabindex="0" role="img" aria-label="Количество уникальных кликов из Leads.su (unique_clicks). Обычные клики не учитываются — уникальных как правило ~20% меньше общих." title="Количество уникальных кликов из Leads.su (unique_clicks). Обычные клики не учитываются — уникальных как правило ~20% меньше общих."></i>
                 </th>
-                <th class="px-2 py-2 text-right">Выручка ПЛАН, ₽</th>
+                <th class="px-2 py-2 text-right">Выручка ПЛАН, ₽
+                  <i class="info-tip" tabindex="0" role="img" aria-label="Считается автоматически: EPC канала за предыдущие 30 дней × ожидаемый трафик канала. Клик по ячейке — ручная правка; кнопка ↻ возвращает в авто-режим. Бейдж ∑ — авто, ✎ — ручной." title="Считается автоматически: EPC канала за предыдущие 30 дней × ожидаемый трафик канала. Клик по ячейке — ручная правка; кнопка ↻ возвращает в авто-режим. Бейдж ∑ — авто, ✎ — ручной."></i>
+                </th>
                 <th class="px-2 py-2 text-right">Выручка ФАКТ, ₽</th>
                 <th class="px-2 py-2 text-right">Выполнение плана</th>
                 <th class="px-2 py-2 text-right">Расходы, ₽
@@ -2154,7 +2175,7 @@ let dependencyScatterChartInstance = null;
 let chartAnalysisMode = 'fact';
 let chartAnalysisLayers = new Set();
 let hiddenChartSeries = new Set();
-let bannerRelationLayers = new Set(['trend', 'ma', 'bounces']);
+let bannerRelationLayers = new Set(['trend', 'ma']);
 let donutChartInstance = null;
 let barChartInstance = null;
 let bannerConvChart = null;
@@ -3588,23 +3609,20 @@ function renderRejectRevenueAnalysis(data, sourceFilter = 'all') {
   summaryEl.innerHTML = `
     <div class="relation-chip"><div class="label">Показы баннера${infoTip('Сумма показов рекламного баннера за выбранный период, источник — Яндекс.Метрика. CTR цели = клики по баннеру ÷ показы × 100%.')}</div><div class="value">${Math.round(totalImpressions).toLocaleString('ru-RU')}</div><div class="text-xs text-slate-500 mt-1">CTR цели: ${bannerCtr.toFixed(2)}%</div></div>
     <div class="relation-chip"><div class="label">Выручка${infoTip('Выручка из Leads.su за тот же период. RPM = выручка ÷ показы × 1000 — сколько ₽ приносит 1000 показов баннера.')}</div><div class="value">${Math.round(totalRevenue).toLocaleString('ru-RU')} ₽</div><div class="text-xs text-slate-500 mt-1">RPM: ${rpm.toFixed(2)} ₽ / 1000 показов</div></div>
-    <div class="relation-chip"><div class="label">Связь r${infoTip('Коэффициент корреляции Пирсона между рядами «Показы» и «Выручка» по периодам внутри диапазона. r ∈ [−1; +1]. |r| ≥ 0.7 — сильная связь; 0.4–0.7 — средняя; < 0.2 — практически нет. Нужно минимум 2 точки с вариацией.')}</div><div class="value ${corrCls}">${corr === null ? '—' : corr.toFixed(2)}</div><div class="text-xs text-slate-500 mt-1">${corrHint}</div></div>
-    <div class="relation-chip"><div class="label">Отказники${infoTip('Сумма «отказников» из таблицы bounce_stats (ручной ввод). Линия рисуется на графике, только если значение > 0 и активна кнопка «Отказники».')}</div><div class="value">${Math.round(totalBounces).toLocaleString('ru-RU')}</div><div class="text-xs text-slate-500 mt-1">${totalBounces ? 'добавлены на график' : 'нет загруженных данных'}</div></div>`;
+    <div class="relation-chip"><div class="label">Связь r${infoTip('Коэффициент корреляции Пирсона между рядами «Показы» и «Выручка» по периодам внутри диапазона. r ∈ [−1; +1]. |r| ≥ 0.7 — сильная связь; 0.4–0.7 — средняя; < 0.2 — практически нет. Нужно минимум 2 точки с вариацией. Положительный r — баннер реально драйвит выручку; r≈0 — выручка зависит не от показов, а от качества трафика и оффера.')}</div><div class="value ${corrCls}">${corr === null ? '—' : corr.toFixed(2)}</div><div class="text-xs text-slate-500 mt-1">${corrHint}</div></div>`;
   // Подвал с авто-выводами под чартом
   const insightEl = document.getElementById('rejectRevenueInsight');
   if (insightEl) {
     const items = [
       narrateCorrelation(corr, 'Показы баннера', 'Выручка', labels.length),
       narrateRpm(rpm, totalImpressions),
-      totalBounces > 0 ? { tone: 'warn', confidence: _confidenceFromN(labels.length, 7, 21),
-        html: `Зафиксировано <b>${Math.round(totalBounces).toLocaleString('ru-RU')}</b> отказников за период — проверьте качество трафика и креативы на источниках с наибольшим вкладом.` } : null,
       sourceFilter !== 'all' ? { tone: 'mute', confidence: 'low',
         html: 'Фильтр по площадке активен: показы баннера приходят из Я.Метрики общей суммой, выручка отфильтрована — r может быть менее показательным.' } : null
     ];
     insightEl.innerHTML = renderInsightFooter(items);
   }
   if (rejectRevenueChartInstance) rejectRevenueChartInstance.destroy();
-  if (!labels.length || (!totalImpressions && !totalRevenue && !totalBounces)) {
+  if (!labels.length || (!totalImpressions && !totalRevenue)) {
     summaryEl.innerHTML = '<div class="col-span-full text-sm text-slate-500">Нет данных по показам баннера или выручке за выбранный период.</div>';
     if (insightEl) insightEl.innerHTML = '';
     return;
@@ -3625,9 +3643,6 @@ function renderRejectRevenueAnalysis(data, sourceFilter = 'all') {
     const w = Math.min(7, Math.max(2, labels.length));
     datasets.push({ label: 'MA показов', data: movingAverage(impressionsSeries, w), borderColor: CHART_PALETTE_MUTED.clicks, borderWidth: 3, pointRadius: 0, fill: false, yAxisID: 'y' });
     datasets.push({ label: 'MA выручки', data: movingAverage(revenueSeries, w), borderColor: CHART_PALETTE_MUTED.revenue, borderWidth: 3, pointRadius: 0, fill: false, yAxisID: 'y1' });
-  }
-  if (totalBounces > 0 && bannerRelationLayers.has('bounces')) {
-    datasets.push({ label: 'Отказники', data: labels.map(l => grouped[l].bounces), borderColor: P.bounces.stroke, borderDash: [5, 5], fill: false, tension: .35, pointRadius: 2, yAxisID: 'y' });
   }
   rejectRevenueChartInstance = new Chart(canvas, {
     type: 'line',
@@ -4339,9 +4354,11 @@ const eventMarkerPlugin = {
   }
 };
 
-// Кроссхэйр-плагин для графика «Динамика». Рисует вертикальную линию под
-// курсором и кружок над активной серией — наведение становится «живым»
-// и наглядно подсвечивает значения вместе с ридаутом под графиком.
+// Кроссхэйр-плагин для графика «Динамика». Под курсором рисует контрастную
+// вертикальную полосу-«столбик», увеличенные маркеры для всех видимых серий
+// и плавающий лейбл со значением активной серии прямо над точкой, а слева
+// на оси Y — короткий tick с числом. Наведение становится «живым» и
+// читается без перевода взгляда на тултип.
 const crosshairPlugin = {
   id: 'crosshairPlugin',
   afterDatasetsDraw(chart) {
@@ -4353,9 +4370,14 @@ const crosshairPlugin = {
     const first = active[0];
     const x = first.element && typeof first.element.x === 'number' ? first.element.x : null;
     if (x == null) return;
+    const idx = first.index;
     ctx.save();
-    // Вертикальная линия под курсором.
-    ctx.strokeStyle = 'rgba(148,163,184,.55)';
+    // Полупрозрачная вертикальная полоса под курсором — заметна сразу.
+    const bandHalf = 10;
+    ctx.fillStyle = 'rgba(148,163,184,.10)';
+    ctx.fillRect(x - bandHalf, area.top, bandHalf * 2, area.bottom - area.top);
+    // Тонкая центральная линия для точного позиционирования.
+    ctx.strokeStyle = 'rgba(148,163,184,.7)';
     ctx.lineWidth = 1;
     ctx.setLineDash([3, 4]);
     ctx.beginPath();
@@ -4364,7 +4386,6 @@ const crosshairPlugin = {
     ctx.stroke();
     ctx.setLineDash([]);
     // Усиленные кружки для всех видимых серий на том же индексе.
-    const idx = first.index;
     (chart.data.datasets || []).forEach((ds, di) => {
       if (!chart.isDatasetVisible(di)) return;
       const meta = chart.getDatasetMeta(di);
@@ -4381,6 +4402,52 @@ const crosshairPlugin = {
       ctx.arc(pt.x, pt.y, isHot ? 4.5 : 2.8, 0, Math.PI * 2);
       ctx.fill();
     });
+    // Плавающий лейбл со значением активной серии прямо над точкой и
+    // короткий tick на оси Y, чтобы было видно «куда смотрит» точка.
+    const hotMeta = chart.getDatasetMeta(first.datasetIndex);
+    const hotPt = hotMeta && hotMeta.data && hotMeta.data[idx];
+    const hotDs = chart.data.datasets && chart.data.datasets[first.datasetIndex];
+    if (hotPt && hotDs && typeof hotPt.x === 'number' && typeof hotPt.y === 'number') {
+      const rawValue = Number(hotDs.data && hotDs.data[idx]);
+      if (Number.isFinite(rawValue)) {
+        const lbl = String(hotDs.label || '');
+        let text;
+        if (lbl.includes('₽') || /руб|доход|выручк/i.test(lbl)) text = `${Math.round(rawValue).toLocaleString('ru-RU')} ₽`;
+        else if (lbl.includes('%')) text = `${rawValue.toFixed(2)}%`;
+        else if (Math.abs(rawValue) >= 100) text = Math.round(rawValue).toLocaleString('ru-RU');
+        else text = rawValue.toFixed(2);
+        ctx.font = '11px sans-serif';
+        const padX = 6, padY = 3;
+        const tw = ctx.measureText(text).width;
+        const boxW = tw + padX * 2;
+        const boxH = 18;
+        let bx = hotPt.x - boxW / 2;
+        let by = hotPt.y - boxH - 10;
+        bx = Math.max(area.left + 2, Math.min(area.right - boxW - 2, bx));
+        if (by < area.top + 2) by = hotPt.y + 12;
+        const color = (typeof hotDs.borderColor === 'string' && hotDs.borderColor) || '#94a3b8';
+        ctx.fillStyle = 'rgba(15,23,42,.95)';
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1;
+        if (ctx.roundRect) { ctx.beginPath(); ctx.roundRect(bx, by, boxW, boxH, 4); ctx.fill(); ctx.stroke(); }
+        else { ctx.fillRect(bx, by, boxW, boxH); ctx.strokeRect(bx, by, boxW, boxH); }
+        ctx.fillStyle = '#e2e8f0';
+        ctx.textBaseline = 'middle';
+        ctx.textAlign = 'left';
+        ctx.fillText(text, bx + padX, by + boxH / 2);
+        // Короткий tick на оси Y слева — чтобы значение легко считывалось по оси.
+        const yAxisId = hotDs.yAxisID || 'y';
+        const yScale = chart.scales && chart.scales[yAxisId];
+        if (yScale && typeof yScale.left === 'number') {
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(yScale.left, hotPt.y);
+          ctx.lineTo(yScale.left + 8, hotPt.y);
+          ctx.stroke();
+        }
+      }
+    }
     ctx.restore();
   }
 };
@@ -4636,6 +4703,27 @@ function refreshChart() {
     if (planSeries && planSeries.decreasing) {
       insightCards.push({ label: 'Режим оценки', value: 'По средней', cls: 'text-violet-400', hint: 'динамика снижается — сравниваем со средней' });
     }
+
+    // Серия-«драйвер плана» на отдельной оси y3 — показывает, как показы
+    // баннера тянут план. По умолчанию скрыта; включается кликом по легенде.
+    // Видна только если действительно есть данные по показам в периоде.
+    const totalImpForPlan = impressions.reduce((s, v) => s + (Number(v) || 0), 0);
+    if (totalImpForPlan > 0) {
+      datasets.push({
+        label: 'Показы баннера (драйвер плана)',
+        data: impressions.map(v => Number(v) || 0),
+        borderColor: 'rgba(56,189,248,.85)',
+        backgroundColor: 'rgba(56,189,248,.08)',
+        borderDash: [1, 3],
+        borderWidth: 2,
+        pointRadius: 0,
+        fill: false,
+        yAxisID: 'y3',
+        tension: .3,
+        defaultHidden: true,
+      });
+      scalesConfig.y3 = { display: false, position: 'right', min: 0, grid: { drawOnChartArea: false } };
+    }
   }
 
   if (hasChartLayer('compare')) {
@@ -4693,8 +4781,14 @@ function refreshChart() {
   });
 
   if (trendChartInstance) trendChartInstance.destroy();
-  // применяем сохранённое скрытие серий (по нормализованным ключам)
-  datasets.forEach(ds => { ds.hidden = hiddenChartSeries.has(seriesKey(ds.label)); });
+  // применяем сохранённое скрытие серий (по нормализованным ключам).
+  // Серии с явным defaultHidden:true считаются скрытыми по умолчанию,
+  // если пользователь сам не показал их раньше.
+  datasets.forEach(ds => {
+    const key = seriesKey(ds.label);
+    if (ds.defaultHidden && !hiddenChartSeries.has(key)) ds.hidden = true;
+    else ds.hidden = hiddenChartSeries.has(key);
+  });
   trendChartInstance = new Chart(document.getElementById('trendChart'), {
     type:chartType, data:{labels:displayLabels,datasets}, plugins:[eventMarkerPlugin, crosshairPlugin],
     options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false,axis:'x'},
@@ -8431,12 +8525,30 @@ async function loadAndRenderChannels() {
     const epcTip = epc !== null && epc !== undefined
       ? `EPC = выручка ${Math.round(r.fact_revenue || 0).toLocaleString('ru-RU')} ₽ / ${Number(r.traffic || 0).toLocaleString('ru-RU')} уникальных клик(ов)`
       : 'EPC недоступен — нет уникальных кликов по каналу за период.';
+    const planSource = r.plan_source === 'manual' ? 'manual' : 'auto';
+    const planValue = Number(r.plan_revenue || 0);
+    const autoValue = Number(r.plan_revenue_auto || 0);
+    const planTxt = Math.round(planValue).toLocaleString('ru-RU');
+    const planCls = planSource === 'auto' ? 'plan-cell plan-cell-auto' : 'plan-cell plan-cell-manual';
+    const baseEpc = r.baseline_epc;
+    const basePeriod = r.baseline_period;
+    const planTip = planSource === 'auto'
+      ? `Авто-план: ожидаемые уникальные клики × EPC канала за baseline (${basePeriod ? basePeriod.from + ' … ' + basePeriod.to : 'предыдущие 30 дней'}). Baseline EPC = ${baseEpc != null ? Number(baseEpc).toFixed(2) + ' ₽' : '—'}. Клик по ячейке — ручная правка.`
+      : `Ручной план. Авто-расчёт показал бы ${Math.round(autoValue).toLocaleString('ru-RU')} ₽. Кнопка ↻ возвращает в авто-режим.`;
+    const badge = planSource === 'auto'
+      ? '<span class="plan-badge plan-badge-auto" title="Авто-план">∑</span>'
+      : '<span class="plan-badge plan-badge-manual" title="Ручной план">✎</span>';
+    const resetBtn = planSource === 'manual'
+      ? `<button type="button" class="plan-reset-btn" title="Вернуть в авто-режим" onclick="resetChannelPlan(event, '${r.channel}')">↻</button>`
+      : '';
     return `<tr>
       <td class="px-2 py-2">${escapeHtml(r.label)}</td>
       <td class="px-2 py-2 text-right">${Number(r.traffic || 0).toLocaleString('ru-RU')}</td>
-      <td class="px-2 py-2 text-right">${Math.round(r.plan_revenue || 0).toLocaleString('ru-RU')}</td>
+      <td class="px-2 py-2 text-right ${planCls}" data-channel="${r.channel}" data-plan-source="${planSource}" data-plan-value="${planValue}" data-plan-auto="${autoValue}" title="${escapeHtml(planTip)}" onclick="beginEditChannelPlan(this)">
+        <span class="plan-content">${badge}<span class="plan-value">${planTxt}</span>${resetBtn}</span>
+      </td>
       <td class="px-2 py-2 text-right">${Math.round(r.fact_revenue || 0).toLocaleString('ru-RU')}</td>
-      <td class="px-2 py-2 text-right ${planStatusClass(pct)}" title="План ${Math.round(r.plan_revenue || 0).toLocaleString('ru-RU')} ₽, факт ${Math.round(r.fact_revenue || 0).toLocaleString('ru-RU')} ₽">${pctTxt}</td>
+      <td class="px-2 py-2 text-right ${planStatusClass(pct)}" title="План ${planTxt} ₽ (${planSource === 'auto' ? 'авто' : 'ручной'}), факт ${Math.round(r.fact_revenue || 0).toLocaleString('ru-RU')} ₽">${pctTxt}</td>
       <td class="px-2 py-2 text-right">${Math.round(r.costs || 0).toLocaleString('ru-RU')}</td>
       <td class="px-2 py-2 text-right ${gpCls}" title="Валовая прибыль = выручка − расходы">${Math.round(gp).toLocaleString('ru-RU')}</td>
       <td class="px-2 py-2 text-right" title="${escapeHtml(epcTip)}">${epcTxt}</td>
@@ -8447,11 +8559,78 @@ async function loadAndRenderChannels() {
   if (hint) {
     hint.textContent = data.stub
       ? 'Пока нет данных за выбранный период. Загрузите трафик из Leads.su (вкладка «Дашборд») и Я.Метрики (вкладка «Баннер»), затем введите расходы по каналам кнопкой «+ Расход по каналу».'
-      : '';
+      : 'План считается автоматически от EPC канала за предыдущие 30 дней × ожидаемый трафик. Клик по ячейке «Выручка ПЛАН» — ручная правка; кнопка ↻ возвращает в авто-режим.';
   }
   renderChannelsBarChart(data.channels || []);
   // Параллельно подгружаем журнал расходов под таблицей.
   loadAndRenderChannelCostsList();
+}
+
+// Inline-редактирование плана канала. Превращает ячейку в input number,
+// сохраняет на blur / Enter, отменяет на Escape.
+function beginEditChannelPlan(td) {
+  if (!td || td.dataset.editing === '1') return;
+  td.dataset.editing = '1';
+  const channel = td.dataset.channel;
+  const currentValue = Number(td.dataset.planValue || 0);
+  const original = td.innerHTML;
+  td.innerHTML = `<input type="number" min="0" step="1" class="plan-edit-input" value="${currentValue || ''}" />`;
+  const input = td.querySelector('input');
+  if (!input) return;
+  input.focus();
+  input.select();
+  let done = false;
+  const commit = async () => {
+    if (done) return; done = true;
+    const newVal = parseFloat(input.value);
+    if (isNaN(newVal) || newVal < 0) { td.innerHTML = original; td.dataset.editing = ''; return; }
+    const { from, to } = rejectMonCurrentPeriod();
+    if (!from || !to) { td.innerHTML = original; td.dataset.editing = ''; return; }
+    try {
+      const r = await fetch(`${API_BASE}?action=channel_plan_save`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ channel, period_start: from, period_end: to, plan_revenue: newVal }),
+      });
+      const j = await r.json();
+      if (j.status !== 'success') throw new Error(j.error || 'save failed');
+      rejectMonState.cache.channels = null;
+      await loadAndRenderChannels();
+    } catch (e) {
+      alert('Не удалось сохранить план: ' + e);
+      td.innerHTML = original;
+      td.dataset.editing = '';
+    }
+  };
+  const cancel = () => {
+    if (done) return; done = true;
+    td.innerHTML = original;
+    td.dataset.editing = '';
+  };
+  input.addEventListener('blur', commit);
+  input.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter') { ev.preventDefault(); input.blur(); }
+    else if (ev.key === 'Escape') { ev.preventDefault(); cancel(); }
+  });
+}
+
+// Возврат канала в авто-режим расчёта плана. Удаляет ручные записи плана,
+// пересекающие текущий период, и перерисовывает сводку.
+async function resetChannelPlan(ev, channel) {
+  if (ev && ev.stopPropagation) ev.stopPropagation();
+  if (!channel) return;
+  if (!confirm('Вернуть план канала в авто-режим? Текущее ручное значение будет удалено.')) return;
+  const { from, to } = rejectMonCurrentPeriod();
+  if (!from || !to) return;
+  try {
+    const r = await fetch(`${API_BASE}?action=channel_plan_reset`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channel, period_start: from, period_end: to }),
+    });
+    const j = await r.json();
+    if (j.status !== 'success') throw new Error(j.error || 'reset failed');
+    rejectMonState.cache.channels = null;
+    await loadAndRenderChannels();
+  } catch (e) { alert('Не удалось сбросить план: ' + e); }
 }
 
 // Подгружает список расходов канала за период и рисует под таблицей.
