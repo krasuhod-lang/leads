@@ -956,13 +956,51 @@ function leadsApiCooldownUntil() {
 }
 
 function leadsApiCooldownSet($seconds) {
-    $seconds = max(1, min(120, (int)$seconds)); // защитный диапазон 1..120s
+    // База 30с при первой ошибке 429, потолок 120с при повторных. Защищаем
+    // апстрим от «дятла» из параллельных cron / UI / AI процессов.
+    $seconds = max(30, min(120, (int)$seconds));
     $until = time() + $seconds;
     // Не сокращаем уже выставленный более длинный cooldown.
     $existing = leadsApiCooldownUntil();
     if ($until > $existing) {
         @file_put_contents(leadsApiCooldownFile(), (string)$until, LOCK_EX);
     }
+}
+
+/**
+ * Глобальный межпроцессный lock для тяжёлых синков с leads.su. Один и тот же
+ * файл-семафор используется в cron_update.php и в leads-proxy.php
+ * (refresh_unique_clicks / update_stats / refresh_account_totals), чтобы
+ * крон и фоновый refresh из фронта не дёргали API параллельно.
+ *
+ * Возвращает file-handle при успехе (его нужно держать открытым до конца
+ * процесса — flock снимется автоматически на exit / fclose), либо false,
+ * если другой процесс уже держит lock.
+ */
+function leadsApiLockFile() {
+    return __DIR__ . '/leads_api_lock.txt';
+}
+
+function leadsApiAcquireLock() {
+    static $heldHandle = null;
+    if ($heldHandle !== null) return $heldHandle; // уже взяли в этом процессе
+    // cron_update.php берёт тот же lock ДО include leads-proxy.php и помечает
+    // глобальный флаг. Без этой проверки повторный flock на тот же файл из
+    // того же процесса (через разный fd) может вернуть false, и крон будет
+    // получать «locked» в каждом include — то есть синхронизация не пойдёт.
+    if (!empty($GLOBALS['LEADS_API_LOCK_HELD'])) return true;
+    $fp = @fopen(leadsApiLockFile(), 'c');
+    if (!$fp) return false;
+    if (!@flock($fp, LOCK_EX | LOCK_NB)) {
+        fclose($fp);
+        return false;
+    }
+    @ftruncate($fp, 0);
+    @fwrite($fp, (string)getmypid() . "\n" . date('c') . "\n");
+    @fflush($fp);
+    $heldHandle = $fp;
+    $GLOBALS['LEADS_API_LOCK_HELD'] = true;
+    return $fp;
 }
 
 /**
@@ -997,9 +1035,9 @@ function apiGet($url, $timeout = 30) {
         sleep($waitSec);
     }
 
-    // (2) Внутрипроцессный pacing: не чаще ~5 rps в одном PHP-процессе.
+    // (2) Внутрипроцессный pacing: не чаще ~2 rps в одном PHP-процессе.
     static $lastCallAt = 0.0;
-    $minIntervalUs = 200000; // 200 ms
+    $minIntervalUs = 500000; // 500 ms — было 200 ms, ловили 429 от leads.su
     if ($lastCallAt > 0.0) {
         $sinceUs = (int) ((microtime(true) - $lastCallAt) * 1e6);
         if ($sinceUs < $minIntervalUs) {
@@ -1067,7 +1105,10 @@ function apiGet($url, $timeout = 30) {
         // AI запросы не долбили API дальше. Длительность берём из Retry-After,
         // иначе — 5 с по умолчанию (с экспонентой по числу попыток).
         if ($httpCode === 429) {
-            $cooldownSec = 5 * $attempt;
+            // База 30с (clamp в leadsApiCooldownSet), эскалация ×2 при повторах
+            // (30, 60, 120). leads.su сам банит на минуту+, наш короткий
+            // 5×attempt только провоцировал ретраи в лимит.
+            $cooldownSec = 30 * (1 << ($attempt - 1));
             if ($lastHeaders !== '' && preg_match('/^Retry-After:\s*(.+)$/mi', $lastHeaders, $m)) {
                 $val = trim($m[1]);
                 if (ctype_digit($val)) {
@@ -1194,7 +1235,35 @@ function leadsTokenSource($db, $requestToken = '') {
  * чтобы крон обходил каждую площадку отдельно — иначе API схлопывает
  * клики между площадками и теряется group-by по platform_id.
  */
-function fetchPlatformsList($token) {
+function fetchPlatformsList($token, $db = null) {
+    // Кэш на 1 час в app_settings: ключи platforms_cache (JSON) и
+    // platforms_cache_time (unix-ts). Список площадок меняется редко, а
+    // /webmaster/platforms — один из вызовов, регулярно попадающий под 429.
+    $cacheTtl = 3600;
+    if ($db instanceof SQLite3) {
+        $tsStmt = @$db->prepare('SELECT value FROM app_settings WHERE key = :k');
+        if ($tsStmt) {
+            $tsStmt->bindValue(':k', 'platforms_cache_time', SQLITE3_TEXT);
+            $tsRes = @$tsStmt->execute();
+            $tsRow = $tsRes ? $tsRes->fetchArray(SQLITE3_ASSOC) : null;
+            $tsStmt->close();
+            $cachedAt = $tsRow ? (int)($tsRow['value'] ?? 0) : 0;
+            if ($cachedAt > 0 && (time() - $cachedAt) < $cacheTtl) {
+                $dataStmt = @$db->prepare('SELECT value FROM app_settings WHERE key = :k');
+                if ($dataStmt) {
+                    $dataStmt->bindValue(':k', 'platforms_cache', SQLITE3_TEXT);
+                    $dataRes = @$dataStmt->execute();
+                    $dataRow = $dataRes ? $dataRes->fetchArray(SQLITE3_ASSOC) : null;
+                    $dataStmt->close();
+                    if ($dataRow && !empty($dataRow['value'])) {
+                        $decoded = json_decode($dataRow['value'], true);
+                        if (is_array($decoded) && !empty($decoded)) return $decoded;
+                    }
+                }
+            }
+        }
+    }
+
     $all = [];
     $offset = 0;
     $limit = 500;
@@ -1215,6 +1284,22 @@ function fetchPlatformsList($token) {
         }
         if (count($rows) < $limit) break;
         $offset += $limit;
+    }
+
+    // Сохраняем кэш только если что-то реально получили — иначе при первой же
+    // ошибке API мы бы затёрли валидный кэш пустым.
+    if ($db instanceof SQLite3 && !empty($all)) {
+        $upsert = @$db->prepare('INSERT INTO app_settings (key, value) VALUES (:k, :v)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value');
+        if ($upsert) {
+            $upsert->bindValue(':k', 'platforms_cache', SQLITE3_TEXT);
+            $upsert->bindValue(':v', json_encode($all, JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
+            @$upsert->execute();
+            $upsert->bindValue(':k', 'platforms_cache_time', SQLITE3_TEXT);
+            $upsert->bindValue(':v', (string)time(), SQLITE3_TEXT);
+            @$upsert->execute();
+            $upsert->close();
+        }
     }
     return $all;
 }
@@ -3338,6 +3423,18 @@ if ($action === 'refresh_unique_clicks') {
         exit;
     }
 
+    // Глобальный lock: если другой процесс (cron / параллельный таб) уже
+    // синхронизируется с leads.su — сразу отдаём фронту "locked", без
+    // обращения к API. Иначе будут параллельные foreach по площадкам и 429.
+    if (!leadsApiAcquireLock()) {
+        echo json_encode([
+            'status' => 'locked',
+            'retry_after' => 60,
+            'message' => 'Sync in progress',
+        ]);
+        exit;
+    }
+
     // Нормализация дат: API leads.su интерпретирует end_date как ИСКЛЮЧИТЕЛЬНУЮ
     // границу, если время не указано (см. update_stats). Добиваем явное время.
     $apiStart = (strlen($start_date) === 10) ? "{$start_date} 00:00:00" : $start_date;
@@ -3347,13 +3444,20 @@ if ($action === 'refresh_unique_clicks') {
     if ($platform_id) {
         $platforms[] = ['id' => (string)$platform_id, 'name' => ''];
     } else {
-        $platforms = fetchPlatformsList($token);
+        $platforms = fetchPlatformsList($token, $db);
         if (!$platforms) $platforms = [['id' => '', 'name' => '']];
     }
 
     $savedUnique = 0;
     $apiErrors = [];
+    // Флаг «уже поймали 429 от апстрима» — прерывает не только внутреннюю
+    // пагинацию, но и внешний foreach по площадкам, и последующие проходы
+    // by_offer / account_totals. Всё, что успели сохранить до 429 — уже
+    // в базе (saveUniqueClicksRows вызывается на каждой странице).
+    $rateLimited = false;
+    $retryAfter = 120;
     foreach ($platforms as $p) {
+        if ($rateLimited) break;
         $pid = $p['id'] ?? '';
         $pname = $p['name'] ?? '';
         $offset = 0;
@@ -3370,6 +3474,10 @@ if ($action === 'refresh_unique_clicks') {
             if (isset($data['error'])) {
                 $apiErrors[] = ['platform_id' => $pid, 'error' => $data['error']];
                 error_log("refresh_unique_clicks: platform={$pid} error " . json_encode($data['error']));
+                if (!empty($data['status']) && (int)$data['status'] === 429) {
+                    $rateLimited = true;
+                    if (!empty($data['retry_after'])) $retryAfter = max($retryAfter, (int)$data['retry_after']);
+                }
                 break;
             }
             $rows = $data['data'] ?? [];
@@ -3377,6 +3485,20 @@ if ($action === 'refresh_unique_clicks') {
             if (count($rows) < $limit) break;
             $offset += $limit;
         }
+    }
+
+    // Если уже выбили лимит — не запускаем by_offer и account_totals: это
+    // дополнительные тяжёлые проходы, они только усугубят бан. Отдаём
+    // фронту 429 с retry_after, чтобы он погасил автообновления.
+    if ($rateLimited) {
+        echo json_encode([
+            'status' => '429',
+            'error' => 'Rate limit exceeded',
+            'retry_after' => $retryAfter,
+            'saved_unique_clicks' => $savedUnique,
+            'errors' => $apiErrors,
+        ]);
+        exit;
     }
 
     // Дополнительный проход: «истинные» уникальные клики per (date, offer_id).
@@ -3404,12 +3526,28 @@ if ($action === 'refresh_unique_clicks') {
         if (isset($data['error'])) {
             $apiErrors[] = ['scope' => 'unique_clicks_by_offer', 'error' => $data['error']];
             error_log("refresh_unique_clicks(by_offer): error " . json_encode($data['error']));
+            if (!empty($data['status']) && (int)$data['status'] === 429) {
+                $rateLimited = true;
+                if (!empty($data['retry_after'])) $retryAfter = max($retryAfter, (int)$data['retry_after']);
+            }
             break;
         }
         $rows = $data['data'] ?? [];
         $savedUniqueByOffer += saveUniqueClicksByOfferRows($db, $rows, $offerMap);
         if (count($rows) < $limit) break;
         $offset += $limit;
+    }
+
+    if ($rateLimited) {
+        echo json_encode([
+            'status' => '429',
+            'error' => 'Rate limit exceeded',
+            'retry_after' => $retryAfter,
+            'saved_unique_clicks' => $savedUnique,
+            'saved_unique_clicks_by_offer' => $savedUniqueByOffer,
+            'errors' => $apiErrors,
+        ]);
+        exit;
     }
 
     // Также подтягиваем общую сводку кабинета (см. fetchAndSaveAccountTotals)
@@ -3439,6 +3577,14 @@ if ($action === 'refresh_account_totals') {
     $token = leadsEffectiveToken($db, $token);
     if (!$token) {
         echo json_encode(['error' => 'token required']);
+        exit;
+    }
+    if (!leadsApiAcquireLock()) {
+        echo json_encode([
+            'status' => 'locked',
+            'retry_after' => 60,
+            'message' => 'Sync in progress',
+        ]);
         exit;
     }
     $apiStart = (strlen($start_date) === 10) ? "{$start_date} 00:00:00" : $start_date;
@@ -3563,6 +3709,14 @@ if ($action === 'update_stats') {
         echo json_encode(['error' => 'token required']);
         exit;
     }
+    if (!leadsApiAcquireLock()) {
+        echo json_encode([
+            'status' => 'locked',
+            'retry_after' => 60,
+            'message' => 'Sync in progress',
+        ]);
+        exit;
+    }
 
     // Нормализация дат: API leads.su интерпретирует end_date как ИСКЛЮЧИТЕЛЬНУЮ
     // границу, если время не указано → день обрезается. Если пришли голые
@@ -3583,7 +3737,7 @@ if ($action === 'update_stats') {
     if ($platform_id) {
         $platforms[] = ['id' => (string)$platform_id, 'name' => ''];
     } else {
-        $platforms = fetchPlatformsList($token);
+        $platforms = fetchPlatformsList($token, $db);
         // Если получить список не удалось — работаем "одним разом" по всем
         // площадкам. Даже без разбивки данные сохранятся, просто source_id
         // у строк будет 'all'.
@@ -3600,7 +3754,10 @@ if ($action === 'update_stats') {
 
     $allRows = [];
     $apiErrors = [];
+    $rateLimited = false;
+    $retryAfter = 120;
     foreach ($platforms as $p) {
+        if ($rateLimited) break;
         $pid = $p['id'] ?? '';
         $offset = 0;
         $limit = 500;
@@ -3617,6 +3774,10 @@ if ($action === 'update_stats') {
             if (isset($data['error'])) {
                 $apiErrors[] = ['platform_id' => $pid, 'error' => $data['error']];
                 error_log("update_stats: platform={$pid} error " . json_encode($data['error']));
+                if (!empty($data['status']) && (int)$data['status'] === 429) {
+                    $rateLimited = true;
+                    if (!empty($data['retry_after'])) $retryAfter = max($retryAfter, (int)$data['retry_after']);
+                }
                 break;
             }
             $rows = $data['data'] ?? [];
@@ -3640,13 +3801,28 @@ if ($action === 'update_stats') {
         }
     }
 
+    // Всё, что успели скачать ДО 429, сохраняем в базу — иначе теряем
+    // прогресс синка. saveReportRows идемпотентен (UPSERT по dedup-key).
     $saved = saveReportRows($db, $allRows, $offerMap);
+
+    if ($rateLimited) {
+        echo json_encode([
+            'status' => '429',
+            'error' => 'Rate limit exceeded',
+            'retry_after' => $retryAfter,
+            'saved' => $saved,
+            'platforms_processed' => count($platforms),
+            'errors' => $apiErrors,
+        ]);
+        exit;
+    }
 
     // Второй проход: «истинные» уникальные клики per (date, platform) без
     // детализации по offer/sub1. Только эта сумма совпадает с цифрой
     // «уникальные клики» в кабинете leads.su. Используется фронтом для KPI.
     $savedUnique = 0;
     foreach ($platforms as $p) {
+        if ($rateLimited) break;
         $pid = $p['id'] ?? '';
         $pname = $p['name'] ?? '';
         $offset = 0;
@@ -3663,6 +3839,10 @@ if ($action === 'update_stats') {
             if (isset($data['error'])) {
                 $apiErrors[] = ['platform_id' => $pid, 'scope' => 'unique_clicks', 'error' => $data['error']];
                 error_log("update_stats(unique): platform={$pid} error " . json_encode($data['error']));
+                if (!empty($data['status']) && (int)$data['status'] === 429) {
+                    $rateLimited = true;
+                    if (!empty($data['retry_after'])) $retryAfter = max($retryAfter, (int)$data['retry_after']);
+                }
                 break;
             }
             $rows = $data['data'] ?? [];
@@ -3670,6 +3850,19 @@ if ($action === 'update_stats') {
             if (count($rows) < $limit) break;
             $offset += $limit;
         }
+    }
+
+    if ($rateLimited) {
+        echo json_encode([
+            'status' => '429',
+            'error' => 'Rate limit exceeded',
+            'retry_after' => $retryAfter,
+            'saved' => $saved,
+            'saved_unique_clicks' => $savedUnique,
+            'platforms_processed' => count($platforms),
+            'errors' => $apiErrors,
+        ]);
+        exit;
     }
 
     // Третий проход: «истинные» уникальные клики per (date, offer_id) без
@@ -3689,12 +3882,30 @@ if ($action === 'update_stats') {
         if (isset($data['error'])) {
             $apiErrors[] = ['scope' => 'unique_clicks_by_offer', 'error' => $data['error']];
             error_log("update_stats(unique_by_offer): error " . json_encode($data['error']));
+            if (!empty($data['status']) && (int)$data['status'] === 429) {
+                $rateLimited = true;
+                if (!empty($data['retry_after'])) $retryAfter = max($retryAfter, (int)$data['retry_after']);
+            }
             break;
         }
         $rows = $data['data'] ?? [];
         $savedUniqueByOffer += saveUniqueClicksByOfferRows($db, $rows, $offerMap);
         if (count($rows) < $limit) break;
         $offset += $limit;
+    }
+
+    if ($rateLimited) {
+        echo json_encode([
+            'status' => '429',
+            'error' => 'Rate limit exceeded',
+            'retry_after' => $retryAfter,
+            'saved' => $saved,
+            'saved_unique_clicks' => $savedUnique,
+            'saved_unique_clicks_by_offer' => $savedUniqueByOffer,
+            'platforms_processed' => count($platforms),
+            'errors' => $apiErrors,
+        ]);
+        exit;
     }
 
     // Четвёртый проход: «общая сводка кабинета» — /webmaster/reports/summary

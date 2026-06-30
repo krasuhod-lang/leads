@@ -16,6 +16,29 @@ $proxyUrl = (php_sapi_name() === 'cli')
 
 // При CLI-запуске вызываем leads-proxy.php напрямую через include
 if (php_sapi_name() === 'cli') {
+    // Глобальный lock: тот же файл, что и в leads-proxy.php (см.
+    // leadsApiAcquireLock / leadsApiLockFile). Если параллельный процесс
+    // (другой крон / тяжёлый refresh из UI) уже синхронизируется с leads.su —
+    // выходим, чтобы не дублировать запросы и не словить 429.
+    $lockFp = @fopen(__DIR__ . '/leads_api_lock.txt', 'c');
+    if (!$lockFp || !@flock($lockFp, LOCK_EX | LOCK_NB)) {
+        if ($lockFp) fclose($lockFp);
+        file_put_contents(__DIR__ . '/cron.log',
+            date('Y-m-d H:i:s') . " [CLI] Process locked, exiting\n", FILE_APPEND);
+        echo "Process locked, exiting\n";
+        exit(0);
+    }
+    @ftruncate($lockFp, 0);
+    @fwrite($lockFp, (string)getmypid() . "\n" . date('c') . "\n");
+    @fflush($lockFp);
+    // Помечаем глобально: leadsApiAcquireLock() в leads-proxy.php увидит флаг
+    // и не будет пытаться повторно взять flock на тот же файл из этого же
+    // процесса (иначе include вернёт {"status":"locked"} и крон ничего не
+    // сделает).
+    $GLOBALS['LEADS_API_LOCK_HELD'] = true;
+    // Lock снимется автоматически при выходе скрипта. Не закрываем $lockFp
+    // вручную, чтобы flock держал блокировку до конца cron-итерации.
+
     // Окно: "вчера 00:00" → "сейчас 23:59:59" — последние 4 дня плюс текущий.
     // ВАЖНО: end_date в API leads.su эксклюзивен по умолчанию. Если передать
     // голый Y-m-d, текущий день обрезается. Поэтому формируем явное время:
