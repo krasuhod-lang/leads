@@ -4753,13 +4753,33 @@ function refreshChart() {
     const inPlan = primary.reduce((n, v, i) => n + ((Number(v) || 0) >= (Number(planLow[i]) || 0) ? 1 : 0), 0);
     const unit = names.unit ? ` ${names.unit}` : '';
     const fmt = v => (Math.abs(v) >= 100 ? Math.round(v).toLocaleString('ru-RU') : Number(v).toFixed(2));
+    // Для объёмных метрик «План» и «Факт» — это сумма за период, для ставок —
+    // среднее. Показываем оба абсолютных значения рядом с Δ, чтобы было видно
+    // не только отклонение, но и масштаб плана (на какой объём он рассчитан).
+    const aggHint = (metricType === 'absolute' || metricType === 'traffic')
+      ? 'сумма за период'
+      : 'среднее за период';
+    const planHintBase = volByImpressions
+      ? 'план привязан к показам баннера'
+      : (planSeries && (metricType === 'absolute' || metricType === 'traffic') ? 'план по объёму трафика' : 'плановая ставка');
     insightCards.push(
+      {
+        label: 'План',
+        value: `${fmt(planTotalCmp)}${unit}`,
+        cls: 'text-slate-200',
+        hint: `${aggHint} · ${planHintBase}`,
+      },
+      {
+        label: 'Факт',
+        value: `${fmt(factTotalCmp)}${unit}`,
+        cls: 'text-slate-200',
+        hint: aggHint,
+      },
       {
         label: 'Отклонение факт vs план',
         value: `${gapAbs >= 0 ? '+' : ''}${fmt(gapAbs)}${unit} (${gapPct >= 0 ? '+' : ''}${gapPct.toFixed(1)}%)`,
         cls: gapPct >= -10 ? 'text-emerald-400' : (gapPct >= -20 ? 'text-amber-400' : 'text-red-400'),
-        hint: volByImpressions ? 'план привязан к показам баннера'
-          : (planSeries && (metricType === 'absolute' || metricType === 'traffic') ? 'план по объёму трафика' : 'плановая ставка'),
+        hint: planHintBase,
       },
       { label: 'В плане', value: `${inPlan}/${labels.length || 0}`, cls: inPlan >= Math.ceil((labels.length || 0) * 0.6) ? 'text-emerald-400' : (inPlan >= (labels.length || 0) / 2 ? 'text-amber-400' : 'text-red-400'), hint: 'точек в коридоре ±10%' }
     );
