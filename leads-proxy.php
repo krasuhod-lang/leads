@@ -396,6 +396,27 @@ try {
     $safeExec('PRAGMA journal_mode=WAL'); // улучшает производительность
     $safeExec('PRAGMA synchronous=NORMAL');
 
+    // Идемпотентный ADD COLUMN: проверяем PRAGMA table_info ПЕРЕД ALTER, чтобы
+    // не засорять error_log сообщениями "duplicate column name" на каждом
+    // запросе после первой миграции. SQLite < 3.35 не умеет IF NOT EXISTS
+    // для ADD COLUMN, поэтому делаем проверку вручную.
+    $addColumnIfMissing = function ($table, $column, $type) use ($db) {
+        $res = @$db->query("PRAGMA table_info(" . $table . ")");
+        if (!($res instanceof SQLite3Result)) {
+            // Таблица ещё не создана или БД залочена — пропускаем тихо,
+            // следующий вызов после CREATE TABLE добавит колонку.
+            return false;
+        }
+        $exists = false;
+        while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
+            if ($row['name'] === $column) { $exists = true; break; }
+        }
+        if ($exists) return true;
+        if (@$db->exec("ALTER TABLE {$table} ADD COLUMN {$column} {$type}")) return true;
+        error_log("SQLite ADD COLUMN failed: " . $db->lastErrorMsg() . " | {$table}.{$column}");
+        return false;
+    };
+
     // Таблица для статистики по площадкам и офферам.
     // UNIQUE-ключ — (date, source_id, offer_id, sub1). offer_name теперь —
     // изменяемый атрибут; чтобы не было дублей, когда первый раз оффер пришёл
@@ -494,16 +515,17 @@ try {
         PRIMARY KEY(date, offer_id)
     )');
     // Миграция для уже существующих БД (PR #51): добавляем недостающие колонки.
-    // SQLite ругается, если колонка уже есть — глушим ошибку через $safeExec.
-    $safeExec('ALTER TABLE daily_unique_clicks_by_offer ADD COLUMN revenue REAL DEFAULT 0');
-    $safeExec('ALTER TABLE daily_unique_clicks_by_offer ADD COLUMN conversions INTEGER DEFAULT 0');
-    $safeExec('ALTER TABLE daily_unique_clicks_by_offer ADD COLUMN approved INTEGER DEFAULT 0');
+    // Используем idempotent addColumnIfMissing — иначе на каждом запросе
+    // в error_log попадают "duplicate column name" предупреждения.
+    $addColumnIfMissing('daily_unique_clicks_by_offer', 'revenue',        'REAL DEFAULT 0');
+    $addColumnIfMissing('daily_unique_clicks_by_offer', 'conversions',    'INTEGER DEFAULT 0');
+    $addColumnIfMissing('daily_unique_clicks_by_offer', 'approved',       'INTEGER DEFAULT 0');
     // pending_payout — выручка «в ожидании» (холд) из API. Отвечает за разницу
     // между «Доход» в скрипте (только payout) и «Ожидаемый доход» в кабинете
     // leads.su (payout + pending_payout). См. инструкцию поддержки Leads.su, п.4.
-    $safeExec('ALTER TABLE daily_unique_clicks_by_offer ADD COLUMN pending_payout REAL DEFAULT 0');
-    $safeExec('ALTER TABLE daily_unique_clicks ADD COLUMN pending_payout REAL DEFAULT 0');
-    $safeExec('ALTER TABLE daily_stats ADD COLUMN pending_payout REAL DEFAULT 0');
+    $addColumnIfMissing('daily_unique_clicks_by_offer', 'pending_payout', 'REAL DEFAULT 0');
+    $addColumnIfMissing('daily_unique_clicks',          'pending_payout', 'REAL DEFAULT 0');
+    $addColumnIfMissing('daily_stats',                  'pending_payout', 'REAL DEFAULT 0');
 
     // «Верхние цифры кабинета» leads.su — общая сводка по всему аккаунту за день,
     // БЕЗ разбивки по площадкам/офферам/sub1. Источник — /webmaster/reports
