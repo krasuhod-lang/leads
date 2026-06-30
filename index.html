@@ -2174,6 +2174,13 @@ let globalUniqueClicks = [];
 // из daily_stats, которое переоценивает трафик из-за повтора посетителей
 // в разрезе offer×sub1.
 let globalUniqueClicksByOffer = [];
+// «Общая сводка кабинета» из daily_account_totals (см. saveAccountTotalsRows
+// на бэке). Источник — /webmaster/reports?grouping=day без platform_id и
+// без fields, т.е. ровно те цифры, что показывает верхний блок ЛК leads.su.
+// Используется в renderUI() для KPI-карточек первого блока, когда фильтры
+// площадки/sub1 = "all", чтобы цифры дашборда сходились с кабинетом 1-в-1.
+// Поля: {date, unique_clicks, raw_clicks, payout, pending_payout, conversions, approved}.
+let globalAccountTotals = [];
 let planFactState = { from: '', to: '', baselineFrom: '', baselineTo: '', days: 0 };
 let offerMarketMap = {}; // offer_id → { name, market_epc, market_cr, market_ar, your_epc, your_cr }
 let offerMarketByName = {}; // offer_name → market data (для рядов без offer_id из старой БД)
@@ -2908,11 +2915,55 @@ async function fetchUniqueClicksByOffer(start, end) {
         raw_clicks: Number(r.raw_clicks) || 0,
         revenue: Number(r.revenue) || 0,
         conversions: Number(r.conversions) || 0,
-        approved: Number(r.approved) || 0
+        approved: Number(r.approved) || 0,
+        pending_payout: Number(r.pending_payout) || 0
       }));
     }
   } catch(e) { console.warn('fetchUniqueClicksByOffer:', e); }
   return [];
+}
+
+// «Общая сводка кабинета» — единственный аддитивный по дням срез, который
+// 1-в-1 совпадает с верхним блоком ЛК leads.su (см. saveAccountTotalsRows /
+// daily_account_totals). Используется в renderUI() для KPI первого блока
+// дашборда: уникальные клики/доход/EPC/CR/AR берутся прямо отсюда при
+// фильтрах площадки/sub1 = "all", чтобы цифры дашборда не расходились с ЛК.
+async function fetchAccountTotals(start, end) {
+  try {
+    const json = await fetchJsonSafe(buildApiUrl({ action: 'get_account_totals', start_date: start, end_date: end }));
+    if (json.status === 'success' && Array.isArray(json.data)) {
+      return json.data.map(r => ({
+        date: r.date,
+        unique_clicks: Number(r.unique_clicks) || 0,
+        raw_clicks: Number(r.raw_clicks) || 0,
+        payout: Number(r.payout) || 0,
+        pending_payout: Number(r.pending_payout) || 0,
+        conversions: Number(r.conversions) || 0,
+        approved: Number(r.approved) || 0
+      }));
+    }
+  } catch(e) { console.warn('fetchAccountTotals:', e); }
+  return [];
+}
+
+// Суммирует globalAccountTotals в диапазоне dateFrom..dateTo. Возвращает
+// { unique_clicks, payout, pending_payout, conversions, approved, days, raw_clicks }
+// либо null, если данных нет ни за один день диапазона.
+function accountTotalsForRange(dFrom, dTo) {
+  if (!Array.isArray(globalAccountTotals) || !globalAccountTotals.length) return null;
+  const acc = { unique_clicks: 0, raw_clicks: 0, payout: 0, pending_payout: 0, conversions: 0, approved: 0, days: 0 };
+  for (const r of globalAccountTotals) {
+    if (dFrom && r.date < dFrom) continue;
+    if (dTo && r.date > dTo) continue;
+    acc.unique_clicks += r.unique_clicks;
+    acc.raw_clicks += r.raw_clicks;
+    acc.payout += r.payout;
+    acc.pending_payout += r.pending_payout;
+    acc.conversions += r.conversions;
+    acc.approved += r.approved;
+    acc.days++;
+  }
+  return acc.days ? acc : null;
 }
 
 async function fetchStatsRange(start, end) {
@@ -3360,27 +3411,31 @@ async function autoLoadSavedStats() {
   // «Истинные» уникальные клики per (date, platform) для KPI первого блока,
   // и per (date, offer) — для таблицы офферов. Грузим параллельно с saved-данными;
   // пустой массив = тихий fallback к bucket-сумме.
-  [globalUniqueClicks, globalUniqueClicksByOffer] = await Promise.all([
+  [globalUniqueClicks, globalUniqueClicksByOffer, globalAccountTotals] = await Promise.all([
     fetchUniqueClicks(dFrom, dTo),
     fetchUniqueClicksByOffer(dFrom, dTo),
+    fetchAccountTotals(dFrom, dTo),
   ]);
   // Если daily_unique_clicks(_by_offer) не покрывают выбранный диапазон (cron
   // обновляет только последние 3 дня — на исторических периодах агрегат может
   // быть пуст или частичен), фоном дозаливаем недостающие дни через лёгкий
   // эндпоинт refresh_unique_clicks (он делает оба прохода: по платформам и
-  // по офферам). Без этого KPI «Клики» и колонка «Клики» в таблице офферов
-  // падают на bucket-sum и переоценивают трафик на 20-60% против ЛК.
+  // по офферам, а также подтягивает общую сводку кабинета). Без этого KPI
+  // «Клики» и колонка «Клики» в таблице офферов падают на bucket-sum и
+  // переоценивают трафик на 20-60% против ЛК.
   const needsBackfill = uniqueClicksCoverageIncomplete(globalUniqueClicks, dFrom, dTo)
-    || uniqueClicksCoverageIncomplete(globalUniqueClicksByOffer, dFrom, dTo);
+    || uniqueClicksCoverageIncomplete(globalUniqueClicksByOffer, dFrom, dTo)
+    || uniqueClicksCoverageIncomplete(globalAccountTotals, dFrom, dTo);
   if (needsBackfill) {
     try {
       const refresh = await fetchJsonSafe(buildApiUrl({
         action: 'refresh_unique_clicks', start_date: dFrom, end_date: dTo
       }));
       if (refresh && refresh.status === 'success') {
-        [globalUniqueClicks, globalUniqueClicksByOffer] = await Promise.all([
+        [globalUniqueClicks, globalUniqueClicksByOffer, globalAccountTotals] = await Promise.all([
           fetchUniqueClicks(dFrom, dTo),
           fetchUniqueClicksByOffer(dFrom, dTo),
+          fetchAccountTotals(dFrom, dTo),
         ]);
       }
     } catch(e) { console.warn('refresh_unique_clicks failed:', e); }
@@ -3607,16 +3662,47 @@ function renderUI() {
   if (sf !== 'all') data = data.filter(r => r.source === sf);
   if (sub1f !== 'all') data = data.filter(r => r.sub1 === sub1f);
   const t = sumLeadRows(data);
-  // «Истинные» уникальные клики (как в кабинете leads.su) — если sub1-фильтр
-  // выключен и есть aggregate в daily_unique_clicks. Иначе fallback к сумме
-  // детальных строк (она может быть завышена из-за дублей в разрезе
-  // offer×sub1, см. trueUniqueClicksFor / saveUniqueClicksRows).
+  // Источник KPI первого блока — приоритет:
+  //   1) daily_account_totals (общая сводка кабинета /webmaster/reports) —
+  //      когда нет фильтров площадки/sub1. Эти цифры 1-в-1 с верхним блоком
+  //      ЛК leads.su, не зависят от площадок (см. fetchAccountTotals и
+  //      инструкцию поддержки Leads.su, п.1-3).
+  //   2) daily_unique_clicks (per platform) — когда фильтр площадки тоже all,
+  //      но account_totals пуст (старая БД до миграции / API ещё не ответил).
+  //   3) сумма bucket-кликов из detailed daily_stats — fallback при срезе по
+  //      sub1 (когда агрегаты не аддитивны).
+  const dFromKpi = (document.getElementById('dateFrom') || {}).value || '';
+  const dToKpi   = (document.getElementById('dateTo')   || {}).value || '';
+  const useAccountTotals = (sf === 'all') && (sub1f === 'all');
+  const accountTotals = useAccountTotals ? accountTotalsForRange(dFromKpi, dToKpi) : null;
   const trueClicks = trueUniqueClicksFor(data, { sub1Filter: sub1f });
-  const clicksForKpi = (trueClicks !== null) ? trueClicks : t.clicks;
-  const usingTrueUnique = (trueClicks !== null);
-  const cr = clicksForKpi ? (t.conversions/clicksForKpi*100) : 0;
-  const ar = t.conversions ? (t.approved/t.conversions*100) : 0;
-  const epc = clicksForKpi ? (t.revenue/clicksForKpi) : 0;
+  let clicksForKpi, revenueForKpi, conversionsForKpi, approvedForKpi, pendingPayoutForKpi;
+  let kpiSource; // 'account' | 'unique' | 'bucket'
+  if (accountTotals && accountTotals.unique_clicks > 0) {
+    clicksForKpi = accountTotals.unique_clicks;
+    revenueForKpi = accountTotals.payout;
+    conversionsForKpi = accountTotals.conversions || t.conversions;
+    approvedForKpi = accountTotals.approved || t.approved;
+    pendingPayoutForKpi = accountTotals.pending_payout;
+    kpiSource = 'account';
+  } else if (trueClicks !== null) {
+    clicksForKpi = trueClicks;
+    revenueForKpi = t.revenue;
+    conversionsForKpi = t.conversions;
+    approvedForKpi = t.approved;
+    pendingPayoutForKpi = 0;
+    kpiSource = 'unique';
+  } else {
+    clicksForKpi = t.clicks;
+    revenueForKpi = t.revenue;
+    conversionsForKpi = t.conversions;
+    approvedForKpi = t.approved;
+    pendingPayoutForKpi = 0;
+    kpiSource = 'bucket';
+  }
+  const cr = clicksForKpi ? (conversionsForKpi/clicksForKpi*100) : 0;
+  const ar = conversionsForKpi ? (approvedForKpi/conversionsForKpi*100) : 0;
+  const epc = clicksForKpi ? (revenueForKpi/clicksForKpi) : 0;
   let baseline = [...planBaselineData];
   if (sf !== 'all') baseline = baseline.filter(r => r.source === sf);
   if (sub1f !== 'all') baseline = baseline.filter(r => r.sub1 === sub1f);
@@ -3627,26 +3713,35 @@ function renderUI() {
     <div class="kpi-pf mt-3">${planFactBar(fact, planValue, fmt)}</div>
   </div>`;
   const noDataHint = !globalRawData.length ? '<div class="col-span-full text-center text-slate-500 text-sm py-2">Нет данных за выбранный период. Нажмите « Загрузить из кабинета» для загрузки.</div>' : '';
-  const clicksTip = usingTrueUnique
-    ? 'Уникальные клики из Leads.su за выбранный период (как в верхней сводке кабинета). Считаются отдельным запросом /reports/summary?grouping=day без детализации по offer/sub1, чтобы один и тот же посетитель не учитывался дважды при разных подметках. Знаменатель для CR и EPC.'
-    : (sub1f && sub1f !== 'all'
-        ? 'Сумма unique_clicks из Leads.su в текущем срезе (фильтр sub1 активен — точная уникальность за период недоступна, цифра может быть выше реальной). Базовая метрика трафика — знаменатель для CR и EPC.'
-        : '⚠ Уникальные клики из кабинета leads.su пока недоступны — показываем сумму unique_clicks по детальным бакетам (date×платформа×оффер×sub1). Эта цифра завышена на 20-60% против кабинета (один посетитель учитывается в каждом бакете). Чтобы свести с кабинетом, нажмите «Загрузить из кабинета» — фон автоматически дозальёт daily_unique_clicks.');
-  const epcTip = usingTrueUnique
-    ? 'EPC = Доход ÷ Уникальные клики (как в кабинете leads.su). Сколько ₽ в среднем приносит один уникальный клик.'
-    : (sub1f && sub1f !== 'all'
-        ? 'EPC (Earnings Per Click) = Доход ÷ Клики. Сколько ₽ в среднем приносит один клик. В текущем срезе с фильтром sub1 знаменатель — сумма по детальным строкам.'
-        : '⚠ EPC посчитан по завышенным bucket-clicks (агрегат daily_unique_clicks недоступен), фактическое значение из кабинета будет выше. Нажмите «Загрузить из кабинета» для синхронизации.');
-  const crTip = usingTrueUnique
-    ? 'CR (Conversion Rate) = Лиды ÷ Уникальные клики × 100% (как в кабинете leads.su).'
-    : (sub1f && sub1f !== 'all'
-        ? 'CR (Conversion Rate) = Лиды ÷ Клики × 100%. В текущем срезе с фильтром sub1 знаменатель — сумма по детальным строкам.'
-        : '⚠ CR посчитан по завышенным bucket-clicks (агрегат daily_unique_clicks недоступен), фактическое значение из кабинета будет выше.');
+  const clicksTip = (kpiSource === 'account')
+    ? 'Уникальные клики из общей сводки ЛК leads.su (/webmaster/reports?grouping=day без platform_id). Цифра идентична верхнему блоку кабинета и не зависит от площадок: один и тот же посетитель с двух площадок учитывается как один уникальный клик. Знаменатель для CR и EPC.'
+    : (kpiSource === 'unique')
+      ? 'Уникальные клики из Leads.su за выбранный период (сумма по площадкам из /reports/summary?grouping=day без offer/sub1). Знаменатель для CR и EPC. Если включена общая сводка кабинета — переключитесь на «Все площадки», чтобы цифра сходилась с ЛК 1-в-1.'
+      : (sub1f && sub1f !== 'all'
+          ? 'Сумма unique_clicks из Leads.su в текущем срезе (фильтр sub1 активен — точная уникальность за период недоступна, цифра может быть выше реальной). Базовая метрика трафика — знаменатель для CR и EPC.'
+          : '⚠ Уникальные клики из кабинета leads.su пока недоступны — показываем сумму unique_clicks по детальным бакетам (date×платформа×оффер×sub1). Эта цифра завышена на 20-60% против кабинета (один посетитель учитывается в каждом бакете). Чтобы свести с кабинетом, нажмите «Загрузить из кабинета» — фон автоматически дозальёт daily_account_totals.');
+  const epcTip = (kpiSource === 'account')
+    ? 'EPC = Доход ÷ Уникальные клики из общей сводки ЛК leads.su (/webmaster/reports). Сколько ₽ в среднем приносит один уникальный клик в кабинете.'
+    : (kpiSource === 'unique')
+      ? 'EPC = Доход ÷ Уникальные клики (агрегат по площадкам). Сколько ₽ в среднем приносит один уникальный клик.'
+      : (sub1f && sub1f !== 'all'
+          ? 'EPC (Earnings Per Click) = Доход ÷ Клики. В срезе с фильтром sub1 знаменатель — сумма по детальным строкам.'
+          : '⚠ EPC посчитан по завышенным bucket-clicks (агрегаты недоступны), фактическое значение из кабинета будет выше. Нажмите «Загрузить из кабинета» для синхронизации.');
+  const crTip = (kpiSource === 'account')
+    ? 'CR (Conversion Rate) = Лиды ÷ Уникальные клики × 100% из общей сводки ЛК leads.su.'
+    : (kpiSource === 'unique')
+      ? 'CR (Conversion Rate) = Лиды ÷ Уникальные клики × 100% (агрегат по площадкам).'
+      : (sub1f && sub1f !== 'all'
+          ? 'CR (Conversion Rate) = Лиды ÷ Клики × 100%. В срезе с фильтром sub1 знаменатель — сумма по детальным строкам.'
+          : '⚠ CR посчитан по завышенным bucket-clicks (агрегаты недоступны), фактическое значение из кабинета будет выше.');
+  const revenueTip = (kpiSource === 'account')
+    ? `Доход (одобренный payout) из общей сводки ЛК leads.su (/webmaster/reports?grouping=day). Это та же цифра, что в верхнем блоке кабинета. Ожидаемый доход (в холде, pending_payout): ${Math.round(pendingPayoutForKpi).toLocaleString('ru-RU')} ₽. Итого с холдом: ${Math.round(revenueForKpi + pendingPayoutForKpi).toLocaleString('ru-RU')} ₽.`
+    : 'Сумма одобренного payout из Leads.su за период по выбранному срезу. Чтобы цифра совпала с верхним блоком ЛК, снимите фильтры площадки/sub1.';
   document.getElementById('kpiCards').innerHTML = noDataHint + `
     ${kpiCard('Клики', clicksForKpi.toLocaleString('ru-RU'), clicksForKpi, plan.clicks, v => Math.round(v).toLocaleString('ru-RU'), clicksTip)}
-    ${kpiCard('Лиды', t.conversions.toLocaleString('ru-RU'), t.conversions, plan.conversions, v => Math.round(v).toLocaleString('ru-RU'), 'Сумма конверсий (поданных заявок) из Leads.su. CR = Лиды ÷ Клики × 100%.')}
+    ${kpiCard('Лиды', conversionsForKpi.toLocaleString('ru-RU'), conversionsForKpi, plan.conversions, v => Math.round(v).toLocaleString('ru-RU'), 'Сумма конверсий (поданных заявок) из Leads.su. CR = Лиды ÷ Клики × 100%.')}
     ${kpiCard('Approve %', ar.toFixed(2) + '%', ar, plan.approveRate, v => v.toFixed(1) + '%', 'Approve Rate = одобренные заявки ÷ всего лидов × 100%. Показывает, насколько качественный трафик доходит до выплаты МФО.')}
-    ${kpiCard('Доход (₽)', Math.round(t.revenue).toLocaleString('ru-RU') + ' ₽', t.revenue, plan.revenue, v => Math.round(v).toLocaleString('ru-RU') + ' ₽', 'Сумма выплат из Leads.su за период по одобренным заявкам с учётом активных фильтров.')}
+    ${kpiCard('Доход (₽)', Math.round(revenueForKpi).toLocaleString('ru-RU') + ' ₽', revenueForKpi, plan.revenue, v => Math.round(v).toLocaleString('ru-RU') + ' ₽', revenueTip)}
     ${kpiCard('EPC', `<span class="text-emerald-400">${epc.toFixed(2)} ₽</span>`, epc, plan.epc, v => v.toFixed(2) + ' ₽', epcTip)}
     ${kpiCard('CR %', cr.toFixed(2) + '%', cr, plan.cr, v => v.toFixed(1) + '%', crTip)}`;
   renderFunnel(data, sf);
@@ -3961,6 +4056,8 @@ function renderTables() {
   const trueClicksByOfferId = {};
   const trueRevenueByOffer = {};
   const trueRevenueByOfferId = {};
+  const truePendingByOffer = {};
+  const truePendingByOfferId = {};
   const trueConversionsByOffer = {};
   const trueConversionsByOfferId = {};
   const trueApprovedByOffer = {};
@@ -3981,12 +4078,14 @@ function renderTables() {
       if (u.offer_id) {
         trueClicksByOfferId[u.offer_id]      = (trueClicksByOfferId[u.offer_id]      || 0) + (u.unique_clicks || 0);
         trueRevenueByOfferId[u.offer_id]     = (trueRevenueByOfferId[u.offer_id]     || 0) + (u.revenue       || 0);
+        truePendingByOfferId[u.offer_id]     = (truePendingByOfferId[u.offer_id]     || 0) + (u.pending_payout|| 0);
         trueConversionsByOfferId[u.offer_id] = (trueConversionsByOfferId[u.offer_id] || 0) + (u.conversions   || 0);
         trueApprovedByOfferId[u.offer_id]    = (trueApprovedByOfferId[u.offer_id]    || 0) + (u.approved      || 0);
       }
       if (name) {
         trueClicksByOffer[name]      = (trueClicksByOffer[name]      || 0) + (u.unique_clicks || 0);
         trueRevenueByOffer[name]     = (trueRevenueByOffer[name]     || 0) + (u.revenue       || 0);
+        truePendingByOffer[name]     = (truePendingByOffer[name]     || 0) + (u.pending_payout|| 0);
         trueConversionsByOffer[name] = (trueConversionsByOffer[name] || 0) + (u.conversions   || 0);
         trueApprovedByOffer[name]    = (trueApprovedByOffer[name]    || 0) + (u.approved      || 0);
       }
@@ -4018,12 +4117,31 @@ function renderTables() {
       };
       const tc = pick(trueClicksByOfferId, trueClicksByOffer);
       const tr = pick(trueRevenueByOfferId, trueRevenueByOffer);
+      const tp = pick(truePendingByOfferId, truePendingByOffer);
       const tcv = pick(trueConversionsByOfferId, trueConversionsByOffer);
       const ta = pick(trueApprovedByOfferId, trueApprovedByOffer);
-      if (tc != null) clicks = tc;
-      if (tr != null) revenue = tr;
-      if (tcv != null) conversions = tcv;
-      if (ta != null) approved = ta;
+      // Подмена клик/revenue/conversions/approved из агрегата
+      // daily_unique_clicks_by_offer допустима только когда у оффера в этом
+      // агрегате есть строки с РЕАЛЬНЫМИ unique_clicks > 0. Иначе мы
+      // рискуем затереть валидные значения из daily_stats нулями — например,
+      // когда /reports/summary?fields=offer_id вернул пустой ответ за период.
+      // EPC по офферу должен оставаться из единого среза, поэтому всё или ничего.
+      if (tc != null && tc > 0) {
+        clicks = tc;
+        // Дополнительная страховка против нулей: если агрегат вернул
+        // revenue=0 И pending_payout=0, оставляем revenue из daily_stats
+        // (см. инструкцию поддержки Leads.su, п.4 — выручка может висеть
+        // в холде; если ни одобренного, ни ожидаемого нет — bucket-sum
+        // обычно тоже 0, но если нет — это редкая аномалия рассинхрона
+        // /reports/summary?fields=offer_id с детальной выгрузкой, и
+        // верить детальной разумнее, чем зануляться).
+        const aggRev = (tr || 0) + (tp || 0);
+        if (aggRev > 0) {
+          if (tr != null) revenue = tr;
+        }
+        if (tcv != null) conversions = tcv;
+        if (ta != null) approved = ta;
+      }
     }
     const epc = clicks ? (revenue/clicks) : 0;
     const market = (v.offer_id && offerMarketMap[v.offer_id]) || offerMarketByName[n] || null;

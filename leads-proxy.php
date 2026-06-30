@@ -498,6 +498,28 @@ try {
     $safeExec('ALTER TABLE daily_unique_clicks_by_offer ADD COLUMN revenue REAL DEFAULT 0');
     $safeExec('ALTER TABLE daily_unique_clicks_by_offer ADD COLUMN conversions INTEGER DEFAULT 0');
     $safeExec('ALTER TABLE daily_unique_clicks_by_offer ADD COLUMN approved INTEGER DEFAULT 0');
+    // pending_payout — выручка «в ожидании» (холд) из API. Отвечает за разницу
+    // между «Доход» в скрипте (только payout) и «Ожидаемый доход» в кабинете
+    // leads.su (payout + pending_payout). См. инструкцию поддержки Leads.su, п.4.
+    $safeExec('ALTER TABLE daily_unique_clicks_by_offer ADD COLUMN pending_payout REAL DEFAULT 0');
+    $safeExec('ALTER TABLE daily_unique_clicks ADD COLUMN pending_payout REAL DEFAULT 0');
+    $safeExec('ALTER TABLE daily_stats ADD COLUMN pending_payout REAL DEFAULT 0');
+
+    // «Верхние цифры кабинета» leads.su — общая сводка по всему аккаунту за день,
+    // БЕЗ разбивки по площадкам/офферам/sub1. Источник — /webmaster/reports
+    // ?grouping=day (без platform_id и без fields), как рекомендует поддержка
+    // Leads.su (п.1-3 их инструкции). Только эта цифра 1-в-1 совпадает с тем,
+    // что показывает верхний блок ЛК и не зависит от площадок. Используется
+    // для KPI первого блока дашборда, когда фильтры площадки/sub1 = "all".
+    $safeExec('CREATE TABLE IF NOT EXISTS daily_account_totals (
+        date TEXT PRIMARY KEY,
+        unique_clicks INTEGER DEFAULT 0,
+        raw_clicks INTEGER DEFAULT 0,
+        payout REAL DEFAULT 0,
+        pending_payout REAL DEFAULT 0,
+        conversions INTEGER DEFAULT 0,
+        approved INTEGER DEFAULT 0
+    )');
 
     // Кэш офферов (offer_id → имя + рыночные показатели EPC).
     // Используется для (а) повторного резолва имён в "Unknown"-записях,
@@ -1199,8 +1221,8 @@ function ymApiGet($url, $ymToken) {
 function saveReportRows($db, $rows, $offerMap) {
     $inserted = 0;
     $stmt = $db->prepare('INSERT INTO daily_stats
-        (date, source_id, source_name, offer_id, offer_name, sub1, clicks, raw_clicks, conversions, approved, revenue)
-        VALUES (:date, :source_id, :source_name, :offer_id, :offer_name, :sub1, :clicks, :raw_clicks, :conversions, :approved, :revenue)
+        (date, source_id, source_name, offer_id, offer_name, sub1, clicks, raw_clicks, conversions, approved, revenue, pending_payout)
+        VALUES (:date, :source_id, :source_name, :offer_id, :offer_name, :sub1, :clicks, :raw_clicks, :conversions, :approved, :revenue, :pending_payout)
         ON CONFLICT(date, source_id, offer_id, sub1) DO UPDATE SET
             source_name = excluded.source_name,
             offer_name = CASE
@@ -1213,7 +1235,8 @@ function saveReportRows($db, $rows, $offerMap) {
             raw_clicks = excluded.raw_clicks,
             conversions = excluded.conversions,
             approved = excluded.approved,
-            revenue = excluded.revenue');
+            revenue = excluded.revenue,
+            pending_payout = excluded.pending_payout');
 
     $missingUniqueClicks = 0;
     $totalRows = 0;
@@ -1278,6 +1301,13 @@ function saveReportRows($db, $rows, $offerMap) {
         $conversions = (int)($row['unique_conversions'] ?? $row['conversions'] ?? 0);
         $approved = (int)($row['conversions_approved'] ?? $row['conversionsapproved'] ?? 0);
         $revenue = (float)($row['payout'] ?? 0);
+        // pending_payout — холд, ещё не одобренная сумма. См. инструкцию
+        // поддержки Leads.su п.4: кабинет показывает payout + pending_payout
+        // как «Ожидаемый доход», тогда как наш API-скрипт по умолчанию берёт
+        // только одобренный payout. Храним отдельно, чтобы фронт мог
+        // показать пользователю обе цифры и не «затирать» нулём revenue,
+        // когда выплата ещё в холде.
+        $pendingPayout = (float)($row['pending_payout'] ?? $row['pendingpayout'] ?? 0);
 
         $stmt->bindValue(':date', $date, SQLITE3_TEXT);
         $stmt->bindValue(':source_id', $sourceId, SQLITE3_TEXT);
@@ -1290,6 +1320,7 @@ function saveReportRows($db, $rows, $offerMap) {
         $stmt->bindValue(':conversions', $conversions, SQLITE3_INTEGER);
         $stmt->bindValue(':approved', $approved, SQLITE3_INTEGER);
         $stmt->bindValue(':revenue', $revenue, SQLITE3_FLOAT);
+        $stmt->bindValue(':pending_payout', $pendingPayout, SQLITE3_FLOAT);
         if ($stmt->execute()) $inserted++;
         $stmt->reset();
     }
@@ -1318,12 +1349,13 @@ function saveReportRows($db, $rows, $offerMap) {
 function saveUniqueClicksRows($db, $rows, $defaultSourceId = '', $defaultSourceName = '') {
     if (!$rows) return 0;
     $stmt = $db->prepare('INSERT INTO daily_unique_clicks
-        (date, source_id, source_name, unique_clicks, raw_clicks)
-        VALUES (:date, :source_id, :source_name, :unique_clicks, :raw_clicks)
+        (date, source_id, source_name, unique_clicks, raw_clicks, pending_payout)
+        VALUES (:date, :source_id, :source_name, :unique_clicks, :raw_clicks, :pending_payout)
         ON CONFLICT(date, source_id) DO UPDATE SET
             source_name = COALESCE(NULLIF(excluded.source_name, \'\'), daily_unique_clicks.source_name),
             unique_clicks = excluded.unique_clicks,
-            raw_clicks = excluded.raw_clicks');
+            raw_clicks = excluded.raw_clicks,
+            pending_payout = excluded.pending_payout');
     $inserted = 0;
     foreach ($rows as $row) {
         $rawDate = $row['period_day']
@@ -1348,12 +1380,14 @@ function saveUniqueClicksRows($db, $rows, $defaultSourceId = '', $defaultSourceN
             ? (int)$row['unique_clicks']
             : 0;
         $raw = (int)($row['clicks'] ?? $row['unique_clicks'] ?? 0);
+        $pendingPayout = (float)($row['pending_payout'] ?? $row['pendingpayout'] ?? 0);
 
         $stmt->bindValue(':date', $date, SQLITE3_TEXT);
         $stmt->bindValue(':source_id', $sourceId, SQLITE3_TEXT);
         $stmt->bindValue(':source_name', $sourceName, SQLITE3_TEXT);
         $stmt->bindValue(':unique_clicks', $unique, SQLITE3_INTEGER);
         $stmt->bindValue(':raw_clicks', $raw, SQLITE3_INTEGER);
+        $stmt->bindValue(':pending_payout', $pendingPayout, SQLITE3_FLOAT);
         if ($stmt->execute()) $inserted++;
         $stmt->reset();
     }
@@ -1370,15 +1404,16 @@ function saveUniqueClicksRows($db, $rows, $defaultSourceId = '', $defaultSourceN
 function saveUniqueClicksByOfferRows($db, $rows, $offerMap = []) {
     if (!$rows) return 0;
     $stmt = $db->prepare('INSERT INTO daily_unique_clicks_by_offer
-        (date, offer_id, offer_name, unique_clicks, raw_clicks, revenue, conversions, approved)
-        VALUES (:date, :offer_id, :offer_name, :unique_clicks, :raw_clicks, :revenue, :conversions, :approved)
+        (date, offer_id, offer_name, unique_clicks, raw_clicks, revenue, conversions, approved, pending_payout)
+        VALUES (:date, :offer_id, :offer_name, :unique_clicks, :raw_clicks, :revenue, :conversions, :approved, :pending_payout)
         ON CONFLICT(date, offer_id) DO UPDATE SET
             offer_name = COALESCE(NULLIF(excluded.offer_name, \'\'), daily_unique_clicks_by_offer.offer_name),
             unique_clicks = excluded.unique_clicks,
             raw_clicks = excluded.raw_clicks,
             revenue = excluded.revenue,
             conversions = excluded.conversions,
-            approved = excluded.approved');
+            approved = excluded.approved,
+            pending_payout = excluded.pending_payout');
     $inserted = 0;
     foreach ($rows as $row) {
         $rawDate = $row['period_day']
@@ -1407,6 +1442,7 @@ function saveUniqueClicksByOfferRows($db, $rows, $offerMap = []) {
         // должна совпадать, чтобы EPC = revenue / unique_clicks был сравним
         // между «истинным» агрегатом по офферу и bucket-данными.
         $revenue = (float)($row['payout'] ?? 0);
+        $pendingPayout = (float)($row['pending_payout'] ?? $row['pendingpayout'] ?? 0);
         $conversions = (int)($row['unique_conversions'] ?? $row['conversions'] ?? 0);
         $approved = (int)($row['conversions_approved'] ?? $row['conversionsapproved'] ?? 0);
 
@@ -1418,13 +1454,111 @@ function saveUniqueClicksByOfferRows($db, $rows, $offerMap = []) {
         $stmt->bindValue(':revenue', $revenue, SQLITE3_FLOAT);
         $stmt->bindValue(':conversions', $conversions, SQLITE3_INTEGER);
         $stmt->bindValue(':approved', $approved, SQLITE3_INTEGER);
+        $stmt->bindValue(':pending_payout', $pendingPayout, SQLITE3_FLOAT);
         if ($stmt->execute()) $inserted++;
         $stmt->reset();
     }
     return $inserted;
 }
 
-// ========== AI-АНАЛИТИКА (DSPy-style) ==========
+/**
+ * Сохраняет «общую сводку кабинета» leads.su за день в daily_account_totals.
+ * Источник — /webmaster/reports?grouping=day без platform_id и без fields,
+ * как рекомендует поддержка Leads.su (п.1-3 их инструкции). Этот ответ
+ * возвращает ту же цифру, что показывает верхний блок ЛК — суммарные
+ * unique_clicks/payout/pending_payout по ВСЕМУ кабинету независимо от
+ * площадок. Используется для KPI первого блока дашборда (когда фильтры
+ * площадки/sub1 = "all"), чтобы цифры дашборда сходились с цифрами в ЛК.
+ *
+ * Не суммирует данные по платформам — это и есть фишка: один и тот же
+ * посетитель, кликнувший на двух площадках, в общем отчёте считается
+ * как один уникальный клик (схлопывается), и расхождение с per-platform
+ * суммой может достигать 20-30%.
+ */
+function saveAccountTotalsRows($db, $rows) {
+    if (!$rows) return 0;
+    $stmt = $db->prepare('INSERT INTO daily_account_totals
+        (date, unique_clicks, raw_clicks, payout, pending_payout, conversions, approved)
+        VALUES (:date, :unique_clicks, :raw_clicks, :payout, :pending_payout, :conversions, :approved)
+        ON CONFLICT(date) DO UPDATE SET
+            unique_clicks = excluded.unique_clicks,
+            raw_clicks = excluded.raw_clicks,
+            payout = excluded.payout,
+            pending_payout = excluded.pending_payout,
+            conversions = excluded.conversions,
+            approved = excluded.approved');
+    $inserted = 0;
+    foreach ($rows as $row) {
+        $rawDate = $row['period_day']
+            ?? $row['period_hour']
+            ?? $row['periodday']
+            ?? $row['period']
+            ?? $row['date']
+            ?? null;
+        if (!$rawDate) continue;
+        $date = substr((string)$rawDate, 0, 10);
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) continue;
+
+        $unique = array_key_exists('unique_clicks', $row) && $row['unique_clicks'] !== null
+            ? (int)$row['unique_clicks']
+            : 0;
+        $raw = (int)($row['clicks'] ?? $row['unique_clicks'] ?? 0);
+        $payout = (float)($row['payout'] ?? 0);
+        $pendingPayout = (float)($row['pending_payout'] ?? $row['pendingpayout'] ?? 0);
+        $conversions = (int)($row['unique_conversions'] ?? $row['conversions'] ?? 0);
+        $approved = (int)($row['conversions_approved'] ?? $row['conversionsapproved'] ?? 0);
+
+        $stmt->bindValue(':date', $date, SQLITE3_TEXT);
+        $stmt->bindValue(':unique_clicks', $unique, SQLITE3_INTEGER);
+        $stmt->bindValue(':raw_clicks', $raw, SQLITE3_INTEGER);
+        $stmt->bindValue(':payout', $payout, SQLITE3_FLOAT);
+        $stmt->bindValue(':pending_payout', $pendingPayout, SQLITE3_FLOAT);
+        $stmt->bindValue(':conversions', $conversions, SQLITE3_INTEGER);
+        $stmt->bindValue(':approved', $approved, SQLITE3_INTEGER);
+        if ($stmt->execute()) $inserted++;
+        $stmt->reset();
+    }
+    return $inserted;
+}
+
+/**
+ * Загружает общую сводку кабинета /webmaster/reports?grouping=day за период
+ * и UPSERT-ит в daily_account_totals. Возвращает [count_saved, errors].
+ * Используется update_stats, refresh_unique_clicks и action=refresh_account_totals.
+ *
+ * ВАЖНО: эндпоинт /webmaster/reports (а не /reports/summary) и БЕЗ platform_id
+ * — иначе уникальные клики уже не «общекабинетные», а сумма по площадкам.
+ * Hard cap на число итераций пагинации (200 × 500 = 100 000 строк) защищает
+ * от зацикливания, если API внезапно перестанет уменьшать count.
+ */
+function fetchAndSaveAccountTotals($db, $token, $apiStart, $apiEnd) {
+    $saved = 0;
+    $errors = [];
+    $offset = 0;
+    $limit = 500;
+    $maxIterations = 200;
+    for ($i = 0; $i < $maxIterations; $i++) {
+        $url = "https://api.leads.su/webmaster/reports?token={$token}"
+             . "&start_date=" . urlencode($apiStart)
+             . "&end_date="   . urlencode($apiEnd)
+             . "&grouping=day"
+             . "&offset={$offset}&limit={$limit}";
+        $data = apiGet($url);
+        if (isset($data['error'])) {
+            $errors[] = ['scope' => 'account_totals', 'offset' => $offset, 'error' => $data['error']];
+            error_log("fetchAndSaveAccountTotals: offset={$offset} error " . json_encode($data['error']));
+            break;
+        }
+        $rows = $data['data'] ?? [];
+        $saved += saveAccountTotalsRows($db, $rows);
+        if (count($rows) < $limit) break;
+        $offset += $limit;
+        if ($i === $maxIterations - 1) {
+            error_log("fetchAndSaveAccountTotals: hit max iterations ({$maxIterations}) at offset={$offset} — возможна зацикленная пагинация leads.su");
+        }
+    }
+    return [$saved, $errors];
+}
 // Идея, заимствованная из DSPy: вместо "сырого" prompt-а описываем «сигнатуру»
 // (типизированные input/output поля + назначения), формируем по ней system-prompt
 // с JSON-схемой, просим модель сначала кратко рассуждать (chain-of-thought),
@@ -3089,17 +3223,70 @@ if ($action === 'refresh_unique_clicks') {
         $offset += $limit;
     }
 
+    // Также подтягиваем общую сводку кабинета (см. fetchAndSaveAccountTotals)
+    // — даём фронту цифры верхнего KPI-блока, идентичные ЛК leads.su.
+    [$savedAccountTotals, $accountErrors] = fetchAndSaveAccountTotals($db, $token, $apiStart, $apiEnd);
+    if ($accountErrors) $apiErrors = array_merge($apiErrors, $accountErrors);
+
     echo json_encode([
         'status' => 'success',
         'saved_unique_clicks' => $savedUnique,
         'saved_unique_clicks_by_offer' => $savedUniqueByOffer,
+        'saved_account_totals' => $savedAccountTotals,
         'platforms_processed' => count($platforms),
         'errors' => $apiErrors,
     ]);
     exit;
 }
 
-// 2. Сохранение статистики из интерфейса (при ручной загрузке через API)
+// 1e. Лёгкий бэкфилл «общей сводки кабинета» (только /webmaster/reports
+// ?grouping=day без platform_id и без fields). Заполняет daily_account_totals
+// — источник цифр верхнего KPI-блока дашборда (как в ЛК leads.su).
+if ($action === 'refresh_account_totals') {
+    if (empty($start_date) || empty($end_date)) {
+        echo json_encode(['error' => 'start_date and end_date required']);
+        exit;
+    }
+    $token = leadsEffectiveToken($db, $token);
+    if (!$token) {
+        echo json_encode(['error' => 'token required']);
+        exit;
+    }
+    $apiStart = (strlen($start_date) === 10) ? "{$start_date} 00:00:00" : $start_date;
+    $apiEnd   = (strlen($end_date)   === 10) ? "{$end_date} 23:59:59"   : $end_date;
+    [$saved, $errors] = fetchAndSaveAccountTotals($db, $token, $apiStart, $apiEnd);
+    echo json_encode([
+        'status' => 'success',
+        'saved_account_totals' => $saved,
+        'errors' => $errors,
+    ]);
+    exit;
+}
+
+// 1f. Чтение daily_account_totals для фронта.
+if ($action === 'get_account_totals') {
+    if (!$start_date || !$end_date) {
+        echo json_encode(['error' => 'start_date and end_date required']);
+        exit;
+    }
+    $stmt = $db->prepare('SELECT date, unique_clicks, raw_clicks,
+            COALESCE(payout, 0) AS payout,
+            COALESCE(pending_payout, 0) AS pending_payout,
+            COALESCE(conversions, 0) AS conversions,
+            COALESCE(approved, 0) AS approved
+        FROM daily_account_totals
+        WHERE date BETWEEN :start AND :end
+        ORDER BY date');
+    $stmt->bindValue(':start', $start_date, SQLITE3_TEXT);
+    $stmt->bindValue(':end', $end_date, SQLITE3_TEXT);
+    $res = $stmt->execute();
+    $rows = [];
+    while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
+        $rows[] = $row;
+    }
+    echo json_encode(['status' => 'success', 'data' => $rows]);
+    exit;
+}
 if ($action === 'save_stats') {
     $input = json_decode(file_get_contents('php://input'), true);
     if (!$input || !isset($input['data']) || !is_array($input['data'])) {
@@ -3321,11 +3508,20 @@ if ($action === 'update_stats') {
         $offset += $limit;
     }
 
+    // Четвёртый проход: «общая сводка кабинета» — /webmaster/reports?grouping=day
+    // БЕЗ platform_id и БЕЗ fields. Эти цифры идентичны тому, что показывает
+    // верхний блок ЛК leads.su (см. инструкцию поддержки Leads.su, п.1-3) и
+    // независимы от площадок. Используются фронтом для KPI-карточек верхнего
+    // блока дашборда, чтобы цифры сходились с кабинетом 1-в-1.
+    [$savedAccountTotals, $accountErrors] = fetchAndSaveAccountTotals($db, $token, $apiStart, $apiEnd);
+    if ($accountErrors) $apiErrors = array_merge($apiErrors, $accountErrors);
+
     echo json_encode([
         'status' => 'success',
         'saved' => $saved,
         'saved_unique_clicks' => $savedUnique,
         'saved_unique_clicks_by_offer' => $savedUniqueByOffer,
+        'saved_account_totals' => $savedAccountTotals,
         'platforms_processed' => count($platforms),
         'errors' => $apiErrors,
     ]);
