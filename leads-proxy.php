@@ -3651,11 +3651,22 @@ if ($action === 'channels_overview') {
 
     $byChannel = [];
     foreach (rejectChannelIds() as $cid) {
-        $byChannel[$cid] = ['traffic' => 0, 'fact_revenue' => 0.0, 'plan_revenue' => 0.0, 'costs' => 0.0];
+        $byChannel[$cid] = [
+            'traffic' => 0, 'fact_revenue' => 0.0,
+            'plan_revenue' => 0.0, 'plan_manual' => false,
+            'costs' => 0.0,
+            'baseline_clicks' => 0, 'baseline_revenue' => 0.0,
+        ];
     }
 
     if ($dFrom && $dTo) {
-        // Факт + трафик по площадкам. Трафик и EPC — по уникальным кликам.
+        // Факт + трафик по площадкам. `daily_stats.clicks` хранит ИМЕННО
+        // уникальные клики (unique_clicks из leads.su /reports/summary —
+        // см. saveReportRows и save_stats; общие клики лежат отдельно в
+        // raw_clicks и в EPC/трафике канала НЕ участвуют). Поэтому
+        // SUM(clicks) — это сумма уникальных кликов за период по источнику,
+        // а EPC = revenue / unique_clicks (получается выше, чем при делении
+        // на общие клики, как раз поэтому общие сюда не подмешиваем).
         $stmt = $db->prepare("SELECT source_id,
                 SUM(clicks)  AS traffic,
                 SUM(revenue) AS revenue
@@ -3675,7 +3686,7 @@ if ($action === 'channels_overview') {
 
         // План по каналу (пересекающие период строки берём целиком — план
         // обычно задаётся помесячно, и точная пропорция не требуется).
-        $stmt = $db->prepare("SELECT channel, SUM(plan_revenue) AS plan
+        $stmt = $db->prepare("SELECT channel, SUM(plan_revenue) AS plan, COUNT(*) AS cnt
             FROM channel_plan
             WHERE NOT (period_end < :a OR period_start > :b)
             GROUP BY channel");
@@ -3685,6 +3696,7 @@ if ($action === 'channels_overview') {
         while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
             $ch = normalizeChannelId($row['channel']);
             $byChannel[$ch]['plan_revenue'] += (float)$row['plan'];
+            if ((int)$row['cnt'] > 0) $byChannel[$ch]['plan_manual'] = true;
         }
 
         // Расходы — суммируем по дням внутри периода.
@@ -3699,29 +3711,80 @@ if ($action === 'channels_overview') {
             $ch = normalizeChannelId($row['channel']);
             $byChannel[$ch]['costs'] += (float)$row['cost'];
         }
+
+        // Baseline для авто-плана: 30 дней до начала текущего периода —
+        // EPC канала за этот baseline и его среднесуточный объём кликов.
+        // Дают «как обычно идём» — основу для прогноза плана при той же
+        // активности баннера. Если baseline пуст, авто-план не считаем.
+        $baseTo   = date('Y-m-d', strtotime($dFrom . ' -1 day'));
+        $baseFrom = date('Y-m-d', strtotime($baseTo . ' -29 day'));
+        $stmt = $db->prepare("SELECT source_id,
+                SUM(clicks)  AS traffic,
+                SUM(revenue) AS revenue
+            FROM daily_stats
+            WHERE substr(date,1,10) BETWEEN :a AND :b
+            GROUP BY source_id");
+        $stmt->bindValue(':a', $baseFrom, SQLITE3_TEXT);
+        $stmt->bindValue(':b', $baseTo,   SQLITE3_TEXT);
+        $res = $stmt->execute();
+        while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
+            $sid = (string)$row['source_id'];
+            $ch  = $srcMap[$sid] ?? 'online';
+            $ch  = in_array($ch, rejectChannelIds(), true) ? $ch : 'online';
+            $byChannel[$ch]['baseline_clicks']  += (int)$row['traffic'];
+            $byChannel[$ch]['baseline_revenue'] += (float)$row['revenue'];
+        }
+
+        // Период длины L дней: ожидаемые клики канала ≈ baseline_clicks × (L/30),
+        // если фактических кликов меньше прогноза (период ещё не закрыт).
+        $periodDays   = max(1, (int)((strtotime($dTo) - strtotime($dFrom)) / 86400) + 1);
+        $baselineDays = 30;
+        foreach ($byChannel as $cid => &$b) {
+            $epcBase = $b['baseline_clicks'] > 0 ? $b['baseline_revenue'] / $b['baseline_clicks'] : 0;
+            // Ожидаемые клики канала: max(пропорция baseline на длину периода,
+            // фактические клики на сегодня) — устойчиво и для полных, и для
+            // ещё-не-закрытых периодов.
+            $expectedClicks = $b['baseline_clicks'] > 0
+                ? max($b['baseline_clicks'] * ($periodDays / $baselineDays), $b['traffic'])
+                : $b['traffic'];
+            $auto = $epcBase > 0 ? $expectedClicks * $epcBase : 0;
+            $b['plan_revenue_auto'] = round($auto, 2);
+            $b['baseline_epc']      = $epcBase > 0 ? round($epcBase, 2) : null;
+            $b['baseline_period']   = ['from' => $baseFrom, 'to' => $baseTo, 'days' => $baselineDays];
+        }
+        unset($b);
     }
 
     $hasAnyData = false;
     $rows = [];
     foreach (rejectChannels() as $ch) {
         $b = $byChannel[$ch['id']];
-        $plan = (float)$b['plan_revenue'];
+        $planManual = !empty($b['plan_manual']);
+        $planAuto = (float)($b['plan_revenue_auto'] ?? 0);
+        $planManualValue = (float)$b['plan_revenue'];
+        // Если ручной план задан — используем его; иначе — авто.
+        $planEffective = $planManual ? $planManualValue : $planAuto;
+        $planSource = $planManual ? 'manual' : 'auto';
         $fact = (float)$b['fact_revenue'];
         $traffic = (int)$b['traffic'];
         $costs = (float)$b['costs'];
-        $planCompletion = $plan > 0 ? round($fact / $plan * 100, 1) : null;
+        $planCompletion = $planEffective > 0 ? round($fact / $planEffective * 100, 1) : null;
         $epc = $traffic > 0 ? round($fact / $traffic, 2) : null;
-        if ($traffic > 0 || $fact > 0 || $plan > 0 || $costs > 0) $hasAnyData = true;
+        if ($traffic > 0 || $fact > 0 || $planEffective > 0 || $costs > 0) $hasAnyData = true;
         $rows[] = [
-            'channel'         => $ch['id'],
-            'label'           => $ch['label'],
-            'traffic'         => $traffic,
-            'plan_revenue'    => round($plan, 2),
-            'fact_revenue'    => round($fact, 2),
-            'plan_completion' => $planCompletion,
-            'costs'           => round($costs, 2),
-            'gross_profit'    => round($fact - $costs, 2),
-            'epc'             => $epc,
+            'channel'           => $ch['id'],
+            'label'             => $ch['label'],
+            'traffic'           => $traffic,
+            'plan_revenue'      => round($planEffective, 2),
+            'plan_revenue_auto' => round($planAuto, 2),
+            'plan_source'       => $planSource,
+            'fact_revenue'      => round($fact, 2),
+            'plan_completion'   => $planCompletion,
+            'costs'             => round($costs, 2),
+            'gross_profit'      => round($fact - $costs, 2),
+            'epc'               => $epc,
+            'baseline_epc'      => $b['baseline_epc'] ?? null,
+            'baseline_period'   => $b['baseline_period'] ?? null,
         ];
     }
 
@@ -3994,6 +4057,26 @@ if ($action === 'channel_plan_save') {
     $stmt->bindValue(':p', $plan,    SQLITE3_FLOAT);
     $stmt->execute();
     echo json_encode(['status' => 'success']);
+    exit;
+}
+
+if ($action === 'channel_plan_reset') {
+    // Удаляет ручные записи плана канала, пересекающие указанный период,
+    // и возвращает канал в режим авто-расчёта плана от EPC × ожидаемый трафик.
+    $input = json_decode(file_get_contents('php://input'), true) ?: [];
+    $channel = normalizeChannelId($input['channel'] ?? '');
+    $pFrom   = trim((string)($input['period_start'] ?? ''));
+    $pTo     = trim((string)($input['period_end'] ?? ''));
+    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $pFrom) || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $pTo)) {
+        echo json_encode(['status' => 'error', 'error' => 'period_start/period_end required (YYYY-MM-DD)']); exit;
+    }
+    $stmt = $db->prepare('DELETE FROM channel_plan
+        WHERE channel = :c AND NOT (period_end < :a OR period_start > :b)');
+    $stmt->bindValue(':c', $channel, SQLITE3_TEXT);
+    $stmt->bindValue(':a', $pFrom,   SQLITE3_TEXT);
+    $stmt->bindValue(':b', $pTo,     SQLITE3_TEXT);
+    $stmt->execute();
+    echo json_encode(['status' => 'success', 'deleted' => $db->changes()]);
     exit;
 }
 
