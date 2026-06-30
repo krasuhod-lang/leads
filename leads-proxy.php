@@ -3655,7 +3655,13 @@ if ($action === 'channels_overview') {
     }
 
     if ($dFrom && $dTo) {
-        // Факт + трафик по площадкам. Трафик и EPC — по уникальным кликам.
+        // Факт + трафик по площадкам. `daily_stats.clicks` хранит ИМЕННО
+        // уникальные клики (unique_clicks из leads.su /reports/summary —
+        // см. saveReportRows и save_stats; общие клики лежат отдельно в
+        // raw_clicks и в EPC/трафике канала НЕ участвуют). Поэтому
+        // SUM(clicks) — это сумма уникальных кликов за период по источнику,
+        // а EPC = revenue / unique_clicks (получается выше, чем при делении
+        // на общие клики, как раз поэтому общие сюда не подмешиваем).
         $stmt = $db->prepare("SELECT source_id,
                 SUM(clicks)  AS traffic,
                 SUM(revenue) AS revenue
