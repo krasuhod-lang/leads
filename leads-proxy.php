@@ -384,6 +384,11 @@ try {
         for ($i = 0; $i < 3; $i++) {
             if (@$db->exec($sql)) return true;
             $msg = $db->lastErrorMsg();
+            // "duplicate column name" — доброкачественная гонка миграций
+            // (cron + UI + AI одновременно делают ALTER ... ADD COLUMN после
+            // того, как оба прошли PRAGMA-проверку): колонка уже создана.
+            // Считаем успехом и не пишем в error_log, чтобы лог не засорялся.
+            if (stripos($msg, 'duplicate column') !== false) return true;
             if (stripos($msg, 'locked') === false && stripos($msg, 'busy') === false) {
                 error_log("SQLite exec failed: {$msg} | SQL: " . substr($sql, 0, 120));
                 return false;
@@ -413,7 +418,13 @@ try {
         }
         if ($exists) return true;
         if (@$db->exec("ALTER TABLE {$table} ADD COLUMN {$column} {$type}")) return true;
-        error_log("SQLite ADD COLUMN failed: " . $db->lastErrorMsg() . " | {$table}.{$column}");
+        // Гонка cron + UI + AI: два процесса проходят PRAGMA-проверку
+        // одновременно (колонки ещё нет), оба запускают ALTER; проигравший
+        // получает "duplicate column name". Колонка при этом УЖЕ создана —
+        // считаем это успешной идемпотентной миграцией и НЕ засоряем error_log.
+        $msg = $db->lastErrorMsg();
+        if (stripos($msg, 'duplicate column') !== false) return true;
+        error_log("SQLite ADD COLUMN failed: " . $msg . " | {$table}.{$column}");
         return false;
     };
 
@@ -463,13 +474,13 @@ try {
         error_log('SQLite: PRAGMA table_info(daily_stats) failed (likely locked): ' . $db->lastErrorMsg());
     }
     if (!$hasOffer) {
-        $db->exec('ALTER TABLE daily_stats ADD COLUMN offer_name TEXT');
+        $addColumnIfMissing('daily_stats', 'offer_name', 'TEXT');
     }
     if (!$hasOfferId) {
-        $db->exec('ALTER TABLE daily_stats ADD COLUMN offer_id TEXT NOT NULL DEFAULT \'\'');
+        $addColumnIfMissing('daily_stats', 'offer_id', "TEXT NOT NULL DEFAULT ''");
     }
     if (!$hasRawClicks) {
-        $db->exec('ALTER TABLE daily_stats ADD COLUMN raw_clicks INTEGER DEFAULT 0');
+        $addColumnIfMissing('daily_stats', 'raw_clicks', 'INTEGER DEFAULT 0');
     }
 
     // «Истинные» уникальные клики за день в разрезе площадки (без offer/sub1).
@@ -528,7 +539,7 @@ try {
     $addColumnIfMissing('daily_stats',                  'pending_payout', 'REAL DEFAULT 0');
 
     // «Верхние цифры кабинета» leads.su — общая сводка по всему аккаунту за день,
-    // БЕЗ разбивки по площадкам/офферам/sub1. Источник — /webmaster/reports
+    // БЕЗ разбивки по площадкам/офферам/sub1. Источник — /webmaster/reports/summary
     // ?grouping=day (без platform_id и без fields), как рекомендует поддержка
     // Leads.su (п.1-3 их инструкции). Только эта цифра 1-в-1 совпадает с тем,
     // что показывает верхний блок ЛК и не зависит от площадок. Используется
@@ -565,9 +576,9 @@ try {
         error_log('SQLite: PRAGMA table_info(offers_cache) failed (likely locked): ' . $db->lastErrorMsg());
     }
     foreach (['market_epc','market_cr','market_ar','your_epc','your_cr'] as $col) {
-        if (!isset($existing[$col])) $db->exec("ALTER TABLE offers_cache ADD COLUMN {$col} REAL DEFAULT 0");
+        if (!isset($existing[$col])) $addColumnIfMissing('offers_cache', $col, 'REAL DEFAULT 0');
     }
-    if (!isset($existing['updated_at'])) $db->exec("ALTER TABLE offers_cache ADD COLUMN updated_at TEXT");
+    if (!isset($existing['updated_at'])) $addColumnIfMissing('offers_cache', 'updated_at', 'TEXT');
 
     // Миграция: добавляем sub1 (если его не было — это означает старую схему).
     if (!$hasSub1) {
@@ -1548,9 +1559,9 @@ function saveUniqueClicksByOfferRows($db, $rows, $offerMap = []) {
 
 /**
  * Сохраняет «общую сводку кабинета» leads.su за день в daily_account_totals.
- * Источник — /webmaster/reports?grouping=day без platform_id и без fields,
- * как рекомендует поддержка Leads.su (п.1-3 их инструкции). Этот ответ
- * возвращает ту же цифру, что показывает верхний блок ЛК — суммарные
+ * Источник — /webmaster/reports/summary?grouping=day без `fields` и без
+ * platform_id, как рекомендует поддержка Leads.su (п.1-3 их инструкции). Этот
+ * ответ возвращает ту же цифру, что показывает верхний блок ЛК — суммарные
  * unique_clicks/payout/pending_payout по ВСЕМУ кабинету независимо от
  * площадок. Используется для KPI первого блока дашборда (когда фильтры
  * площадки/sub1 = "all"), чтобы цифры дашборда сходились с цифрами в ЛК.
@@ -1607,12 +1618,17 @@ function saveAccountTotalsRows($db, $rows) {
 }
 
 /**
- * Загружает общую сводку кабинета /webmaster/reports?grouping=day за период
- * и UPSERT-ит в daily_account_totals. Возвращает [count_saved, errors].
+ * Загружает общую сводку кабинета /webmaster/reports/summary?grouping=day за
+ * период и UPSERT-ит в daily_account_totals. Возвращает [count_saved, errors].
  * Используется update_stats, refresh_unique_clicks и action=refresh_account_totals.
  *
- * ВАЖНО: эндпоинт /webmaster/reports (а не /reports/summary) и БЕЗ platform_id
- * — иначе уникальные клики уже не «общекабинетные», а сумма по площадкам.
+ * ВАЖНО: эндпоинт /webmaster/reports/summary БЕЗ параметра `fields` и БЕЗ
+ * platform_id. Только так leads.su возвращает РОВНО ОДНУ агрегированную строку
+ * на день по ВСЕМУ кабинету (общие показатели), с «общекабинетными» уникальными
+ * кликами и полной выручкой (payout + pending_payout). Эндпоинт /webmaster/reports
+ * (без /summary) отдаёт детализацию построчно (день × оффер × источник × sub1),
+ * и UPSERT ON CONFLICT(date) сохранял бы только ПОСЛЕДНЮЮ строку дня — фактически
+ * одну витрину/площадку, а не весь кабинет (это и была причина бага).
  * Hard cap на число итераций пагинации (200 × 500 = 100 000 строк) защищает
  * от зацикливания, если API внезапно перестанет уменьшать count.
  */
@@ -1623,7 +1639,7 @@ function fetchAndSaveAccountTotals($db, $token, $apiStart, $apiEnd) {
     $limit = 500;
     $maxIterations = 200;
     for ($i = 0; $i < $maxIterations; $i++) {
-        $url = "https://api.leads.su/webmaster/reports?token={$token}"
+        $url = "https://api.leads.su/webmaster/reports/summary?token={$token}"
              . "&start_date=" . urlencode($apiStart)
              . "&end_date="   . urlencode($apiEnd)
              . "&grouping=day"
@@ -3324,7 +3340,7 @@ if ($action === 'refresh_unique_clicks') {
     exit;
 }
 
-// 1e. Лёгкий бэкфилл «общей сводки кабинета» (только /webmaster/reports
+// 1e. Лёгкий бэкфилл «общей сводки кабинета» (только /webmaster/reports/summary
 // ?grouping=day без platform_id и без fields). Заполняет daily_account_totals
 // — источник цифр верхнего KPI-блока дашборда (как в ЛК leads.su).
 if ($action === 'refresh_account_totals') {
@@ -3593,11 +3609,11 @@ if ($action === 'update_stats') {
         $offset += $limit;
     }
 
-    // Четвёртый проход: «общая сводка кабинета» — /webmaster/reports?grouping=day
-    // БЕЗ platform_id и БЕЗ fields. Эти цифры идентичны тому, что показывает
-    // верхний блок ЛК leads.su (см. инструкцию поддержки Leads.su, п.1-3) и
-    // независимы от площадок. Используются фронтом для KPI-карточек верхнего
-    // блока дашборда, чтобы цифры сходились с кабинетом 1-в-1.
+    // Четвёртый проход: «общая сводка кабинета» — /webmaster/reports/summary
+    // ?grouping=day БЕЗ platform_id и БЕЗ fields. Эти цифры идентичны тому, что
+    // показывает верхний блок ЛК leads.su (см. инструкцию поддержки Leads.su,
+    // п.1-3) и независимы от площадок. Используются фронтом для KPI-карточек
+    // верхнего блока дашборда, чтобы цифры сходились с кабинетом 1-в-1.
     [$savedAccountTotals, $accountErrors] = fetchAndSaveAccountTotals($db, $token, $apiStart, $apiEnd);
     if ($accountErrors) $apiErrors = array_merge($apiErrors, $accountErrors);
 
