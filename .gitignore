@@ -7,3 +7,4 @@ ai.log
 cron.log
 .DS_Store
 ai_config.php
+leads_api_cooldown.txt
