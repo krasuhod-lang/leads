@@ -384,6 +384,11 @@ try {
         for ($i = 0; $i < 3; $i++) {
             if (@$db->exec($sql)) return true;
             $msg = $db->lastErrorMsg();
+            // "duplicate column name" — доброкачественная гонка миграций
+            // (cron + UI + AI одновременно делают ALTER ... ADD COLUMN после
+            // того, как оба прошли PRAGMA-проверку): колонка уже создана.
+            // Считаем успехом и не пишем в error_log, чтобы лог не засорялся.
+            if (stripos($msg, 'duplicate column') !== false) return true;
             if (stripos($msg, 'locked') === false && stripos($msg, 'busy') === false) {
                 error_log("SQLite exec failed: {$msg} | SQL: " . substr($sql, 0, 120));
                 return false;
@@ -413,7 +418,13 @@ try {
         }
         if ($exists) return true;
         if (@$db->exec("ALTER TABLE {$table} ADD COLUMN {$column} {$type}")) return true;
-        error_log("SQLite ADD COLUMN failed: " . $db->lastErrorMsg() . " | {$table}.{$column}");
+        // Гонка cron + UI + AI: два процесса проходят PRAGMA-проверку
+        // одновременно (колонки ещё нет), оба запускают ALTER; проигравший
+        // получает "duplicate column name". Колонка при этом УЖЕ создана —
+        // считаем это успешной идемпотентной миграцией и НЕ засоряем error_log.
+        $msg = $db->lastErrorMsg();
+        if (stripos($msg, 'duplicate column') !== false) return true;
+        error_log("SQLite ADD COLUMN failed: " . $msg . " | {$table}.{$column}");
         return false;
     };
 
@@ -463,13 +474,13 @@ try {
         error_log('SQLite: PRAGMA table_info(daily_stats) failed (likely locked): ' . $db->lastErrorMsg());
     }
     if (!$hasOffer) {
-        $db->exec('ALTER TABLE daily_stats ADD COLUMN offer_name TEXT');
+        $addColumnIfMissing('daily_stats', 'offer_name', 'TEXT');
     }
     if (!$hasOfferId) {
-        $db->exec('ALTER TABLE daily_stats ADD COLUMN offer_id TEXT NOT NULL DEFAULT \'\'');
+        $addColumnIfMissing('daily_stats', 'offer_id', "TEXT NOT NULL DEFAULT ''");
     }
     if (!$hasRawClicks) {
-        $db->exec('ALTER TABLE daily_stats ADD COLUMN raw_clicks INTEGER DEFAULT 0');
+        $addColumnIfMissing('daily_stats', 'raw_clicks', 'INTEGER DEFAULT 0');
     }
 
     // «Истинные» уникальные клики за день в разрезе площадки (без offer/sub1).
@@ -565,9 +576,9 @@ try {
         error_log('SQLite: PRAGMA table_info(offers_cache) failed (likely locked): ' . $db->lastErrorMsg());
     }
     foreach (['market_epc','market_cr','market_ar','your_epc','your_cr'] as $col) {
-        if (!isset($existing[$col])) $db->exec("ALTER TABLE offers_cache ADD COLUMN {$col} REAL DEFAULT 0");
+        if (!isset($existing[$col])) $addColumnIfMissing('offers_cache', $col, 'REAL DEFAULT 0');
     }
-    if (!isset($existing['updated_at'])) $db->exec("ALTER TABLE offers_cache ADD COLUMN updated_at TEXT");
+    if (!isset($existing['updated_at'])) $addColumnIfMissing('offers_cache', 'updated_at', 'TEXT');
 
     // Миграция: добавляем sub1 (если его не было — это означает старую схему).
     if (!$hasSub1) {
