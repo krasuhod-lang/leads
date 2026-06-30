@@ -2867,6 +2867,76 @@ if ($action === 'get_unique_clicks') {
     echo json_encode(['status' => 'success', 'data' => $rows]);
     exit;
 }
+
+// 1c. Лёгкий бэкфилл «истинных» уникальных кликов за произвольный диапазон.
+// Дёргает только второй проход /reports/summary?grouping=day (БЕЗ offer_id/sub1)
+// — ровно так, как считается «уникальные клики» в верхней сводке кабинета
+// leads.su, — и UPSERT-ит результат в daily_unique_clicks. Нужен, чтобы KPI
+// «Клики» сходился с кабинетом на исторических диапазонах: cron обновляет
+// только последние 3 дня (см. cron_update.php), а полный update_stats к тому
+// же тянет тяжёлую детализацию. Этот эндпоинт фронтенд вызывает фоном, если
+// daily_unique_clicks не покрывает выбранный пользователем период.
+if ($action === 'refresh_unique_clicks') {
+    if (empty($start_date) || empty($end_date)) {
+        echo json_encode(['error' => 'start_date and end_date required']);
+        exit;
+    }
+    $token = leadsEffectiveToken($db, $token);
+    if (!$token) {
+        echo json_encode(['error' => 'token required']);
+        exit;
+    }
+
+    // Нормализация дат: API leads.su интерпретирует end_date как ИСКЛЮЧИТЕЛЬНУЮ
+    // границу, если время не указано (см. update_stats). Добиваем явное время.
+    $apiStart = (strlen($start_date) === 10) ? "{$start_date} 00:00:00" : $start_date;
+    $apiEnd   = (strlen($end_date)   === 10) ? "{$end_date} 23:59:59"   : $end_date;
+
+    $platforms = [];
+    if ($platform_id) {
+        $platforms[] = ['id' => (string)$platform_id, 'name' => ''];
+    } else {
+        $platforms = fetchPlatformsList($token);
+        if (!$platforms) $platforms = [['id' => '', 'name' => '']];
+    }
+
+    $savedUnique = 0;
+    $apiErrors = [];
+    foreach ($platforms as $p) {
+        $pid = $p['id'] ?? '';
+        $pname = $p['name'] ?? '';
+        $offset = 0;
+        $limit = 500;
+        while (true) {
+            $url = "https://api.leads.su/webmaster/reports/summary?token={$token}"
+                 . "&start_date=" . urlencode($apiStart)
+                 . "&end_date="   . urlencode($apiEnd)
+                 . "&grouping=day"
+                 . "&offset={$offset}&limit={$limit}";
+            if ($pid !== '') $url .= "&platform_id=" . urlencode($pid);
+
+            $data = apiGet($url);
+            if (isset($data['error'])) {
+                $apiErrors[] = ['platform_id' => $pid, 'error' => $data['error']];
+                error_log("refresh_unique_clicks: platform={$pid} error " . json_encode($data['error']));
+                break;
+            }
+            $rows = $data['data'] ?? [];
+            $savedUnique += saveUniqueClicksRows($db, $rows, $pid, $pname);
+            if (count($rows) < $limit) break;
+            $offset += $limit;
+        }
+    }
+
+    echo json_encode([
+        'status' => 'success',
+        'saved_unique_clicks' => $savedUnique,
+        'platforms_processed' => count($platforms),
+        'errors' => $apiErrors,
+    ]);
+    exit;
+}
+
 // 2. Сохранение статистики из интерфейса (при ручной загрузке через API)
 if ($action === 'save_stats') {
     $input = json_decode(file_get_contents('php://input'), true);

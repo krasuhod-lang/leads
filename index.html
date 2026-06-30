@@ -2709,6 +2709,23 @@ function trueUniqueClicksFor(filteredRows, opts = {}) {
   return matched ? sum : null;
 }
 
+// Проверка покрытия daily_unique_clicks выбранным диапазоном дат. Нужна,
+// чтобы решить, надо ли фоном дёрнуть refresh_unique_clicks для бэкфилла.
+// Считаем неполным, если массив пуст ИЛИ количество уникальных дат меньше
+// числа дней в диапазоне (исключая будущее: API не возвращает данные за
+// дни, которые ещё не наступили).
+function uniqueClicksCoverageIncomplete(rows, dFrom, dTo) {
+  if (!dFrom || !dTo) return false;
+  if (!Array.isArray(rows) || !rows.length) return true;
+  const today = new Date().toISOString().slice(0, 10);
+  const startMs = Date.parse(dFrom);
+  const endMs = Date.parse(dTo > today ? today : dTo);
+  if (!isFinite(startMs) || !isFinite(endMs) || endMs < startMs) return false;
+  const expectedDays = Math.floor((endMs - startMs) / 86400000) + 1;
+  const dates = new Set(rows.map(r => r.date));
+  return dates.size < expectedDays;
+}
+
 function periodKeyFromDate(date, grouping = 'date') {
   const d = String(date || '');
   if (!d) return '';
@@ -3314,6 +3331,22 @@ async function autoLoadSavedStats() {
   // «Истинные» уникальные клики per (date, platform) для KPI первого блока.
   // Грузим параллельно с saved-данными; пустой массив = тихий fallback.
   globalUniqueClicks = await fetchUniqueClicks(dFrom, dTo);
+  // Если daily_unique_clicks не покрывает выбранный диапазон (cron обновляет
+  // только последние 3 дня — на исторических периодах агрегат может быть
+  // пуст или частичен), фоном дозаливаем недостающие дни через лёгкий
+  // эндпоинт refresh_unique_clicks (только второй проход, без детализации).
+  // Без этого KPI «Клики» падает на bucket-sum из daily_stats и переоценивает
+  // трафик на 20-60% против цифры в кабинете leads.su.
+  if (uniqueClicksCoverageIncomplete(globalUniqueClicks, dFrom, dTo)) {
+    try {
+      const refresh = await fetchJsonSafe(buildApiUrl({
+        action: 'refresh_unique_clicks', start_date: dFrom, end_date: dTo
+      }));
+      if (refresh && refresh.status === 'success') {
+        globalUniqueClicks = await fetchUniqueClicks(dFrom, dTo);
+      }
+    } catch(e) { console.warn('refresh_unique_clicks failed:', e); }
+  }
   if (saved && saved.length) {
     // Build a key→name lookup of in-memory data so we can preserve real offer names
     // when DB returns "Unknown" (issue 1: при смене диапазона имена не должны теряться).
@@ -3558,13 +3591,19 @@ function renderUI() {
   const noDataHint = !globalRawData.length ? '<div class="col-span-full text-center text-slate-500 text-sm py-2">Нет данных за выбранный период. Нажмите « Загрузить из кабинета» для загрузки.</div>' : '';
   const clicksTip = usingTrueUnique
     ? 'Уникальные клики из Leads.su за выбранный период (как в верхней сводке кабинета). Считаются отдельным запросом /reports/summary?grouping=day без детализации по offer/sub1, чтобы один и тот же посетитель не учитывался дважды при разных подметках. Знаменатель для CR и EPC.'
-    : 'Сумма unique_clicks из Leads.su в текущем срезе (фильтр sub1 активен — точная уникальность за период недоступна, цифра может быть выше реальной). Базовая метрика трафика — знаменатель для CR и EPC.';
+    : (sub1f && sub1f !== 'all'
+        ? 'Сумма unique_clicks из Leads.su в текущем срезе (фильтр sub1 активен — точная уникальность за период недоступна, цифра может быть выше реальной). Базовая метрика трафика — знаменатель для CR и EPC.'
+        : '⚠ Уникальные клики из кабинета leads.su пока недоступны — показываем сумму unique_clicks по детальным бакетам (date×платформа×оффер×sub1). Эта цифра завышена на 20-60% против кабинета (один посетитель учитывается в каждом бакете). Чтобы свести с кабинетом, нажмите «Загрузить из кабинета» — фон автоматически дозальёт daily_unique_clicks.');
   const epcTip = usingTrueUnique
     ? 'EPC = Доход ÷ Уникальные клики (как в кабинете leads.su). Сколько ₽ в среднем приносит один уникальный клик.'
-    : 'EPC (Earnings Per Click) = Доход ÷ Клики. Сколько ₽ в среднем приносит один клик. В текущем срезе с фильтром sub1 знаменатель — сумма по детальным строкам.';
+    : (sub1f && sub1f !== 'all'
+        ? 'EPC (Earnings Per Click) = Доход ÷ Клики. Сколько ₽ в среднем приносит один клик. В текущем срезе с фильтром sub1 знаменатель — сумма по детальным строкам.'
+        : '⚠ EPC посчитан по завышенным bucket-clicks (агрегат daily_unique_clicks недоступен), фактическое значение из кабинета будет выше. Нажмите «Загрузить из кабинета» для синхронизации.');
   const crTip = usingTrueUnique
     ? 'CR (Conversion Rate) = Лиды ÷ Уникальные клики × 100% (как в кабинете leads.su).'
-    : 'CR (Conversion Rate) = Лиды ÷ Клики × 100%. В текущем срезе с фильтром sub1 знаменатель — сумма по детальным строкам.';
+    : (sub1f && sub1f !== 'all'
+        ? 'CR (Conversion Rate) = Лиды ÷ Клики × 100%. В текущем срезе с фильтром sub1 знаменатель — сумма по детальным строкам.'
+        : '⚠ CR посчитан по завышенным bucket-clicks (агрегат daily_unique_clicks недоступен), фактическое значение из кабинета будет выше.');
   document.getElementById('kpiCards').innerHTML = noDataHint + `
     ${kpiCard('Клики', clicksForKpi.toLocaleString('ru-RU'), clicksForKpi, plan.clicks, v => Math.round(v).toLocaleString('ru-RU'), clicksTip)}
     ${kpiCard('Лиды', t.conversions.toLocaleString('ru-RU'), t.conversions, plan.conversions, v => Math.round(v).toLocaleString('ru-RU'), 'Сумма конверсий (поданных заявок) из Leads.su. CR = Лиды ÷ Клики × 100%.')}
