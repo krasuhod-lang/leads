@@ -475,14 +475,29 @@ try {
     // по офферу в кабинете leads.su. Используются в таблице «Офферы» дашборда
     // вместо суммирования bucket-unique-clicks по детальным строкам daily_stats
     // (которое переоценивает трафик, см. saveReportRows).
+    // NB: помимо unique_clicks из того же ответа /reports/summary?fields=offer_id
+    // храним выручку (payout) и конверсии — они так же аддитивны по сумме
+    // офферов и дат и совпадают с цифрой в строке оффера в кабинете leads.su,
+    // тогда как bucket-сумма из daily_stats (offer_id × source_id × sub1) может
+    // расходиться из-за строк с пустым offer_id или сегментирования по sub1.
+    // EPC в таблице офферов = revenue / unique_clicks, и оба числителя/знаменатели
+    // должны браться из одного и того же среза, иначе формула «плывёт».
     $safeExec('CREATE TABLE IF NOT EXISTS daily_unique_clicks_by_offer (
         date TEXT NOT NULL,
         offer_id TEXT NOT NULL DEFAULT \'\',
         offer_name TEXT,
         unique_clicks INTEGER DEFAULT 0,
         raw_clicks INTEGER DEFAULT 0,
+        revenue REAL DEFAULT 0,
+        conversions INTEGER DEFAULT 0,
+        approved INTEGER DEFAULT 0,
         PRIMARY KEY(date, offer_id)
     )');
+    // Миграция для уже существующих БД (PR #51): добавляем недостающие колонки.
+    // SQLite ругается, если колонка уже есть — глушим ошибку через $safeExec.
+    $safeExec('ALTER TABLE daily_unique_clicks_by_offer ADD COLUMN revenue REAL DEFAULT 0');
+    $safeExec('ALTER TABLE daily_unique_clicks_by_offer ADD COLUMN conversions INTEGER DEFAULT 0');
+    $safeExec('ALTER TABLE daily_unique_clicks_by_offer ADD COLUMN approved INTEGER DEFAULT 0');
 
     // Кэш офферов (offer_id → имя + рыночные показатели EPC).
     // Используется для (а) повторного резолва имён в "Unknown"-записях,
@@ -1355,12 +1370,15 @@ function saveUniqueClicksRows($db, $rows, $defaultSourceId = '', $defaultSourceN
 function saveUniqueClicksByOfferRows($db, $rows, $offerMap = []) {
     if (!$rows) return 0;
     $stmt = $db->prepare('INSERT INTO daily_unique_clicks_by_offer
-        (date, offer_id, offer_name, unique_clicks, raw_clicks)
-        VALUES (:date, :offer_id, :offer_name, :unique_clicks, :raw_clicks)
+        (date, offer_id, offer_name, unique_clicks, raw_clicks, revenue, conversions, approved)
+        VALUES (:date, :offer_id, :offer_name, :unique_clicks, :raw_clicks, :revenue, :conversions, :approved)
         ON CONFLICT(date, offer_id) DO UPDATE SET
             offer_name = COALESCE(NULLIF(excluded.offer_name, \'\'), daily_unique_clicks_by_offer.offer_name),
             unique_clicks = excluded.unique_clicks,
-            raw_clicks = excluded.raw_clicks');
+            raw_clicks = excluded.raw_clicks,
+            revenue = excluded.revenue,
+            conversions = excluded.conversions,
+            approved = excluded.approved');
     $inserted = 0;
     foreach ($rows as $row) {
         $rawDate = $row['period_day']
@@ -1385,12 +1403,21 @@ function saveUniqueClicksByOfferRows($db, $rows, $offerMap = []) {
             ? (int)$row['unique_clicks']
             : 0;
         $raw = (int)($row['clicks'] ?? $row['unique_clicks'] ?? 0);
+        // Те же поля, что в saveReportRows() — формула выручки/конверсий
+        // должна совпадать, чтобы EPC = revenue / unique_clicks был сравним
+        // между «истинным» агрегатом по офферу и bucket-данными.
+        $revenue = (float)($row['payout'] ?? 0);
+        $conversions = (int)($row['unique_conversions'] ?? $row['conversions'] ?? 0);
+        $approved = (int)($row['conversions_approved'] ?? $row['conversionsapproved'] ?? 0);
 
         $stmt->bindValue(':date', $date, SQLITE3_TEXT);
         $stmt->bindValue(':offer_id', $offerId, SQLITE3_TEXT);
         $stmt->bindValue(':offer_name', $offerName, SQLITE3_TEXT);
         $stmt->bindValue(':unique_clicks', $unique, SQLITE3_INTEGER);
         $stmt->bindValue(':raw_clicks', $raw, SQLITE3_INTEGER);
+        $stmt->bindValue(':revenue', $revenue, SQLITE3_FLOAT);
+        $stmt->bindValue(':conversions', $conversions, SQLITE3_INTEGER);
+        $stmt->bindValue(':approved', $approved, SQLITE3_INTEGER);
         if ($stmt->execute()) $inserted++;
         $stmt->reset();
     }
@@ -2951,7 +2978,10 @@ if ($action === 'get_unique_clicks_by_offer') {
             THEN o.name
             ELSE COALESCE(d.offer_name, \'\')
         END AS offer_name,
-        d.unique_clicks, d.raw_clicks
+        d.unique_clicks, d.raw_clicks,
+        COALESCE(d.revenue, 0) AS revenue,
+        COALESCE(d.conversions, 0) AS conversions,
+        COALESCE(d.approved, 0) AS approved
         FROM daily_unique_clicks_by_offer d
         LEFT JOIN offers_cache o ON o.offer_id = d.offer_id AND d.offer_id != \'\' AND d.offer_id NOT LIKE \'name:%\'
         WHERE d.date BETWEEN :start AND :end ORDER BY d.date');

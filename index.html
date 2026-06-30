@@ -2905,7 +2905,10 @@ async function fetchUniqueClicksByOffer(start, end) {
         offer_id: String(r.offer_id || ''),
         offer: r.offer_name || '',
         unique_clicks: Number(r.unique_clicks) || 0,
-        raw_clicks: Number(r.raw_clicks) || 0
+        raw_clicks: Number(r.raw_clicks) || 0,
+        revenue: Number(r.revenue) || 0,
+        conversions: Number(r.conversions) || 0,
+        approved: Number(r.approved) || 0
       }));
     }
   } catch(e) { console.warn('fetchUniqueClicksByOffer:', e); }
@@ -3950,8 +3953,18 @@ function renderTables() {
   }
   // Офферы: используем агрегат только когда нет среза по площадке —
   // daily_unique_clicks_by_offer уникализирует по date×offer без platform.
+  // Из того же ответа /reports/summary?fields=offer_id храним и подменяем
+  // не только клики, но и revenue/conversions/approved — все 4 поля должны
+  // быть из одного среза, иначе EPC = revenue/unique_clicks «плывёт»
+  // (см. PR #51 — там подменяли только клики, и EPC получался смещённым).
   const trueClicksByOffer = {};
   const trueClicksByOfferId = {};
+  const trueRevenueByOffer = {};
+  const trueRevenueByOfferId = {};
+  const trueConversionsByOffer = {};
+  const trueConversionsByOfferId = {};
+  const trueApprovedByOffer = {};
+  const trueApprovedByOfferId = {};
   const canUseTrueOfferClicks = (selSrc === 'all')
     && Array.isArray(globalUniqueClicksByOffer)
     && globalUniqueClicksByOffer.length > 0;
@@ -3965,8 +3978,18 @@ function renderTables() {
       if (dFrom && u.date < dFrom) continue;
       if (dTo && u.date > dTo) continue;
       const name = idToOfferName[u.offer_id] || u.offer || '';
-      if (u.offer_id) trueClicksByOfferId[u.offer_id] = (trueClicksByOfferId[u.offer_id] || 0) + (u.unique_clicks || 0);
-      if (name) trueClicksByOffer[name] = (trueClicksByOffer[name] || 0) + (u.unique_clicks || 0);
+      if (u.offer_id) {
+        trueClicksByOfferId[u.offer_id]      = (trueClicksByOfferId[u.offer_id]      || 0) + (u.unique_clicks || 0);
+        trueRevenueByOfferId[u.offer_id]     = (trueRevenueByOfferId[u.offer_id]     || 0) + (u.revenue       || 0);
+        trueConversionsByOfferId[u.offer_id] = (trueConversionsByOfferId[u.offer_id] || 0) + (u.conversions   || 0);
+        trueApprovedByOfferId[u.offer_id]    = (trueApprovedByOfferId[u.offer_id]    || 0) + (u.approved      || 0);
+      }
+      if (name) {
+        trueClicksByOffer[name]      = (trueClicksByOffer[name]      || 0) + (u.unique_clicks || 0);
+        trueRevenueByOffer[name]     = (trueRevenueByOffer[name]     || 0) + (u.revenue       || 0);
+        trueConversionsByOffer[name] = (trueConversionsByOffer[name] || 0) + (u.conversions   || 0);
+        trueApprovedByOffer[name]    = (trueApprovedByOffer[name]    || 0) + (u.approved      || 0);
+      }
     }
   }
 
@@ -3984,18 +4007,30 @@ function renderTables() {
   });
   let oRows = Object.entries(offMap).map(([n,v]) => {
     let clicks = v.clicks;
+    let revenue = v.revenue;
+    let conversions = v.conversions;
+    let approved = v.approved;
     if (canUseTrueOfferClicks) {
-      const byId = v.offer_id ? trueClicksByOfferId[v.offer_id] : undefined;
-      const byName = trueClicksByOffer[n];
-      if (byId != null) clicks = byId;
-      else if (byName != null) clicks = byName;
+      const pick = (byId, byName) => {
+        if (v.offer_id && byId[v.offer_id] != null) return byId[v.offer_id];
+        if (byName[n] != null) return byName[n];
+        return null;
+      };
+      const tc = pick(trueClicksByOfferId, trueClicksByOffer);
+      const tr = pick(trueRevenueByOfferId, trueRevenueByOffer);
+      const tcv = pick(trueConversionsByOfferId, trueConversionsByOffer);
+      const ta = pick(trueApprovedByOfferId, trueApprovedByOffer);
+      if (tc != null) clicks = tc;
+      if (tr != null) revenue = tr;
+      if (tcv != null) conversions = tcv;
+      if (ta != null) approved = ta;
     }
-    const epc = clicks ? (v.revenue/clicks) : 0;
+    const epc = clicks ? (revenue/clicks) : 0;
     const market = (v.offer_id && offerMarketMap[v.offer_id]) || offerMarketByName[n] || null;
     const marketEpc = market ? market.market_epc : 0;
     return {
-      name: n, clicks, conversions: v.conversions, approved: v.approved, revenue: v.revenue,
-      epc, approveRate: v.conversions ? (v.approved/v.conversions*100) : 0,
+      name: n, clicks, conversions, approved, revenue,
+      epc, approveRate: conversions ? (approved/conversions*100) : 0,
       marketEpc, epcDelta: marketEpc > 0 ? (epc - marketEpc) : 0
     };
   });
