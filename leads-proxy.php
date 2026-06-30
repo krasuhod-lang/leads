@@ -451,6 +451,22 @@ try {
         $db->exec('ALTER TABLE daily_stats ADD COLUMN raw_clicks INTEGER DEFAULT 0');
     }
 
+    // «Истинные» уникальные клики за день в разрезе площадки (без offer/sub1).
+    // Нужны для KPI первого блока дашборда и расчёта EPC/CR: при детальной
+    // группировке (day × platform × offer × sub1) leads.su считает уникальность
+    // внутри каждого бакета, и суммирование таких unique_clicks даёт переоценку
+    // на 20–30% против цифры в кабинете. Эта таблица заполняется отдельным
+    // запросом /reports/summary?grouping=day без поля aff_sub1/offer_id —
+    // ровно так же, как «уникальные» считаются в верхней сводке кабинета.
+    $safeExec('CREATE TABLE IF NOT EXISTS daily_unique_clicks (
+        date TEXT NOT NULL,
+        source_id TEXT NOT NULL DEFAULT \'all\',
+        source_name TEXT,
+        unique_clicks INTEGER DEFAULT 0,
+        raw_clicks INTEGER DEFAULT 0,
+        PRIMARY KEY(date, source_id)
+    )');
+
     // Кэш офферов (offer_id → имя + рыночные показатели EPC).
     // Используется для (а) повторного резолва имён в "Unknown"-записях,
     // (б) хранения общерыночной статистики (detail_stats.system.other_epc и пр.).
@@ -1254,6 +1270,60 @@ function saveReportRows($db, $rows, $offerMap) {
         error_log("saveReportRows: leads.su ответил без unique_clicks ни в одной из {$totalRows} строк — clicks=0 для всего батча, EPC будет нулевым. Проверьте доступ аккаунта к unique_clicks в /reports/summary.");
     } elseif ($missingUniqueClicks > 0) {
         error_log("saveReportRows: leads.su не вернул unique_clicks в {$missingUniqueClicks} из {$totalRows} строк — затронутые строки сохранены с clicks=0.");
+    }
+    return $inserted;
+}
+
+/**
+ * Сохраняет «истинные» уникальные клики за день в разрезе площадки в
+ * daily_unique_clicks. Источник — отдельный вызов /reports/summary
+ * grouping=day без полей offer_id/aff_sub1: leads.su в этом режиме отдаёт
+ * `unique_clicks` уникализированные по дню × платформе (как в верхней
+ * сводке кабинета), а не внутри детального бакета. Только эти значения
+ * аддитивны по сумме площадок и дат и совпадают с цифрой «уникальные
+ * клики» в личном кабинете leads.su.
+ */
+function saveUniqueClicksRows($db, $rows, $defaultSourceId = '', $defaultSourceName = '') {
+    if (!$rows) return 0;
+    $stmt = $db->prepare('INSERT INTO daily_unique_clicks
+        (date, source_id, source_name, unique_clicks, raw_clicks)
+        VALUES (:date, :source_id, :source_name, :unique_clicks, :raw_clicks)
+        ON CONFLICT(date, source_id) DO UPDATE SET
+            source_name = COALESCE(NULLIF(excluded.source_name, \'\'), daily_unique_clicks.source_name),
+            unique_clicks = excluded.unique_clicks,
+            raw_clicks = excluded.raw_clicks');
+    $inserted = 0;
+    foreach ($rows as $row) {
+        $rawDate = $row['period_day']
+            ?? $row['period_hour']
+            ?? $row['periodday']
+            ?? $row['period']
+            ?? $row['date']
+            ?? null;
+        if (!$rawDate) continue;
+        $date = substr((string)$rawDate, 0, 10);
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) continue;
+
+        $sourceName = cleanSourceName($row['source'] ?? $row['platform_name'] ?? $defaultSourceName ?? '');
+        $rawSourceId = $row['platform_id'] ?? $row['platformid'] ?? $defaultSourceId ?? '';
+        $sourceId = ($rawSourceId !== '' && $rawSourceId !== null)
+            ? (string)$rawSourceId
+            : ($sourceName !== '' ? syntheticSourceId($sourceName) : 'all');
+
+        // unique_clicks может отсутствовать (см. saveReportRows). В этом случае
+        // фиксируем 0 — KPI на фронте сделает fallback к детальной сумме.
+        $unique = array_key_exists('unique_clicks', $row) && $row['unique_clicks'] !== null
+            ? (int)$row['unique_clicks']
+            : 0;
+        $raw = (int)($row['clicks'] ?? $row['unique_clicks'] ?? 0);
+
+        $stmt->bindValue(':date', $date, SQLITE3_TEXT);
+        $stmt->bindValue(':source_id', $sourceId, SQLITE3_TEXT);
+        $stmt->bindValue(':source_name', $sourceName, SQLITE3_TEXT);
+        $stmt->bindValue(':unique_clicks', $unique, SQLITE3_INTEGER);
+        $stmt->bindValue(':raw_clicks', $raw, SQLITE3_INTEGER);
+        if ($stmt->execute()) $inserted++;
+        $stmt->reset();
     }
     return $inserted;
 }
@@ -2778,6 +2848,25 @@ if ($action === 'get_stats') {
     exit;
 }
 
+// 1b. «Истинные» уникальные клики per (date, source_id) — для KPI первого
+// блока дашборда. См. saveUniqueClicksRows() / daily_unique_clicks.
+if ($action === 'get_unique_clicks') {
+    if (!$start_date || !$end_date) {
+        echo json_encode(['error' => 'start_date and end_date required']);
+        exit;
+    }
+    $stmt = $db->prepare('SELECT date, source_id, source_name, unique_clicks, raw_clicks
+        FROM daily_unique_clicks WHERE date BETWEEN :start AND :end ORDER BY date');
+    $stmt->bindValue(':start', $start_date, SQLITE3_TEXT);
+    $stmt->bindValue(':end', $end_date, SQLITE3_TEXT);
+    $res = $stmt->execute();
+    $rows = [];
+    while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
+        $rows[] = $row;
+    }
+    echo json_encode(['status' => 'success', 'data' => $rows]);
+    exit;
+}
 // 2. Сохранение статистики из интерфейса (при ручной загрузке через API)
 if ($action === 'save_stats') {
     $input = json_decode(file_get_contents('php://input'), true);
@@ -2944,9 +3033,41 @@ if ($action === 'update_stats') {
     }
 
     $saved = saveReportRows($db, $allRows, $offerMap);
+
+    // Второй проход: «истинные» уникальные клики per (date, platform) без
+    // детализации по offer/sub1. Только эта сумма совпадает с цифрой
+    // «уникальные клики» в кабинете leads.su. Используется фронтом для KPI.
+    $savedUnique = 0;
+    foreach ($platforms as $p) {
+        $pid = $p['id'] ?? '';
+        $pname = $p['name'] ?? '';
+        $offset = 0;
+        $limit = 500;
+        while (true) {
+            $url = "https://api.leads.su/webmaster/reports/summary?token={$token}"
+                 . "&start_date=" . urlencode($apiStart)
+                 . "&end_date="   . urlencode($apiEnd)
+                 . "&grouping={$grouping}"
+                 . "&offset={$offset}&limit={$limit}";
+            if ($pid !== '') $url .= "&platform_id=" . urlencode($pid);
+
+            $data = apiGet($url);
+            if (isset($data['error'])) {
+                $apiErrors[] = ['platform_id' => $pid, 'scope' => 'unique_clicks', 'error' => $data['error']];
+                error_log("update_stats(unique): platform={$pid} error " . json_encode($data['error']));
+                break;
+            }
+            $rows = $data['data'] ?? [];
+            $savedUnique += saveUniqueClicksRows($db, $rows, $pid, $pname);
+            if (count($rows) < $limit) break;
+            $offset += $limit;
+        }
+    }
+
     echo json_encode([
         'status' => 'success',
         'saved' => $saved,
+        'saved_unique_clicks' => $savedUnique,
         'platforms_processed' => count($platforms),
         'errors' => $apiErrors,
     ]);

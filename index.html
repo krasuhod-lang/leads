@@ -2163,6 +2163,11 @@ let globalRawData = [];
 let bouncesData = [];
 let bannerData = [];
 let planBaselineData = [];
+// «Истинные» уникальные клики per (date, source_id) из daily_unique_clicks
+// (см. saveUniqueClicksRows на бэке). Используются для KPI первого блока
+// дашборда / EPC / CR — единственный аддитивный по площадкам/датам срез
+// уникальных кликов, сходящийся с цифрой в кабинете leads.su.
+let globalUniqueClicks = [];
 let planFactState = { from: '', to: '', baselineFrom: '', baselineTo: '', days: 0 };
 let offerMarketMap = {}; // offer_id → { name, market_epc, market_cr, market_ar, your_epc, your_cr }
 let offerMarketByName = {}; // offer_name → market data (для рядов без offer_id из старой БД)
@@ -2679,6 +2684,31 @@ function metricsFromTotals(t) {
   };
 }
 
+// «Истинные» уникальные клики для текущего KPI-среза.
+// Возвращает число (если агрегат применим) либо null (нужен fallback к
+// sumLeadRows). Применим, когда нет фильтра по sub1 — daily_unique_clicks
+// уникализирован по (date, platform), и внутри площадки sub1-срез не
+// аддитивен. Фильтр sourceFilter учитывается по set source_id из filteredRows.
+function trueUniqueClicksFor(filteredRows, opts = {}) {
+  const sub1Filter = (opts.sub1Filter !== undefined)
+    ? opts.sub1Filter
+    : (document.getElementById('chartSub1Filter') || {}).value;
+  if (sub1Filter && sub1Filter !== 'all') return null;
+  if (!globalUniqueClicks || !globalUniqueClicks.length) return null;
+  const dFrom = (document.getElementById('dateFrom') || {}).value || '';
+  const dTo   = (document.getElementById('dateTo')   || {}).value || '';
+  const sourceIds = new Set((filteredRows || []).map(r => r.source_id || 'all'));
+  let sum = 0, matched = 0;
+  for (const u of globalUniqueClicks) {
+    if (dFrom && u.date < dFrom) continue;
+    if (dTo && u.date > dTo) continue;
+    if (sourceIds.size && !sourceIds.has(u.source_id)) continue;
+    sum += u.unique_clicks;
+    matched++;
+  }
+  return matched ? sum : null;
+}
+
 function periodKeyFromDate(date, grouping = 'date') {
   const d = String(date || '');
   if (!d) return '';
@@ -2817,6 +2847,26 @@ async function fetchSavedStats(start, end) {
     if (json.status === 'success' && json.data.length) return json.data;
   } catch(e) { console.warn(e); }
   return null;
+}
+
+// «Истинные» уникальные клики per (date, source_id) — для KPI первого блока.
+// Возвращает массив {date, source_id, source, unique_clicks, raw_clicks}.
+// При ошибке/пустом ответе возвращает [], а KPI делает fallback к старой
+// сумме `clicks` из детального среза (см. trueUniqueClicksFor()).
+async function fetchUniqueClicks(start, end) {
+  try {
+    const json = await fetchJsonSafe(buildApiUrl({ action: 'get_unique_clicks', start_date: start, end_date: end }));
+    if (json.status === 'success' && Array.isArray(json.data)) {
+      return json.data.map(r => ({
+        date: r.date,
+        source_id: r.source_id || 'all',
+        source: mergeSourceName(r.source_name),
+        unique_clicks: Number(r.unique_clicks) || 0,
+        raw_clicks: Number(r.raw_clicks) || 0
+      }));
+    }
+  } catch(e) { console.warn('fetchUniqueClicks:', e); }
+  return [];
 }
 
 async function fetchStatsRange(start, end) {
@@ -3261,6 +3311,9 @@ async function autoLoadSavedStats() {
   // Подтягиваем рыночные EPC офферов из кэша
   await loadOfferMarketData();
   const saved = await fetchSavedStats(dFrom, dTo);
+  // «Истинные» уникальные клики per (date, platform) для KPI первого блока.
+  // Грузим параллельно с saved-данными; пустой массив = тихий fallback.
+  globalUniqueClicks = await fetchUniqueClicks(dFrom, dTo);
   if (saved && saved.length) {
     // Build a key→name lookup of in-memory data so we can preserve real offer names
     // when DB returns "Unknown" (issue 1: при смене диапазона имена не должны теряться).
@@ -3483,9 +3536,16 @@ function renderUI() {
   if (sf !== 'all') data = data.filter(r => r.source === sf);
   if (sub1f !== 'all') data = data.filter(r => r.sub1 === sub1f);
   const t = sumLeadRows(data);
-  const cr = t.clicks ? (t.conversions/t.clicks*100) : 0;
+  // «Истинные» уникальные клики (как в кабинете leads.su) — если sub1-фильтр
+  // выключен и есть aggregate в daily_unique_clicks. Иначе fallback к сумме
+  // детальных строк (она может быть завышена из-за дублей в разрезе
+  // offer×sub1, см. trueUniqueClicksFor / saveUniqueClicksRows).
+  const trueClicks = trueUniqueClicksFor(data, { sub1Filter: sub1f });
+  const clicksForKpi = (trueClicks !== null) ? trueClicks : t.clicks;
+  const usingTrueUnique = (trueClicks !== null);
+  const cr = clicksForKpi ? (t.conversions/clicksForKpi*100) : 0;
   const ar = t.conversions ? (t.approved/t.conversions*100) : 0;
-  const epc = t.clicks ? (t.revenue/t.clicks) : 0;
+  const epc = clicksForKpi ? (t.revenue/clicksForKpi) : 0;
   let baseline = [...planBaselineData];
   if (sf !== 'all') baseline = baseline.filter(r => r.source === sf);
   if (sub1f !== 'all') baseline = baseline.filter(r => r.sub1 === sub1f);
@@ -3496,13 +3556,22 @@ function renderUI() {
     <div class="kpi-pf mt-3">${planFactBar(fact, planValue, fmt)}</div>
   </div>`;
   const noDataHint = !globalRawData.length ? '<div class="col-span-full text-center text-slate-500 text-sm py-2">Нет данных за выбранный период. Нажмите « Загрузить из кабинета» для загрузки.</div>' : '';
+  const clicksTip = usingTrueUnique
+    ? 'Уникальные клики из Leads.su за выбранный период (как в верхней сводке кабинета). Считаются отдельным запросом /reports/summary?grouping=day без детализации по offer/sub1, чтобы один и тот же посетитель не учитывался дважды при разных подметках. Знаменатель для CR и EPC.'
+    : 'Сумма unique_clicks из Leads.su в текущем срезе (фильтр sub1 активен — точная уникальность за период недоступна, цифра может быть выше реальной). Базовая метрика трафика — знаменатель для CR и EPC.';
+  const epcTip = usingTrueUnique
+    ? 'EPC = Доход ÷ Уникальные клики (как в кабинете leads.su). Сколько ₽ в среднем приносит один уникальный клик.'
+    : 'EPC (Earnings Per Click) = Доход ÷ Клики. Сколько ₽ в среднем приносит один клик. В текущем срезе с фильтром sub1 знаменатель — сумма по детальным строкам.';
+  const crTip = usingTrueUnique
+    ? 'CR (Conversion Rate) = Лиды ÷ Уникальные клики × 100% (как в кабинете leads.su).'
+    : 'CR (Conversion Rate) = Лиды ÷ Клики × 100%. В текущем срезе с фильтром sub1 знаменатель — сумма по детальным строкам.';
   document.getElementById('kpiCards').innerHTML = noDataHint + `
-    ${kpiCard('Клики', t.clicks.toLocaleString('ru-RU'), t.clicks, plan.clicks, v => Math.round(v).toLocaleString('ru-RU'), 'Сумма кликов из Leads.su за выбранный период с учётом фильтров «Площадка» и «Sub1». Базовая метрика трафика — знаменатель для CR и EPC.')}
+    ${kpiCard('Клики', clicksForKpi.toLocaleString('ru-RU'), clicksForKpi, plan.clicks, v => Math.round(v).toLocaleString('ru-RU'), clicksTip)}
     ${kpiCard('Лиды', t.conversions.toLocaleString('ru-RU'), t.conversions, plan.conversions, v => Math.round(v).toLocaleString('ru-RU'), 'Сумма конверсий (поданных заявок) из Leads.su. CR = Лиды ÷ Клики × 100%.')}
     ${kpiCard('Approve %', ar.toFixed(2) + '%', ar, plan.approveRate, v => v.toFixed(1) + '%', 'Approve Rate = одобренные заявки ÷ всего лидов × 100%. Показывает, насколько качественный трафик доходит до выплаты МФО.')}
     ${kpiCard('Доход (₽)', Math.round(t.revenue).toLocaleString('ru-RU') + ' ₽', t.revenue, plan.revenue, v => Math.round(v).toLocaleString('ru-RU') + ' ₽', 'Сумма выплат из Leads.su за период по одобренным заявкам с учётом активных фильтров.')}
-    ${kpiCard('EPC', `<span class="text-emerald-400">${epc.toFixed(2)} ₽</span>`, epc, plan.epc, v => v.toFixed(2) + ' ₽', 'EPC (Earnings Per Click) = Доход ÷ Клики. Сколько ₽ в среднем приносит один клик. Главный показатель эффективности трафика.')}
-    ${kpiCard('CR %', cr.toFixed(2) + '%', cr, plan.cr, v => v.toFixed(1) + '%', 'CR (Conversion Rate) = Лиды ÷ Клики × 100%. Какая доля кликнувших оставила заявку.')}`;
+    ${kpiCard('EPC', `<span class="text-emerald-400">${epc.toFixed(2)} ₽</span>`, epc, plan.epc, v => v.toFixed(2) + ' ₽', epcTip)}
+    ${kpiCard('CR %', cr.toFixed(2) + '%', cr, plan.cr, v => v.toFixed(1) + '%', crTip)}`;
   renderFunnel(data, sf);
   renderRejectRevenueAnalysis(data, sf);
   markDataUpdated();
@@ -3551,19 +3620,24 @@ function renderFunnel(data, sourceFilter = 'all') {
   const box = document.getElementById('funnelBox');
   if (!box) return;
   const t = sumLeadRows(data);
+  // Этап «Клик по Leads.su» — это уникальные клики (как в кабинете). Берём
+  // истинные uniques из daily_unique_clicks; fallback к сумме детальных
+  // строк, если фильтр sub1 активен или aggregate недоступен.
+  const trueClicks = trueUniqueClicksFor(data);
+  const leadsClicks = (trueClicks !== null) ? trueClicks : t.clicks;
   const bannerImpressions = bannerData.reduce((s, d) => s + (Number(d.impressions) || 0), 0);
   const bannerClicks = bannerData.reduce((s, d) => s + (Number(d.clicks) || 0), 0);
   const stages = [
     { label: 'Показ баннера', value: bannerImpressions, hint: 'Яндекс.Метрика: целевые посетители цели показа' },
     { label: 'Клик по баннеру', value: bannerClicks, hint: 'Яндекс.Метрика: целевые посетители цели клика' },
-    { label: 'Клик по Leads.su', value: t.clicks },
+    { label: 'Клик по Leads.su', value: leadsClicks },
     { label: 'Заявка в Leads.su', value: t.conversions },
     { label: 'Одобренная заявка в Leads.su', value: t.approved }
   ];
   const initial = stages[0].value || 0;
   const max = Math.max(1, ...stages.map(s => s.value || 0));
   const micro = (a, b) => a > 0 ? (b / a * 100) : 0;
-  const macroLeadClick = initial > 0 ? (t.clicks / initial * 100) : 0;
+  const macroLeadClick = initial > 0 ? (leadsClicks / initial * 100) : 0;
   const macroApprove = initial > 0 ? (t.approved / initial * 100) : 0;
   const stageHtml = stages.map((s, idx) => {
     const width = Math.min(100, Math.max(0, s.value / max * 100));
