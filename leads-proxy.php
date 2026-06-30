@@ -929,28 +929,91 @@ try {
  * Выполняет GET-запрос к API Leads.su с обработкой ошибок
  */
 function apiGet($url, $timeout = 30) {
-    $ch = curl_init();
-    curl_setopt_array($ch, [
-        CURLOPT_URL => $url,
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_FOLLOWLOCATION => true,
-        CURLOPT_TIMEOUT => $timeout,
-        CURLOPT_SSL_VERIFYPEER => false,
-        CURLOPT_HTTPHEADER => ['Accept: application/json', 'User-Agent: leads-proxy/3.0']
-    ]);
-    $response = curl_exec($ch);
-    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    $error = curl_error($ch);
-    curl_close($ch);
+    // Авторетраи на 429 (rate limit) и 5xx (transient). Leads.su периодически
+    // отдаёт 429, особенно когда параллельно работают cron + UI + ручной
+    // refresh — раньше первый же 429 «пробивался» наружу, фронт показывал 502
+    // Bad Gateway. Теперь делаем до 3 попыток с экспоненциальной задержкой;
+    // если у ответа есть Retry-After (sec или HTTP-date) — уважаем её.
+    $maxAttempts = 3;
+    $attempt = 0;
+    $lastResponse = '';
+    $lastHttpCode = 0;
+    $lastError = '';
+    $lastHeaders = '';
 
-    if ($error) return ['error' => "CURL error: $error"];
-    if ($httpCode !== 200) return ['error' => "HTTP $httpCode", 'response' => substr($response, 0, 500)];
+    while ($attempt < $maxAttempts) {
+        $attempt++;
+        $ch = curl_init();
+        curl_setopt_array($ch, [
+            CURLOPT_URL => $url,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_TIMEOUT => $timeout,
+            CURLOPT_SSL_VERIFYPEER => false,
+            CURLOPT_HEADER => true,
+            CURLOPT_HTTPHEADER => ['Accept: application/json', 'User-Agent: leads-proxy/3.0']
+        ]);
+        $raw = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $headerSize = curl_getinfo($ch, CURLINFO_HEADER_SIZE);
+        $error = curl_error($ch);
+        curl_close($ch);
 
-    $data = json_decode($response, true);
-    if (json_last_error() !== JSON_ERROR_NONE) {
-        return ['error' => 'Invalid JSON response', 'raw' => substr($response, 0, 500)];
+        $headers = ($raw !== false && $headerSize > 0) ? substr($raw, 0, $headerSize) : '';
+        $response = ($raw !== false) ? substr($raw, $headerSize) : '';
+        $lastResponse = $response;
+        $lastHttpCode = $httpCode;
+        $lastError = $error;
+        $lastHeaders = $headers;
+
+        if ($error) {
+            // CURL-ошибка (DNS/таймаут/обрыв соединения) — пробуем ещё раз
+            // с лёгкой задержкой; transient-ошибки сети так же стоит ретраить,
+            // как и 429.
+            if ($attempt < $maxAttempts) {
+                usleep(500000 * $attempt); // 0.5s, 1s
+                continue;
+            }
+            return ['error' => "CURL error: $error"];
+        }
+
+        if ($httpCode === 200) {
+            $data = json_decode($response, true);
+            if (json_last_error() !== JSON_ERROR_NONE) {
+                return ['error' => 'Invalid JSON response', 'raw' => substr($response, 0, 500)];
+            }
+            return $data;
+        }
+
+        // Retry только на 429 и 5xx — это transient. 4xx (кроме 429) — это
+        // ошибка запроса (плохой токен, неверный параметр), ретраить смысла нет.
+        $isRetryable = ($httpCode === 429) || ($httpCode >= 500 && $httpCode < 600);
+        if (!$isRetryable || $attempt >= $maxAttempts) {
+            break;
+        }
+
+        // Уважаем Retry-After: число секунд или HTTP-date.
+        $delayMs = 500 * (1 << ($attempt - 1)); // 500ms, 1s, 2s
+        if ($lastHeaders !== '' && preg_match('/^Retry-After:\s*(.+)$/mi', $lastHeaders, $m)) {
+            $val = trim($m[1]);
+            if (ctype_digit($val)) {
+                $delayMs = max($delayMs, min(10000, (int)$val * 1000));
+            } else {
+                $ts = strtotime($val);
+                if ($ts !== false) {
+                    $delaySec = max(0, $ts - time());
+                    $delayMs = max($delayMs, min(10000, $delaySec * 1000));
+                }
+            }
+        }
+        usleep($delayMs * 1000);
     }
-    return $data;
+
+    return [
+        'error'    => "HTTP $lastHttpCode",
+        'status'   => $lastHttpCode,
+        'response' => substr($lastResponse, 0, 500),
+    ];
 }
 
 /**
@@ -5649,7 +5712,16 @@ if ($fieldValues) {
 $url = "https://api.leads.su/webmaster/" . $method . (empty($params) ? '' : '?' . http_build_query($params)) . $fieldsQuery;
 $result = apiGet($url);
 if (isset($result['error'])) {
-    http_response_code(502);
+    // Если апстрим вернул 429 — пробрасываем именно 429, а не общий 502.
+    // Это позволяет фронту/UI отличить rate limit от bad gateway и при
+    // необходимости показать корректное сообщение / повторить запрос позже.
+    $status = isset($result['status']) ? (int)$result['status'] : 0;
+    if ($status === 429) {
+        http_response_code(429);
+        header('Retry-After: 5');
+    } else {
+        http_response_code(502);
+    }
     echo json_encode(['error' => $result['error']]);
 } else {
     echo json_encode($result);
