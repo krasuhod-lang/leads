@@ -3426,12 +3426,31 @@ async function autoLoadSavedStats() {
   const needsBackfill = uniqueClicksCoverageIncomplete(globalUniqueClicks, dFrom, dTo)
     || uniqueClicksCoverageIncomplete(globalUniqueClicksByOffer, dFrom, dTo)
     || uniqueClicksCoverageIncomplete(globalAccountTotals, dFrom, dTo);
-  if (needsBackfill) {
+  // Debounce + межпроцессный сигнал от бэка (status:"429"|"locked"):
+  // не запускаем refresh, если apiGet недавно вернул rate-limit, или если
+  // последний успешный refresh прошёл менее 3 минут назад. Эти переменные
+  // глобальные через window, чтобы переживать смену вкладок и repaint
+  // дашборда внутри одной сессии.
+  const REFRESH_UNIQUE_DEBOUNCE_MS = 3 * 60 * 1000; // 3 минуты
+  const nowMs = Date.now();
+  if (needsBackfill && window.nextApiAllowedAt && nowMs < window.nextApiAllowedAt) {
+    console.warn('refresh_unique_clicks skipped: rate limit, retry in',
+      Math.ceil((window.nextApiAllowedAt - nowMs) / 1000), 's');
+  } else if (needsBackfill && window.lastRefreshUniqueAt
+      && (nowMs - window.lastRefreshUniqueAt) < REFRESH_UNIQUE_DEBOUNCE_MS) {
+    // Дебаунс: не дёргаем тот же тяжёлый эндпоинт чаще раза в 3 минуты,
+    // даже если фронт перерисовался (смена фильтра / переключение вкладки).
+  } else if (needsBackfill) {
     try {
       const refresh = await fetchJsonSafe(buildApiUrl({
         action: 'refresh_unique_clicks', start_date: dFrom, end_date: dTo
       }));
-      if (refresh && refresh.status === 'success') {
+      if (refresh && (refresh.status === '429' || refresh.status === 429 || refresh.status === 'locked')) {
+        const retrySec = Math.max(30, Number(refresh.retry_after) || 60);
+        window.nextApiAllowedAt = Date.now() + retrySec * 1000;
+        console.warn('refresh_unique_clicks rate-limited:', refresh.status, 'retry_after=', retrySec);
+      } else if (refresh && refresh.status === 'success') {
+        window.lastRefreshUniqueAt = Date.now();
         [globalUniqueClicks, globalUniqueClicksByOffer, globalAccountTotals] = await Promise.all([
           fetchUniqueClicks(dFrom, dTo),
           fetchUniqueClicksByOffer(dFrom, dTo),
