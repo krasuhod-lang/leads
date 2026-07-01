@@ -3677,24 +3677,28 @@ async function applyGlobalFilters() {
 function renderUI() {
   const sf = document.getElementById('chartSourceFilter').value;
   const sub1f = document.getElementById('chartSub1Filter').value;
+  // Данные для нижних визуализаций (воронка, монетизация отказов) —
+  // реагируют на фильтр площадки/sub1 графика «Динамика».
   let data = [...globalRawData];
   if (sf !== 'all') data = data.filter(r => r.source === sf);
   if (sub1f !== 'all') data = data.filter(r => r.sub1 === sub1f);
-  const t = sumLeadRows(data);
+  // 6 верхних KPI-ячеек — это ОСНОВНЫЕ показатели бизнеса за ВЕСЬ кабинет.
+  // Они намеренно НЕ зависят от фильтра площадки/sub1 графика: всегда считаем
+  // по всему кабинету, чтобы верхний блок был стабилен и 1-в-1 совпадал с
+  // верхним блоком ЛК leads.su независимо от выбранной в графике площадки.
+  const kpiRows = [...globalRawData];
+  const t = sumLeadRows(kpiRows);
   // Источник KPI первого блока — приоритет:
   //   1) daily_account_totals (общая сводка кабинета /webmaster/reports/summary) —
-  //      когда нет фильтров площадки/sub1. Эти цифры 1-в-1 с верхним блоком
-  //      ЛК leads.su, не зависят от площадок (см. fetchAccountTotals и
-  //      инструкцию поддержки Leads.su, п.1-3).
-  //   2) daily_unique_clicks (per platform) — когда фильтр площадки тоже all,
-  //      но account_totals пуст (старая БД до миграции / API ещё не ответил).
-  //   3) сумма bucket-кликов из detailed daily_stats — fallback при срезе по
-  //      sub1 (когда агрегаты не аддитивны).
+  //      цифры 1-в-1 с верхним блоком ЛК leads.su за весь кабинет (см.
+  //      fetchAccountTotals и инструкцию поддержки Leads.su, п.1-3).
+  //   2) daily_unique_clicks (агрегат по всем площадкам) — когда account_totals
+  //      пуст (старая БД до миграции / API ещё не ответил).
+  //   3) сумма bucket-кликов из detailed daily_stats — последний fallback.
   const dFromKpi = (document.getElementById('dateFrom') || {}).value || '';
   const dToKpi   = (document.getElementById('dateTo')   || {}).value || '';
-  const useAccountTotals = (sf === 'all') && (sub1f === 'all');
-  const accountTotals = useAccountTotals ? accountTotalsForRange(dFromKpi, dToKpi) : null;
-  const trueClicks = trueUniqueClicksFor(data, { sub1Filter: sub1f });
+  const accountTotals = accountTotalsForRange(dFromKpi, dToKpi);
+  const trueClicks = trueUniqueClicksFor(kpiRows, { sub1Filter: 'all' });
   let clicksForKpi, revenueForKpi, conversionsForKpi, approvedForKpi, pendingPayoutForKpi;
   let kpiSource; // 'account' | 'unique' | 'bucket'
   if (accountTotals && accountTotals.unique_clicks > 0) {
@@ -3722,10 +3726,9 @@ function renderUI() {
   const cr = clicksForKpi ? (conversionsForKpi/clicksForKpi*100) : 0;
   const ar = conversionsForKpi ? (approvedForKpi/conversionsForKpi*100) : 0;
   const epc = clicksForKpi ? (revenueForKpi/clicksForKpi) : 0;
-  let baseline = [...planBaselineData];
-  if (sf !== 'all') baseline = baseline.filter(r => r.source === sf);
-  if (sub1f !== 'all') baseline = baseline.filter(r => r.sub1 === sub1f);
-  const plan = planFromRows(baseline, planFactState.days || 1);
+  // План/факт-бары верхних KPI тоже считаем по всему кабинету (без фильтра
+  // площадки/sub1), чтобы факт и план в 6 ячейках соответствовали друг другу.
+  const plan = planFromRows([...planBaselineData], planFactState.days || 1);
   const kpiCard = (title, valueHtml, fact, planValue, fmt, tipText) => `<div class="card">
     <div class="text-slate-400 text-xs uppercase">${title}${tipText?infoTip(tipText):''}</div>
     <div class="kpi-value"><div class="text-3xl font-black mt-2">${valueHtml}</div></div>
@@ -3735,27 +3738,21 @@ function renderUI() {
   const clicksTip = (kpiSource === 'account')
     ? 'Уникальные клики из общей сводки ЛК leads.su (/webmaster/reports/summary?grouping=day без fields/platform_id). Цифра идентична верхнему блоку кабинета и не зависит от площадок: один и тот же посетитель с двух площадок учитывается как один уникальный клик. Знаменатель для CR и EPC.'
     : (kpiSource === 'unique')
-      ? 'Уникальные клики из Leads.su за выбранный период (сумма по площадкам из /reports/summary?grouping=day без offer/sub1). Знаменатель для CR и EPC. Если включена общая сводка кабинета — переключитесь на «Все площадки», чтобы цифра сходилась с ЛК 1-в-1.'
-      : (sub1f && sub1f !== 'all'
-          ? 'Сумма unique_clicks из Leads.su в текущем срезе (фильтр sub1 активен — точная уникальность за период недоступна, цифра может быть выше реальной). Базовая метрика трафика — знаменатель для CR и EPC.'
-          : '⚠ Уникальные клики из кабинета leads.su пока недоступны — показываем сумму unique_clicks по детальным бакетам (date×платформа×оффер×sub1). Эта цифра завышена на 20-60% против кабинета (один посетитель учитывается в каждом бакете). Чтобы свести с кабинетом, нажмите «Загрузить из кабинета» — фон автоматически дозальёт daily_account_totals.');
+      ? 'Уникальные клики по всему кабинету (сумма по площадкам из /reports/summary?grouping=day без offer/sub1). Знаменатель для CR и EPC.'
+      : '⚠ Уникальные клики из кабинета leads.su пока недоступны — показываем сумму unique_clicks по детальным бакетам (date×платформа×оффер×sub1). Эта цифра завышена на 20-60% против кабинета (один посетитель учитывается в каждом бакете). Чтобы свести с кабинетом, нажмите «Загрузить из кабинета» — фон автоматически дозальёт daily_account_totals.';
   const epcTip = (kpiSource === 'account')
     ? 'EPC = Доход ÷ Уникальные клики из общей сводки ЛК leads.su (/webmaster/reports/summary). Сколько ₽ в среднем приносит один уникальный клик в кабинете.'
     : (kpiSource === 'unique')
-      ? 'EPC = Доход ÷ Уникальные клики (агрегат по площадкам). Сколько ₽ в среднем приносит один уникальный клик.'
-      : (sub1f && sub1f !== 'all'
-          ? 'EPC (Earnings Per Click) = Доход ÷ Клики. В срезе с фильтром sub1 знаменатель — сумма по детальным строкам.'
-          : '⚠ EPC посчитан по завышенным bucket-clicks (агрегаты недоступны), фактическое значение из кабинета будет выше. Нажмите «Загрузить из кабинета» для синхронизации.');
+      ? 'EPC = Доход ÷ Уникальные клики (агрегат по всему кабинету). Сколько ₽ в среднем приносит один уникальный клик.'
+      : '⚠ EPC посчитан по завышенным bucket-clicks (агрегаты недоступны), фактическое значение из кабинета будет выше. Нажмите «Загрузить из кабинета» для синхронизации.';
   const crTip = (kpiSource === 'account')
     ? 'CR (Conversion Rate) = Лиды ÷ Уникальные клики × 100% из общей сводки ЛК leads.su.'
     : (kpiSource === 'unique')
-      ? 'CR (Conversion Rate) = Лиды ÷ Уникальные клики × 100% (агрегат по площадкам).'
-      : (sub1f && sub1f !== 'all'
-          ? 'CR (Conversion Rate) = Лиды ÷ Клики × 100%. В срезе с фильтром sub1 знаменатель — сумма по детальным строкам.'
-          : '⚠ CR посчитан по завышенным bucket-clicks (агрегаты недоступны), фактическое значение из кабинета будет выше.');
+      ? 'CR (Conversion Rate) = Лиды ÷ Уникальные клики × 100% (агрегат по всему кабинету).'
+      : '⚠ CR посчитан по завышенным bucket-clicks (агрегаты недоступны), фактическое значение из кабинета будет выше.';
   const revenueTip = (kpiSource === 'account')
     ? `Доход (одобренный payout) из общей сводки ЛК leads.su (/webmaster/reports/summary?grouping=day). Это та же цифра, что в верхнем блоке кабинета. Ожидаемый доход (в холде, pending_payout): ${Math.round(pendingPayoutForKpi).toLocaleString('ru-RU')} ₽. Итого с холдом: ${Math.round(revenueForKpi + pendingPayoutForKpi).toLocaleString('ru-RU')} ₽.`
-    : 'Сумма одобренного payout из Leads.su за период по выбранному срезу. Чтобы цифра совпала с верхним блоком ЛК, снимите фильтры площадки/sub1.';
+    : 'Сумма одобренного payout по всему кабинету за период. Общая сводка ЛК leads.su пока не загружена — нажмите «Загрузить из кабинета» для синхронизации.';
   document.getElementById('kpiCards').innerHTML = noDataHint + `
     ${kpiCard('Клики', clicksForKpi.toLocaleString('ru-RU'), clicksForKpi, plan.clicks, v => Math.round(v).toLocaleString('ru-RU'), clicksTip)}
     ${kpiCard('Лиды', conversionsForKpi.toLocaleString('ru-RU'), conversionsForKpi, plan.conversions, v => Math.round(v).toLocaleString('ru-RU'), 'Сумма конверсий (поданных заявок) из Leads.su. CR = Лиды ÷ Клики × 100%.')}
