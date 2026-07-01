@@ -1564,9 +1564,9 @@ function saveReportRows($db, $rows, $offerMap) {
             $clicks = 0;
             $missingUniqueClicks++;
         }
-        // raw_clicks — общие клики из API; храним для диагностики, но в EPC
-        // не используем. Если API не вернул `clicks`, дублируем из unique.
-        $rawClicks = (int)($row['clicks'] ?? $row['unique_clicks'] ?? 0);
+        // raw_clicks — храним для диагностики, но в EPC не используем.
+        // Общий `clicks` из API нам не нужен — тянем только unique_clicks.
+        $rawClicks = (int)($row['unique_clicks'] ?? 0);
         $conversions = (int)($row['unique_conversions'] ?? $row['conversions'] ?? 0);
         $approved = (int)($row['conversions_approved'] ?? $row['conversionsapproved'] ?? 0);
         $revenue = (float)($row['payout'] ?? 0);
