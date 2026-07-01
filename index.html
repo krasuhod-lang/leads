@@ -4828,6 +4828,33 @@ const crosshairPlugin = {
   }
 };
 
+// Подсветка выбранной серии: при наведении на ярлык легенды или кнопку-переключатель
+// остальные серии приглушаются (globalAlpha), чтобы выделить нужную линию — как в
+// «эппловских» интерактивных графиках. Активная серия хранится в chart.$focusSeries.
+const seriesFocusPlugin = {
+  id: 'seriesFocus',
+  beforeDatasetDraw(chart, args) {
+    const focus = chart.$focusSeries;
+    if (focus == null || args.index === focus) return;
+    chart.ctx.save();
+    chart.ctx.globalAlpha = 0.15;
+  },
+  afterDatasetDraw(chart, args) {
+    const focus = chart.$focusSeries;
+    if (focus == null || args.index === focus) return;
+    chart.ctx.restore();
+  }
+};
+
+// Устанавливает подсвеченную серию и мягко перерисовывает график без анимации.
+function setChartFocusSeries(chart, idx) {
+  if (!chart) return;
+  const next = (idx == null ? null : idx);
+  if (chart.$focusSeries === next) return;
+  chart.$focusSeries = next;
+  if (typeof chart.render === 'function') chart.render();
+}
+
 // ========================== ГЛОССАРИЙ (модальное окно) ==========================
 // Кнопка «!» в шапке графика «Динамика» открывает модальное окно с описанием
 // всех терминов: EPC, CR, AR, MA, план/факт, индексы, корреляция и т.д.
@@ -5186,10 +5213,13 @@ function refreshChart() {
     else ds.hidden = hiddenChartSeries.has(key);
   });
   trendChartInstance = new Chart(document.getElementById('trendChart'), {
-    type:chartType, data:{labels:displayLabels,datasets}, plugins:[eventMarkerPlugin, crosshairPlugin],
+    type:chartType, data:{labels:displayLabels,datasets}, plugins:[eventMarkerPlugin, crosshairPlugin, seriesFocusPlugin],
     options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false,axis:'x'},
       onHover:(e,els,chart)=>updateTrendHoverReadout(chart, els),
-      plugins:{legend:{labels:{color:'#cbd5e1'},onClick:(e,item,legend)=>{
+    plugins:{legend:{labels:{color:'#cbd5e1'},
+      onHover:(e,item,legend)=>setChartFocusSeries(legend.chart, item.datasetIndex),
+      onLeave:(e,item,legend)=>setChartFocusSeries(legend.chart, null),
+      onClick:(e,item,legend)=>{
         const idx = item.datasetIndex;
         const ds = legend.chart.data.datasets[idx];
         const key = seriesKey(ds && ds.label);
@@ -5272,6 +5302,12 @@ function renderChartSeriesToggles() {
   }).join('');
   host.innerHTML = html;
   host.querySelectorAll('.series-toggle').forEach(btn => {
+    btn.addEventListener('mouseenter', () => {
+      if (trendChartInstance) setChartFocusSeries(trendChartInstance, Number(btn.dataset.idx));
+    });
+    btn.addEventListener('mouseleave', () => {
+      if (trendChartInstance) setChartFocusSeries(trendChartInstance, null);
+    });
     btn.addEventListener('click', () => {
       const idx = Number(btn.dataset.idx);
       if (!trendChartInstance) return;
@@ -5421,17 +5457,17 @@ function renderPlatformCharts() {
   const revDS = buildDatasets('revenue');
   if(revenueByPlatformChartInstance)revenueByPlatformChartInstance.destroy();
   revenueByPlatformChartInstance=new Chart(document.getElementById('revenueByPlatformChart'),{
-    type:'line',data:{labels,datasets:revDS},
+    type:'line',data:{labels,datasets:revDS},plugins:[seriesFocusPlugin],
     options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
-      plugins:{legend:{labels:{color:'#cbd5e1'}},tooltip:{...sharedTooltipConfig,callbacks:{label:ctx=>` ${ctx.dataset.label}: ${Math.round(ctx.raw).toLocaleString('ru-RU')} ₽`}}},
+      plugins:{legend:{labels:{color:'#cbd5e1'},onHover:(e,item,legend)=>setChartFocusSeries(legend.chart,item.datasetIndex),onLeave:(e,item,legend)=>setChartFocusSeries(legend.chart,null)},tooltip:{...sharedTooltipConfig,callbacks:{label:ctx=>` ${ctx.dataset.label}: ${Math.round(ctx.raw).toLocaleString('ru-RU')} ₽`}}},
       scales:{x:{ticks:{color:'#94a3b8',maxRotation:0,autoSkip:true},grid:{display:false}},y:{ticks:{color:'#94a3b8'},grid:{color:'#1e293b'}}}}
   });
   const trafDS = buildDatasets('clicks');
   if(trafficByPlatformChartInstance)trafficByPlatformChartInstance.destroy();
   trafficByPlatformChartInstance=new Chart(document.getElementById('trafficByPlatformChart'),{
-    type:'line',data:{labels,datasets:trafDS},
+    type:'line',data:{labels,datasets:trafDS},plugins:[seriesFocusPlugin],
     options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
-      plugins:{legend:{labels:{color:'#cbd5e1'}},tooltip:{...sharedTooltipConfig,callbacks:{label:ctx=>` ${ctx.dataset.label}: ${ctx.raw.toLocaleString('ru-RU')} кликов`}}},
+      plugins:{legend:{labels:{color:'#cbd5e1'},onHover:(e,item,legend)=>setChartFocusSeries(legend.chart,item.datasetIndex),onLeave:(e,item,legend)=>setChartFocusSeries(legend.chart,null)},tooltip:{...sharedTooltipConfig,callbacks:{label:ctx=>` ${ctx.dataset.label}: ${ctx.raw.toLocaleString('ru-RU')} кликов`}}},
       scales:{x:{ticks:{color:'#94a3b8',maxRotation:0,autoSkip:true},grid:{display:false}},y:{ticks:{color:'#94a3b8'},grid:{color:'#1e293b'}}}}
   });
   // Авто-инсайты под platform-чартами: концентрация по метрике + тренд лидера.
