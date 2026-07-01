@@ -4659,6 +4659,49 @@ function buildFunnelAggregates($db, $startDate, $endDate) {
     return ['totals' => $totals, 'history' => $history];
 }
 
+/**
+ * Коэффициент тренда объёма баннера для авто-плана.
+ *
+ * Сравнивает среднесуточные показы и клики баннера (banner_stats, Я.Метрика)
+ * в текущем периоде и в baseline-периоде. Если показов/кликов становится
+ * меньше — коэффициент < 1, и авто-план каналов «прижимается» вниз; если
+ * баннер растёт — > 1. Возвращает null, когда баннерных данных нет хотя бы
+ * в одном из окон (тогда план считается без корректировки, как раньше).
+ *
+ * @return float|null множитель в коридоре [0.2, 3.0] либо null.
+ */
+function bannerVolumeTrendFactor(SQLite3 $db, string $baseFrom, string $baseTo, string $curFrom, string $curTo): ?float {
+    $agg = function (string $from, string $to) use ($db) {
+        if ($from === '' || $to === '') return ['days' => 0, 'imp_daily' => 0.0, 'clk_daily' => 0.0];
+        $stmt = $db->prepare("SELECT COUNT(*) AS days,
+                COALESCE(SUM(impressions), 0) AS imp,
+                COALESCE(SUM(clicks), 0)      AS clk
+            FROM banner_stats
+            WHERE substr(date,1,10) BETWEEN :a AND :b AND (impressions > 0 OR clicks > 0)");
+        $stmt->bindValue(':a', substr($from, 0, 10), SQLITE3_TEXT);
+        $stmt->bindValue(':b', substr($to,   0, 10), SQLITE3_TEXT);
+        $r = $stmt->execute()->fetchArray(SQLITE3_ASSOC) ?: ['days' => 0, 'imp' => 0, 'clk' => 0];
+        $days = max(1, (int)$r['days']);
+        return [
+            'days'      => (int)$r['days'],
+            'imp_daily' => (float)$r['imp'] / $days,
+            'clk_daily' => (float)$r['clk'] / $days,
+        ];
+    };
+    $base = $agg($baseFrom, $baseTo);
+    $cur  = $agg($curFrom, $curTo);
+    if ($base['days'] === 0 || $cur['days'] === 0) return null;
+
+    $factors = [];
+    if ($base['imp_daily'] > 0) $factors[] = $cur['imp_daily'] / $base['imp_daily'];
+    if ($base['clk_daily'] > 0) $factors[] = $cur['clk_daily'] / $base['clk_daily'];
+    if (!$factors) return null;
+
+    $f = array_sum($factors) / count($factors);
+    // Ограничиваем разумным коридором, чтобы выбросы одного дня не ломали план.
+    return max(0.2, min(3.0, $f));
+}
+
 if ($action === 'channels_overview') {
     // Реальная сводка: трафик и факт-выручка — из daily_stats через маппинг
     // source_id → channel; план — из channel_plan; расходы — из channel_costs_log;
@@ -4754,21 +4797,28 @@ if ($action === 'channels_overview') {
         }
 
         // Период длины L дней: ожидаемые клики канала ≈ baseline_clicks × (L/30),
-        // если фактических кликов меньше прогноза (период ещё не закрыт).
+        // скорректированные на тренд объёма баннера (показы + клики по баннеру
+        // из Я.Метрики). Если баннер проседает — множитель < 1, и план ниже;
+        // если растёт — план выше. Так план следует за реальным трендом входящего
+        // трафика, а не проецирует baseline «в лоб».
         $periodDays   = max(1, (int)((strtotime($dTo) - strtotime($dFrom)) / 86400) + 1);
         $baselineDays = 30;
+        $bannerTrend  = bannerVolumeTrendFactor($db, $baseFrom, $baseTo, $dFrom, $dTo);
+        $trendMul     = $bannerTrend !== null ? $bannerTrend : 1.0;
         foreach ($byChannel as $cid => &$b) {
             $epcBase = $b['baseline_clicks'] > 0 ? $b['baseline_revenue'] / $b['baseline_clicks'] : 0;
-            // Ожидаемые клики канала: max(пропорция baseline на длину периода,
-            // фактические клики на сегодня) — устойчиво и для полных, и для
-            // ещё-не-закрытых периодов.
+            // Ожидаемые клики канала: max(пропорция baseline на длину периода с
+            // поправкой на тренд баннера, фактические клики на сегодня) — устойчиво
+            // и для полных, и для ещё-не-закрытых периодов, при спаде баннера
+            // прогноз опускается, но не ниже уже набранного факта.
             $expectedClicks = $b['baseline_clicks'] > 0
-                ? max($b['baseline_clicks'] * ($periodDays / $baselineDays), $b['traffic'])
+                ? max($b['baseline_clicks'] * ($periodDays / $baselineDays) * $trendMul, $b['traffic'])
                 : $b['traffic'];
             $auto = $epcBase > 0 ? $expectedClicks * $epcBase : 0;
             $b['plan_revenue_auto'] = round($auto, 2);
             $b['baseline_epc']      = $epcBase > 0 ? round($epcBase, 2) : null;
             $b['baseline_period']   = ['from' => $baseFrom, 'to' => $baseTo, 'days' => $baselineDays];
+            $b['plan_trend_factor'] = $bannerTrend !== null ? round($bannerTrend, 3) : null;
         }
         unset($b);
     }
@@ -4803,6 +4853,7 @@ if ($action === 'channels_overview') {
             'epc'               => $epc,
             'baseline_epc'      => $b['baseline_epc'] ?? null,
             'baseline_period'   => $b['baseline_period'] ?? null,
+            'plan_trend_factor' => $b['plan_trend_factor'] ?? null,
         ];
     }
 
