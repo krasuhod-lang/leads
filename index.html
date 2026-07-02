@@ -3697,35 +3697,26 @@ function renderUI() {
   // верхним блоком ЛК leads.su независимо от выбранной в графике площадки.
   const kpiRows = [...globalRawData];
   const t = sumLeadRows(kpiRows);
-  // Источник KPI первого блока — приоритет:
-  //   1) daily_account_totals (общая сводка кабинета /webmaster/reports/summary) —
-  //      цифры 1-в-1 с верхним блоком ЛК leads.su за весь кабинет (см.
-  //      fetchAccountTotals и инструкцию поддержки Leads.su, п.1-3).
-  //   2) daily_unique_clicks (агрегат по всем площадкам) — когда account_totals
-  //      пуст (старая БД до миграции / API ещё не ответил).
-  //   3) сумма bucket-кликов из detailed daily_stats — последний fallback.
+  // Источник KPI первого блока:
+  // Клики берём bucket-sum (t.clicks из sumLeadRows) — тем же способом, что и
+  // в таблицах «Площадки» и «Sub1», где пользователь подтвердил соответствие
+  // «Уник. клики» в ЛК leads.su. Таким образом верхний KPI совпадает с суммой
+  // клик по таблице «Площадки». Доход/лиды/апрувы, если доступны из
+  // daily_account_totals (общая сводка ЛК), берём оттуда — по ним у нас нет
+  // противоречий с ЛК; иначе — bucket-sum.
   const dFromKpi = (document.getElementById('dateFrom') || {}).value || '';
   const dToKpi   = (document.getElementById('dateTo')   || {}).value || '';
   const accountTotals = accountTotalsForRange(dFromKpi, dToKpi);
-  const trueClicks = trueUniqueClicksFor(kpiRows, { sub1Filter: 'all' });
-  let clicksForKpi, revenueForKpi, conversionsForKpi, approvedForKpi, pendingPayoutForKpi;
-  let kpiSource; // 'account' | 'unique' | 'bucket'
+  const clicksForKpi = t.clicks;
+  let revenueForKpi, conversionsForKpi, approvedForKpi, pendingPayoutForKpi;
+  let kpiSource; // 'account' | 'bucket' — используется только для тултипов дохода
   if (accountTotals && accountTotals.unique_clicks > 0) {
-    clicksForKpi = accountTotals.unique_clicks;
     revenueForKpi = accountTotals.payout;
     conversionsForKpi = accountTotals.conversions || t.conversions;
     approvedForKpi = accountTotals.approved || t.approved;
     pendingPayoutForKpi = accountTotals.pending_payout;
     kpiSource = 'account';
-  } else if (trueClicks !== null) {
-    clicksForKpi = trueClicks;
-    revenueForKpi = t.revenue;
-    conversionsForKpi = t.conversions;
-    approvedForKpi = t.approved;
-    pendingPayoutForKpi = 0;
-    kpiSource = 'unique';
   } else {
-    clicksForKpi = t.clicks;
     revenueForKpi = t.revenue;
     conversionsForKpi = t.conversions;
     approvedForKpi = t.approved;
@@ -3744,21 +3735,9 @@ function renderUI() {
     <div class="kpi-pf mt-3">${planFactBar(fact, planValue, fmt)}</div>
   </div>`;
   const noDataHint = !globalRawData.length ? '<div class="col-span-full text-center text-slate-500 text-sm py-2">Нет данных за выбранный период. Нажмите « Загрузить из кабинета» для загрузки.</div>' : '';
-  const clicksTip = (kpiSource === 'account')
-    ? 'Уникальные клики из общей сводки ЛК leads.su (/webmaster/reports/summary?grouping=day без fields/platform_id). Цифра идентична верхнему блоку кабинета и не зависит от площадок: один и тот же посетитель с двух площадок учитывается как один уникальный клик. Знаменатель для CR и EPC.'
-    : (kpiSource === 'unique')
-      ? 'Уникальные клики по всему кабинету (сумма по площадкам из /reports/summary?grouping=day без offer/sub1). Знаменатель для CR и EPC.'
-      : '⚠ Уникальные клики из кабинета leads.su пока недоступны — показываем сумму unique_clicks по детальным бакетам (date×платформа×оффер×sub1). Эта цифра завышена на 20-60% против кабинета (один посетитель учитывается в каждом бакете). Чтобы свести с кабинетом, нажмите «Загрузить из кабинета» — фон автоматически дозальёт daily_account_totals.';
-  const epcTip = (kpiSource === 'account')
-    ? 'EPC = Доход ÷ Уникальные клики из общей сводки ЛК leads.su (/webmaster/reports/summary). Сколько ₽ в среднем приносит один уникальный клик в кабинете.'
-    : (kpiSource === 'unique')
-      ? 'EPC = Доход ÷ Уникальные клики (агрегат по всему кабинету). Сколько ₽ в среднем приносит один уникальный клик.'
-      : '⚠ EPC посчитан по завышенным bucket-clicks (агрегаты недоступны), фактическое значение из кабинета будет выше. Нажмите «Загрузить из кабинета» для синхронизации.';
-  const crTip = (kpiSource === 'account')
-    ? 'CR (Conversion Rate) = Лиды ÷ Уникальные клики × 100% из общей сводки ЛК leads.su.'
-    : (kpiSource === 'unique')
-      ? 'CR (Conversion Rate) = Лиды ÷ Уникальные клики × 100% (агрегат по всему кабинету).'
-      : '⚠ CR посчитан по завышенным bucket-clicks (агрегаты недоступны), фактическое значение из кабинета будет выше.';
+  const clicksTip = 'Уник. клики за период — сумма unique_clicks по детальным строкам /webmaster/reports/summary?fields=offer_id,source,aff_sub1 (тот же аггрегат, что в таблицах «Площадки» и «Sub1»). Совпадает с колонкой «Уник. клики» в ЛК leads.su. Знаменатель для CR и EPC.';
+  const epcTip = 'EPC = Доход ÷ Уник. клики за период. Сколько ₽ в среднем приносит один уникальный клик.';
+  const crTip = 'CR (Conversion Rate) = Лиды ÷ Уник. клики × 100%.';
   const revenueTip = (kpiSource === 'account')
     ? `Доход (одобренный payout) из общей сводки ЛК leads.su (/webmaster/reports/summary?grouping=day). Это та же цифра, что в верхнем блоке кабинета. Ожидаемый доход (в холде, pending_payout): ${Math.round(pendingPayoutForKpi).toLocaleString('ru-RU')} ₽. Итого с холдом: ${Math.round(revenueForKpi + pendingPayoutForKpi).toLocaleString('ru-RU')} ₽.`
     : 'Сумма одобренного payout по всему кабинету за период. Общая сводка ЛК leads.su пока не загружена — нажмите «Загрузить из кабинета» для синхронизации.';
@@ -4053,24 +4032,12 @@ function renderTables() {
   // суммирования нет: каждая таблица берёт свой независимый агрегат.
   const dFrom = (document.getElementById('dateFrom') || {}).value || '';
   const dTo   = (document.getElementById('dateTo')   || {}).value || '';
-  // Площадки: сумма unique_clicks по date×source_id в выбранном диапазоне.
-  const trueClicksBySource = {};
-  if (Array.isArray(globalUniqueClicks) && globalUniqueClicks.length) {
-    // Маппинг source_id → канонический source-name из globalRawData,
-    // чтобы ключи совпадали с ключами srcMap (mergeSourceName уже применён).
-    const idToName = {};
-    for (const r of globalRawData) {
-      const sid = r.source_id || 'all';
-      if (sid && r.source && !idToName[sid]) idToName[sid] = r.source;
-    }
-    for (const u of globalUniqueClicks) {
-      if (dFrom && u.date < dFrom) continue;
-      if (dTo && u.date > dTo) continue;
-      const name = idToName[u.source_id] || u.source || '';
-      if (!name) continue;
-      trueClicksBySource[name] = (trueClicksBySource[name] || 0) + (u.unique_clicks || 0);
-    }
-  }
+  // Площадки: клики считаем bucket-sum (`v.clicks` из srcMap), тем же способом,
+  // что и в таблице sub1 — пользователь подтвердил, что там цифры сходятся с
+  // «Уник. клики» в ЛК leads.su. Ранее здесь применялось перекрытие через
+  // `daily_unique_clicks` (per-platform loop), которое из-за rate-limits и
+  // частичного покрытия давало «какие-то другие цифры»: часть площадок брала
+  // true-uniques, часть — bucket-sum, суммарно рассинхрон с ЛК.
   // Офферы: используем агрегат только когда нет среза по площадке —
   // daily_unique_clicks_by_offer уникализирует по date×offer без platform.
   // Из того же ответа /reports/summary?fields=offer_id храним и подменяем
@@ -4125,8 +4092,9 @@ function renderTables() {
   let sRows = Object.entries(srcMap).map(([n,v]) => {
     const baseline = planBaselineData.filter(r => r.source === n);
     const plan = planFromRows(baseline, planFactState.days || 1);
-    const trueClicks = trueClicksBySource[n];
-    const clicks = (trueClicks != null) ? trueClicks : v.clicks;
+    // Клики берём bucket-sum (v.clicks) — тот же аггрегат, что в sub1-таблице,
+    // где пользователь подтвердил соответствие «Уник. кликам» в ЛК leads.su.
+    const clicks = v.clicks;
     return {name:n, clicks, conversions:v.conversions, approved:v.approved, revenue:v.revenue, epc:clicks?(v.revenue/clicks):0, approveRate:v.conversions?(v.approved/v.conversions*100):0, plan};
   });
   let oRows = Object.entries(offMap).map(([n,v]) => {
