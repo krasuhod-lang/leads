@@ -2697,6 +2697,14 @@ function mergeSourceName(name) {
   return cleaned;
 }
 
+function hasApiSourceDimension(row) {
+  const id = String(row?.platform_id ?? row?.platformid ?? '').trim();
+  if (id && id.toLowerCase() !== 'all') return true;
+  const name = mergeSourceName(row?.source ?? row?.platform_name ?? '').trim();
+  const lower = name.toLowerCase();
+  return !!name && lower !== 'all' && lower !== 'unknown';
+}
+
 function daysBetweenInclusive(from, to) {
   if (!from || !to) return 0;
   return Math.max(1, Math.round((new Date(to) - new Date(from)) / 86400000) + 1);
@@ -3109,12 +3117,17 @@ async function loadFromAPI(opts = {}) {
     prog(95, 'Обработка данных...');
     originalData = [];
     let missingUniqueClicks = 0;
+    let skippedAggregateRows = 0;
     for (const row of reportData) {
       const rawDate = row.period_day || row.period_hour || row.periodday || row.period || row.date || null;
       const dateStr = parseDateSmart(rawDate);
       if (!dateStr) continue;
       const offerId = String(row.offer_id ?? row.offerid ?? '');
-      const platformId = String(row.platform_id ?? row.platformid ?? '');
+      const platformId = String(row.platform_id ?? row.platformid ?? '').trim();
+      if (!hasApiSourceDimension(row)) {
+        skippedAggregateRows++;
+        continue;
+      }
       // raw_clicks — общие клики из API, храним для диагностики.
       const rawClicks = Number(row.clicks ?? row.uniqueclicks ?? row.unique_clicks ?? 0);
       // Уникальные клики — основа для EPC/CR. Раньше тут был тихий фолбэк
@@ -3147,9 +3160,12 @@ async function loadFromAPI(opts = {}) {
         date: dateStr, week: getWeekNumber(new Date(dateStr)), month: dateStr.slice(0, 7),
         dayOfWeek: daysOfWeek[new Date(dateStr).getDay()],
         offer: offerName, offer_id: offerId,
-        source: sourceName, source_id: platformId || 'all', sub1,
+        source: sourceName, source_id: platformId || syntheticSourceId(sourceName) || 'all', sub1,
         clicks, raw_clicks: rawClicks, conversions, approved, revenue
       });
+    }
+    if (skippedAggregateRows > 0) {
+      console.warn(`[loadFromAPI] пропущено ${skippedAggregateRows} агрегированных строк без площадки — они не сохраняются как Unknown, чтобы не удваивать клики.`);
     }
     if (missingUniqueClicks > 0) {
       const tag = missingUniqueClicks === reportData.length ? 'ALL' : `${missingUniqueClicks}/${reportData.length}`;
