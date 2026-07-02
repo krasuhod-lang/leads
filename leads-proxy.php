@@ -1177,6 +1177,18 @@ function cleanSourceName($name) {
     return $trimmed;
 }
 
+function hasSourceDimension($row, $defaultSourceId = '', $defaultSourceName = '') {
+    $rawSourceId = $row['platform_id'] ?? $row['platformid'] ?? $defaultSourceId ?? '';
+    if ($rawSourceId !== '' && $rawSourceId !== null && strcasecmp((string)$rawSourceId, 'all') !== 0) {
+        return true;
+    }
+    $sourceName = cleanSourceName($row['source'] ?? $row['platform_name'] ?? $defaultSourceName ?? '');
+    $sourceName = trim((string)$sourceName);
+    return $sourceName !== ''
+        && strcasecmp($sourceName, 'all') !== 0
+        && strcasecmp($sourceName, 'unknown') !== 0;
+}
+
 /**
  * Стабильный детерминированный source_id для строк, в которых API не вернул
  * platform_id. Используется и в saveReportRows (cron) и в save_stats (FE) —
@@ -1741,6 +1753,11 @@ function saveReportRows($db, $rows, $offerMap) {
         $date = substr((string)$rawDate, 0, 10);
         if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) continue;
 
+        // При запросе детализации по source API иногда дополнительно возвращает
+        // агрегат по аккаунту без площадки. Такая строка выглядит как Unknown и
+        // содержит сумму всех кликов — её нельзя писать в per-platform таблицу.
+        if (!hasSourceDimension($row)) continue;
+
         $sourceName = cleanSourceName($row['source'] ?? $row['platform_name'] ?? 'Unknown');
         // Сначала смотрим на явный platform_id из API, затем — синтезируем из имени.
         $rawSourceId = $row['platform_id'] ?? $row['platformid'] ?? '';
@@ -1851,6 +1868,8 @@ function saveUniqueClicksRows($db, $rows, $defaultSourceId = '', $defaultSourceN
         if (!$rawDate) continue;
         $date = substr((string)$rawDate, 0, 10);
         if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) continue;
+
+        if (!hasSourceDimension($row, $defaultSourceId, $defaultSourceName)) continue;
 
         $sourceName = cleanSourceName($row['source'] ?? $row['platform_name'] ?? $defaultSourceName ?? '');
         $rawSourceId = $row['platform_id'] ?? $row['platformid'] ?? $defaultSourceId ?? '';
@@ -3896,6 +3915,11 @@ if ($action === 'save_stats') {
 
             $sourceName = cleanSourceName($row['source'] ?? $row['source_name'] ?? 'Unknown');
             $rawSourceId = $row['source_id'] ?? '';
+            if (($rawSourceId === '' || $rawSourceId === 'all' || $rawSourceId === null)
+                && (strcasecmp((string)$sourceName, 'unknown') === 0 || strcasecmp((string)$sourceName, 'all') === 0 || trim((string)$sourceName) === '')
+            ) {
+                continue;
+            }
             $sourceId = ($rawSourceId !== '' && $rawSourceId !== 'all' && $rawSourceId !== null)
                 ? (string)$rawSourceId
                 : syntheticSourceId($sourceName);
