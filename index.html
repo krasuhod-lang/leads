@@ -1854,6 +1854,16 @@
       <div id="leadsTokenMessage" class="mt-3 text-sm hidden"></div>
     </div>
     <div class="card">
+      <h2 class="text-white font-bold text-lg mb-3">Последняя синхронизация</h2>
+      <p class="text-sm text-slate-400 mb-3">Статус последнего запуска <code>update_stats</code>: сколько строк ушло в каждую из четырёх таблиц, ошибки, run_id. Данные из <code>sync_log</code>.</p>
+      <div id="syncLogSummary" class="text-sm text-slate-300 mb-3">Ещё нет данных о запусках.</div>
+      <div class="flex gap-2 flex-wrap">
+        <button class="btn" onclick="updateSyncLogPanel()">Обновить</button>
+        <button class="btn" style="background:#16a34a" onclick="loadFromAPI()">Перезагрузить данные (текущий диапазон)</button>
+      </div>
+      <div id="coverageBadge" class="mt-3 text-sm hidden"></div>
+    </div>
+    <div class="card">
       <h2 class="text-white font-bold text-lg mb-3">Telegram-уведомления</h2>
       <p class="text-sm text-slate-400 mb-3">Бот будет писать в указанный чат при просадке выручки &gt;20% (день к тому же дню недели), при появлении нового топ-Sub1 и при выполнении плана месяца. Защита от спама — один и тот же алерт максимум раз в сутки.</p>
       <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">
@@ -3059,11 +3069,15 @@ function processDataFromDb(rows) {
 
 async function loadFromAPI(opts = {}) {
   // silent=true → авто-режим: не блокируем кнопку, не показываем alert при ошибке,
-  // прогресс не рисуем (фоновый сценарий "автообновление по такой же логике").
-  // ВАЖНО: вся остальная логика — точно та же, что и при ручном клике, чтобы
-  // передача переменных не нарушалась ни в одном месте.
+  // прогресс не рисуем.
+  //
+  // ВАЖНО: с рефактором 2026-07 весь fetch данных leads.su делается на сервере
+  // через ONE-CALL action=update_stats. Сервер сам заполняет все 4 таблицы
+  // (daily_stats, daily_unique_clicks, daily_unique_clicks_by_offer,
+  // daily_account_totals) за один клик, с preflight-проверкой токена,
+  // sync_log и устойчивостью к 429. Фронт после ответа перерисовывает дашборд
+  // из БД через autoLoadSavedStats().
   const silent = !!opts.silent;
-  const token = LEGACY_LEADS_TOKEN;
   const dFrom = document.getElementById('dateFrom').value;
   const dTo = document.getElementById('dateTo').value;
   const btn = document.getElementById('btnLoadAPI');
@@ -3074,125 +3088,60 @@ async function loadFromAPI(opts = {}) {
   }
   if (btn && !silent) btn.disabled = true;
   const prog = (pct, text) => { if (!silent) updateProgress(pct, text); };
-  prog(5, 'Проверка наличия данных...');
+  prog(5, 'Запрос синхронизации на сервере...');
   try {
-    prog(10, 'Получение структуры API...');
-    // Fetch offers with robust error handling.
-    // ВАЖНО: max limit на /webmaster/offers по докам = 500. Используем fetchAll,
-    // который сам пагинирует с limit=500.
-    let offersData = [];
-    try {
-      offersData = await fetchAll('offers', { token });
-    } catch(e) { console.warn('Failed to fetch offers:', e); }
-    const platformsData = await fetchAll('platforms', { token });
-    const offerMap = {};
-    for (const o of offersData) {
-      const id = String(o.id ?? o.offer_id ?? o.offerId ?? '');
-      const name = o.name ?? o.title ?? '';
-      if (id && name) offerMap[id] = name;
-      else if (id) offerMap[id] = `Offer #${id}`;
-    }
-    const platformMap = {}; const activePlatformIds = [];
-    const seenPlatformIds = new Set();
-    for (const p of platformsData) {
-      if (p?.id == null) continue;
-      const pid = String(p.id);
-      if (seenPlatformIds.has(pid)) continue;
-      seenPlatformIds.add(pid);
-      platformMap[pid] = p.name || `Platform #${p.id}`;
-      activePlatformIds.push(pid);
-    }
-    let reportData = [];
-    // Единый запрос вместо перебора площадок (раньше тут был foreach по
-    // activePlatformIds — десятки запросов к API и риск HTTP 429). leads.su
-    // возвращает поле `source` (площадку) прямо в строках при
-    // fields=offer_id,source,aff_sub1, поэтому детализация по площадкам,
-    // офферам и sub1 приходит за один пагинированный проход (fetchAll сам
-    // проходит offset/limit по 500).
-    prog(50, 'Загрузка отчета (единый запрос)...');
-    reportData = await fetchAll('reports/summary', {
-      token, start_date: `${dFrom} 00:00:00`, end_date: `${dTo} 23:59:59`,
-      grouping: 'day', field: 'offer_id,source,aff_sub1'
-    });
-    prog(95, 'Обработка данных...');
-    originalData = [];
-    let missingUniqueClicks = 0;
-    let skippedAggregateRows = 0;
-    for (const row of reportData) {
-      const rawDate = row.period_day || row.period_hour || row.periodday || row.period || row.date || null;
-      const dateStr = parseDateSmart(rawDate);
-      if (!dateStr) continue;
-      const offerId = String(row.offer_id ?? row.offerid ?? '');
-      const platformId = String(row.platform_id ?? row.platformid ?? '').trim();
-      if (!hasApiSourceDimension(row)) {
-        skippedAggregateRows++;
-        continue;
+    prog(20, 'Загрузка данных (leads.su → БД)...');
+    const url = buildApiUrl({ action: 'update_stats', start_date: dFrom, end_date: dTo });
+    const resp = await fetchJsonSafe(url);
+    // Разбор статуса. Возможные варианты:
+    //   token_missing / token_invalid → красная плашка, дальше не идём.
+    //   locked                        → другой процесс уже синхронизируется.
+    //   partial_success               → часть проходов провалилась (429/др.),
+    //                                   всё равно рендерим то, что есть.
+    //   success                       → все 4 прохода прошли.
+    if (resp && (resp.status === 'token_missing' || resp.status === 'token_invalid')) {
+      setDataSource('error', resp.message || 'Токен leads.su не работает');
+      updateLeadsTokenStatus({ ok: false, message: resp.message || 'Token invalid', http_status: resp.http_status });
+      if (!silent) {
+        alert('Токен leads.su недействителен:\n' + (resp.message || resp.status));
+        updateProgress(0);
       }
-      // raw_clicks — общие клики из API, храним для диагностики.
-      const rawClicks = Number(row.clicks ?? row.uniqueclicks ?? row.unique_clicks ?? 0);
-      // Уникальные клики — основа для EPC/CR. Раньше тут был тихий фолбэк
-      // на общие `row.clicks`, из-за чего при отсутствии `unique_clicks` в
-      // ответе API в БД попадали общие клики и EPC занижался. Теперь, если
-      // `unique_clicks` (и его camel-вариант) реально отсутствует, ставим 0
-      // и считаем такие строки — оператор увидит warning в консоли.
-      let clicks;
-      if (row.unique_clicks != null) {
-        clicks = Number(row.unique_clicks);
-      } else if (row.uniqueclicks != null) {
-        clicks = Number(row.uniqueclicks);
-      } else {
-        clicks = 0;
-        missingUniqueClicks++;
+      return false;
+    }
+    if (resp && (resp.status === 'locked' || resp.status === '429' || resp.status === 429)) {
+      if (!silent) alert('Синхронизация уже идёт (или API rate-limited). Попробуйте через ' + (resp.retry_after || 60) + ' сек.');
+      // Всё равно перерисуем — может, из БД есть свежие данные.
+      await autoLoadSavedStats();
+      await applyGlobalFilters();
+      updateHealthBadge();
+      updateSyncLogPanel();
+      if (!silent) setTimeout(() => updateProgress(0), 1500);
+      return false;
+    }
+    // Показать плашку покрытия, если сервер вернул coverage-метрики.
+    if (resp && resp.coverage) {
+      renderCoverageBadge(resp);
+    }
+    if (resp && resp.status === 'partial_success') {
+      const failed = (resp.passes || []).filter(p => p && p.ok === false).map(p => p.name).join(', ');
+      console.warn('[update_stats] partial_success, failed passes:', failed, 'run_id=', resp.run_id);
+      if (!silent) {
+        // Мягкое предупреждение, но не блокирующий alert.
+        const wrap = document.getElementById('loadStatusWrap');
+        if (wrap) wrap.classList.remove('hidden');
+        const t = document.getElementById('loadStatusText');
+        if (t) t.textContent = 'Часть данных не догрузилась: ' + (failed || 'см. sync_log');
       }
-      const conversions = Number(row.unique_conversions ?? row.conversions ?? row.uniqueconversions ?? 0);
-      const approved = Number(row.conversions_approved ?? row.conversionsapproved ?? 0);
-      const revenue = Number(row.payout ?? 0);
-      let sourceName = 'Unknown';
-      if (platformId && platformMap[platformId]) sourceName = platformMap[platformId];
-      else if (row.source) sourceName = String(row.source).trim();
-      const sub1 = row.aff_sub1 ?? row.sub1 ?? '';
-      sourceName = mergeSourceName(sourceName);
-      // Resolve offer name: map → row data → fallback
-      let offerName = offerMap[offerId] || '';
-      if (!offerName) offerName = row.offer_name || row.offername || row.offer || '';
-      if (!offerName) offerName = offerId ? `Offer #${offerId}` : 'Unknown offer';
-      originalData.push({
-        date: dateStr, week: getWeekNumber(new Date(dateStr)), month: dateStr.slice(0, 7),
-        dayOfWeek: daysOfWeek[new Date(dateStr).getDay()],
-        offer: offerName, offer_id: offerId,
-        source: sourceName, source_id: platformId || syntheticSourceId(sourceName) || 'all', sub1,
-        clicks, raw_clicks: rawClicks, conversions, approved, revenue
-      });
     }
-    if (skippedAggregateRows > 0) {
-      console.warn(`[loadFromAPI] пропущено ${skippedAggregateRows} агрегированных строк без площадки — они не сохраняются как Unknown, чтобы не удваивать клики.`);
-    }
-    if (missingUniqueClicks > 0) {
-      const tag = missingUniqueClicks === reportData.length ? 'ALL' : `${missingUniqueClicks}/${reportData.length}`;
-      console.warn(`[loadFromAPI] leads.su /reports/summary вернул ответ без unique_clicks в ${tag} строк — clicks=0 для этих строк, EPC будет занижен/нулевым. Проверьте доступ аккаунта к unique_clicks.`);
-    }
-    // Deduplicate originalData by composite key (date + source_id + offer_id + offer + sub1)
-    originalData = deduplicateData(originalData, false);
-    // Save data to DB via server-side update (more reliable with source_id handling)
-    try {
-      await fetchJsonSafe(buildApiUrl({ action: 'save_stats' }), {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ data: originalData.map(r => ({
-          date: r.date, source_id: r.source_id || 'all', source_name: r.source,
-          offer: r.offer, offer_id: r.offer_id || '', sub1: r.sub1 || '',
-          clicks: r.clicks, raw_clicks: r.raw_clicks || r.clicks,
-          conversions: r.conversions, approved: r.approved, revenue: r.revenue
-        })) })
-      });
-    } catch(e) { console.warn('Ошибка сохранения:', e); }
-    // Заодно подтягиваем рыночные показатели офферов в кэш на сервере
-    try { await fetchJsonSafe(buildApiUrl(withLeadsToken({ action: 'fetch_offers_market' }))); }
+    prog(70, 'Отрисовка дашборда...');
+    // Заодно подтягиваем рыночные показатели офферов в кэш на сервере.
+    try { await fetchJsonSafe(buildApiUrl({ action: 'fetch_offers_market' })); }
     catch(e) { console.warn('Ошибка загрузки рыночных EPC:', e); }
-    await loadOfferMarketData();
-    // Refresh dashboard with loaded data
+    await autoLoadSavedStats();
     await applyGlobalFilters();
     setDataSource('api');
     updateHealthBadge();
+    updateSyncLogPanel();
     prog(100, 'Готово!');
     if (!silent) setTimeout(() => updateProgress(0), 1500);
     return true;
@@ -8462,18 +8411,134 @@ async function saveLeadsToken() {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ leads_api_token: key })
     });
     if (json.status !== 'success') throw new Error(json.error || 'unknown');
-    msg.textContent = 'Leads.su токен сохранён на сервере.';
-    msg.className = 'mt-3 text-sm text-emerald-400';
+    msg.textContent = 'Leads.su токен сохранён. Проверяю доступ к API...';
+    msg.className = 'mt-3 text-sm text-blue-400';
     document.getElementById('leadsApiToken').value = '';
     await loadTgSettings();
+    // Немедленная валидация токена через leads_diag — иначе пользователь
+    // нажмёт «Загрузить данные» с невалидным токеном и получит нули.
+    let diag = null;
+    try {
+      diag = await fetchJsonSafe(buildApiUrl({ action: 'leads_diag' }));
+    } catch (e) {
+      diag = { ok: false, message: e && e.message ? e.message : String(e) };
+    }
+    updateLeadsTokenStatus(diag);
+    if (diag && diag.ok) {
+      msg.textContent = 'Токен сохранён и подтверждён leads.su (' + (diag.http_status || 200) + ').';
+      msg.className = 'mt-3 text-sm text-emerald-400';
+    } else {
+      msg.textContent = 'Токен сохранён, но leads.su не отвечает: ' + ((diag && diag.message) || 'unknown');
+      msg.className = 'mt-3 text-sm text-red-400';
+    }
     await updateHealthBadge();
   } catch (e) {
     msg.textContent = 'Ошибка: ' + e.message;
     msg.className = 'mt-3 text-sm text-red-400';
   }
   msg.classList.remove('hidden');
-  setTimeout(() => msg.classList.add('hidden'), 4000);
+  setTimeout(() => msg.classList.add('hidden'), 6000);
 }
+
+// Отдельная функция обновляет плашку статуса токена и (де)активирует
+// кнопку «Загрузить данные». Вызывается из saveLeadsToken(), а также
+// после update_stats, если сервер вернул token_missing/token_invalid.
+function updateLeadsTokenStatus(diag) {
+  const el = document.getElementById('leadsTokenStatus');
+  const btn = document.getElementById('btnLoadAPI');
+  if (!el) return;
+  if (!diag) {
+    el.textContent = 'Статус токена неизвестен.';
+    el.className = 'text-xs text-slate-500';
+    return;
+  }
+  if (diag.ok) {
+    el.textContent = '✅ Токен работает (HTTP ' + (diag.http_status || 200) + ', ' + (diag.latency_ms || '?') + ' мс).';
+    el.className = 'text-xs text-emerald-400';
+    if (btn) btn.disabled = false;
+  } else {
+    el.textContent = '⛔ Токен не работает: ' + ((diag.message || diag.reason || 'unknown'));
+    el.className = 'text-xs text-red-400';
+    if (btn) btn.disabled = true;
+  }
+}
+
+// Плашка «coverage» — сколько строк ушло в БД в результате update_stats,
+// сколько без unique_clicks / без площадки. Если почти всё пусто —
+// красная плашка с советом обратиться в поддержку leads.su.
+function renderCoverageBadge(resp) {
+  const el = document.getElementById('coverageBadge');
+  if (!el) return;
+  const cov = (resp && resp.coverage) || {};
+  const rep = cov.reports || {};
+  const uni = cov.unique_clicks || {};
+  const totalRows = Number(rep.rows_total || 0);
+  const missingUniq = Number(rep.missing_unique_clicks || 0);
+  const missingPlat = Number(rep.missing_platform || 0);
+  const savedRep = Number(rep.rows_saved || 0);
+  const savedUniq = Number(uni.rows_saved || 0);
+  const badTokens = totalRows > 0 && missingUniq >= totalRows * 0.95;
+  const parts = [
+    'Строк из /reports: <b>' + totalRows + '</b>',
+    'в daily_stats: <b>' + savedRep + '</b>',
+    'в daily_unique_clicks: <b>' + savedUniq + '</b>',
+  ];
+  if (missingUniq > 0) parts.push('без unique_clicks: <b>' + missingUniq + '</b>');
+  if (missingPlat > 0) parts.push('без площадки: <b>' + missingPlat + '</b>');
+  if (resp && resp.run_id) parts.push('run_id: <code>' + resp.run_id + '</code>');
+  let html = parts.join(' · ');
+  if (badTokens) {
+    html = '⛔ leads.su вернул агрегаты без unique_clicks в ' + missingUniq + '/' + totalRows +
+      ' строк — EPC и клики будут нулевыми. Обратитесь в поддержку leads.su, чтобы включить unique_clicks для аккаунта.<br>' + html;
+    el.className = 'mt-3 text-sm text-red-400';
+  } else if (totalRows === 0) {
+    html = '⚠️ Отчёт /reports/summary пуст для выбранного диапазона. Проверьте даты и наличие трафика.<br>' + html;
+    el.className = 'mt-3 text-sm text-amber-400';
+  } else {
+    el.className = 'mt-3 text-sm text-slate-300';
+  }
+  el.innerHTML = html;
+  el.classList.remove('hidden');
+}
+
+// Панель «Последняя синхронизация»: читает /sync_log из бэка и показывает
+// сводку по 4 проходам последнего run_id.
+async function updateSyncLogPanel() {
+  const wrap = document.getElementById('syncLogSummary');
+  if (!wrap) return;
+  try {
+    const json = await fetchJsonSafe(buildApiUrl({ action: 'get_sync_log', limit: 40 }));
+    if (!json || !json.data || !json.data.length) {
+      wrap.textContent = 'Ещё нет данных о запусках.';
+      return;
+    }
+    // Найти последний run_id и все его строки.
+    const lastRun = json.last_run_id || (json.data[0] && json.data[0].run_id);
+    const rows = json.data.filter(r => r.run_id === lastRun);
+    if (!rows.length) { wrap.textContent = 'run_id не найден.'; return; }
+    // Сортируем по времени старта.
+    rows.sort((a, b) => String(a.started_at).localeCompare(String(b.started_at)));
+    const start = rows[0].started_at || '?';
+    const end = rows[rows.length - 1].finished_at || '?';
+    let html = '<div class="mb-2 text-slate-400">run_id <code>' + lastRun + '</code> · ' + start + ' → ' + end + '</div>';
+    html += '<table class="text-xs w-full"><thead><tr class="text-slate-500">' +
+      '<th class="text-left pr-3">Проход</th><th class="text-right pr-3">Строк</th>' +
+      '<th class="text-right pr-3">HTTP</th><th class="text-left">Сообщение</th></tr></thead><tbody>';
+    for (const r of rows) {
+      const ok = !r.http_status || (r.http_status >= 200 && r.http_status < 300);
+      html += '<tr class="' + (ok ? 'text-emerald-400' : 'text-red-400') + '">' +
+        '<td class="pr-3">' + (r.pass || '') + '</td>' +
+        '<td class="text-right pr-3">' + (r.rows == null ? '—' : r.rows) + '</td>' +
+        '<td class="text-right pr-3">' + (r.http_status || '—') + (r.retry_after ? ' (retry ' + r.retry_after + ' с)' : '') + '</td>' +
+        '<td>' + (r.message || '') + '</td></tr>';
+    }
+    html += '</tbody></table>';
+    wrap.innerHTML = html;
+  } catch (e) {
+    wrap.textContent = 'Не удалось загрузить sync_log: ' + e.message;
+  }
+}
+
 // ========================== DEEPSEEK API KEY ==========================
 async function saveAiKey() {
   const key = document.getElementById('aiApiKey').value.trim();
