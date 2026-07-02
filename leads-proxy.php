@@ -1559,6 +1559,94 @@ function replaceAccountTotalsRowsForRange($db, $rows, $startDate, $endDate) {
 }
 
 /**
+ * Полная замена daily_stats за диапазон дат БЕЗ фильтра по source_id. Нужна для
+ * «одного запроса на весь аккаунт»: когда мы забираем /reports/summary один раз
+ * с fields=offer_id,source,aff_sub1 (без перебора platform_id), ответ авторитетен
+ * сразу по ВСЕМ площадкам диапазона — поэтому удаляем весь срез дат и пишем заново,
+ * иначе исчезнувшие у leads.su строки остались бы «висеть» в БД. Вызывать ТОЛЬКО
+ * при полностью успешной непустой выгрузке (см. guard в update_stats).
+ */
+function replaceReportRowsForFullRange($db, $rows, $offerMap, $startDate, $endDate) {
+    return leadsWithImmediateTransaction($db, function () use ($db, $rows, $offerMap, $startDate, $endDate) {
+        deleteDateRangeRows($db, 'daily_stats', $startDate, $endDate);
+        return saveReportRows($db, $rows, $offerMap);
+    });
+}
+
+/**
+ * Полная замена daily_unique_clicks за диапазон дат БЕЗ фильтра по source_id.
+ * Аналог replaceReportRowsForFullRange для «истинных» уникальных кликов, когда
+ * они забраны одним запросом grouping=day&fields=source (по всем площадкам сразу).
+ */
+function replaceUniqueClicksRowsForFullRange($db, $rows, $startDate, $endDate) {
+    return leadsWithImmediateTransaction($db, function () use ($db, $rows, $startDate, $endDate) {
+        deleteDateRangeRows($db, 'daily_unique_clicks', $startDate, $endDate);
+        return saveUniqueClicksRows($db, $rows);
+    });
+}
+
+/**
+ * Единый пагинированный запрос к /webmaster/reports/summary.
+ *
+ * Забирает ВЕСЬ диапазон дат за один «логический» вызов (с пагинацией
+ * offset/limit по 500), вместо перебора площадок в foreach — это и есть
+ * защита от HTTP 429: вместо 50+ запросов на прогон получаем 1-3.
+ *
+ * $fields    — список группировок через запятую (например 'offer_id,source,aff_sub1'
+ *              для детализации или 'source' для уникальных кликов по площадке).
+ *              Пусто → агрегат по кабинету (одна строка на день).
+ * $platformId — если задан, добавляет &platform_id=X (drill-down по одной площадке).
+ *
+ * Возвращает [rows, errors, rateLimited, retryAfter].
+ */
+function fetchLeadsSummaryPaged($token, $apiStart, $apiEnd, $grouping = 'day', $fields = '', $platformId = '', $scopeLabel = '') {
+    $rows = [];
+    $errors = [];
+    $rateLimited = false;
+    $retryAfter = 120;
+    $offset = 0;
+    $limit = 500;
+
+    $fieldsParam = '';
+    if ($fields !== '') {
+        $fieldArr = array_filter(array_map('trim', explode(',', $fields)));
+        if ($fieldArr) $fieldsParam = '&fields=' . urlencode(implode(',', $fieldArr));
+    }
+
+    // Hard cap на число страниц (200 × 500 = 100 000 строк) — защита от
+    // зацикленной пагинации, если API перестанет уменьшать count.
+    $maxIterations = 200;
+    for ($i = 0; $i < $maxIterations; $i++) {
+        $url = "https://api.leads.su/webmaster/reports/summary?token={$token}"
+             . "&start_date=" . urlencode($apiStart)
+             . "&end_date="   . urlencode($apiEnd)
+             . "&grouping="   . urlencode($grouping)
+             . $fieldsParam
+             . "&offset={$offset}&limit={$limit}";
+        if ($platformId !== '') $url .= "&platform_id=" . urlencode($platformId);
+
+        $data = apiGet($url);
+        if (isset($data['error'])) {
+            $errors[] = ['scope' => $scopeLabel, 'offset' => $offset, 'error' => $data['error']];
+            error_log("fetchLeadsSummaryPaged({$scopeLabel}): offset={$offset} error " . json_encode($data['error']));
+            if (!empty($data['status']) && (int)$data['status'] === 429) {
+                $rateLimited = true;
+                if (!empty($data['retry_after'])) $retryAfter = max($retryAfter, (int)$data['retry_after']);
+            }
+            break;
+        }
+        $chunk = $data['data'] ?? [];
+        if ($chunk) $rows = array_merge($rows, $chunk);
+        if (count($chunk) < $limit) break;
+        $offset += $limit;
+        if ($i === $maxIterations - 1) {
+            error_log("fetchLeadsSummaryPaged({$scopeLabel}): hit max iterations at offset={$offset}");
+        }
+    }
+    return [$rows, $errors, $rateLimited, $retryAfter];
+}
+
+/**
  * Выполняет GET-запрос к Yandex Metrika API
  */
 function ymApiGet($url, $ymToken) {
@@ -3616,63 +3704,48 @@ if ($action === 'refresh_unique_clicks') {
     $apiStart = (strlen($start_date) === 10) ? "{$start_date} 00:00:00" : $start_date;
     $apiEnd   = (strlen($end_date)   === 10) ? "{$end_date} 23:59:59"   : $end_date;
 
-    $platforms = [];
-    if ($platform_id) {
-        $platforms[] = ['id' => (string)$platform_id, 'name' => ''];
-    } else {
-        $platforms = fetchPlatformsList($token, $db);
-        if (!$platforms) $platforms = [['id' => '', 'name' => '']];
-    }
-
     $savedUnique = 0;
-    $uniqueBatches = [];
     $apiErrors = [];
-    // Флаг «уже поймали 429 от апстрима» — прерывает не только внутреннюю
-    // пагинацию, но и внешний foreach по площадкам, и последующие проходы
-    // by_offer / account_totals. Всё, что успели сохранить до 429 — уже
-    // в базе (saveUniqueClicksRows вызывается на каждой странице).
+    // Флаг «уже поймали 429 от апстрима» — прерывает последующие проходы
+    // by_offer / account_totals. Всё, что успели сохранить до 429 — уже в базе.
     $rateLimited = false;
     $retryAfter = 120;
-    foreach ($platforms as $p) {
-        if ($rateLimited) break;
-        $pid = $p['id'] ?? '';
-        $pname = $p['name'] ?? '';
-        $offset = 0;
-        $limit = 500;
-        while (true) {
-            $url = "https://api.leads.su/webmaster/reports/summary?token={$token}"
-                 . "&start_date=" . urlencode($apiStart)
-                 . "&end_date="   . urlencode($apiEnd)
-                 . "&grouping=day"
-                 . "&offset={$offset}&limit={$limit}";
-            if ($pid !== '') $url .= "&platform_id=" . urlencode($pid);
 
-            $data = apiGet($url);
-            if (isset($data['error'])) {
-                $apiErrors[] = ['platform_id' => $pid, 'error' => $data['error']];
-                error_log("refresh_unique_clicks: platform={$pid} error " . json_encode($data['error']));
-                if (!empty($data['status']) && (int)$data['status'] === 429) {
-                    $rateLimited = true;
-                    if (!empty($data['retry_after'])) $retryAfter = max($retryAfter, (int)$data['retry_after']);
-                }
-                break;
+    // «Истинные» уникальные клики per (date, площадка) — ОДНИМ запросом.
+    // Вместо перебора площадок в foreach (десятки запросов → HTTP 429) берём
+    // grouping=day с fields=source: leads.su уникализирует посетителей по дню ×
+    // источнику (площадке) и возвращает все площадки сразу. Если запрошена
+    // одна площадка (drill-down) — фильтруем &platform_id и сохраняем реальный
+    // platform_id как source_id (как раньше).
+    if ($platform_id) {
+        $pid = (string)$platform_id;
+        [$uniqueRows, $errs, $rateLimited, $retryAfter] =
+            fetchLeadsSummaryPaged($token, $apiStart, $apiEnd, 'day', '', $pid, 'unique_clicks');
+        if ($errs) $apiErrors = array_merge($apiErrors, $errs);
+        // Проставляем реальный platform_id в строки, чтобы source_id совпал с
+        // остальными путями (детализация/фронт), где площадка идентифицируется
+        // явным platform_id, а не синтетическим id из имени источника.
+        foreach ($uniqueRows as &$ur) {
+            if (!isset($ur['platform_id']) || $ur['platform_id'] === '' || $ur['platform_id'] === null) {
+                $ur['platform_id'] = $pid;
             }
-            $rows = $data['data'] ?? [];
-            if ($rows) {
-                $uniqueBatches[] = ['rows' => $rows, 'pid' => $pid, 'pname' => $pname];
-            }
-            if (count($rows) < $limit) break;
-            $offset += $limit;
         }
+        unset($ur);
+        $savedUnique = ($rateLimited || $apiErrors || !$uniqueRows)
+            ? saveUniqueClicksRows($db, $uniqueRows, $pid)
+            : replaceUniqueClickBatchesForRange($db, [['rows' => $uniqueRows, 'pid' => $pid, 'pname' => '']], $apiStart, $apiEnd, [$pid]);
+    } else {
+        [$uniqueRows, $errs, $rateLimited, $retryAfter] =
+            fetchLeadsSummaryPaged($token, $apiStart, $apiEnd, 'day', 'source', '', 'unique_clicks');
+        if ($errs) $apiErrors = array_merge($apiErrors, $errs);
+        // Destructive replace выполняем ТОЛЬКО когда синк действительно что-то
+        // выгрузил. Пустой успешный ответ leads.su (data:[] без error) не
+        // считается авторитетным «данных больше нет» — иначе спорадический
+        // пустой ответ обнуляет весь диапазон дат в БД. См. PR #65 regression.
+        $savedUnique = ($rateLimited || $apiErrors || !$uniqueRows)
+            ? saveUniqueClicksRows($db, $uniqueRows)
+            : replaceUniqueClicksRowsForFullRange($db, $uniqueRows, $apiStart, $apiEnd);
     }
-    $sourceIds = leadsPlatformScopeIds($platforms);
-    // Destructive replace выполняем ТОЛЬКО когда синк действительно что-то
-    // выгрузил. Пустой успешный ответ leads.su (data:[] без error) не
-    // считается авторитетным «данных больше нет» — иначе спорадический
-    // пустой ответ обнуляет весь диапазон дат в БД. См. PR #65 regression.
-    $savedUnique = ($rateLimited || $apiErrors || !$uniqueBatches)
-        ? saveUniqueClickBatches($db, $uniqueBatches)
-        : replaceUniqueClickBatchesForRange($db, $uniqueBatches, $apiStart, $apiEnd, $sourceIds);
 
     // Если уже выбили лимит — не запускаем by_offer и account_totals: это
     // дополнительные тяжёлые проходы, они только усугубят бан. Отдаём
@@ -3700,31 +3773,9 @@ if ($action === 'refresh_unique_clicks') {
         }
     }
     $savedUniqueByOffer = 0;
-    $uniqueByOfferRows = [];
-    $offset = 0;
-    $limit = 500;
-    while (true) {
-        $url = "https://api.leads.su/webmaster/reports/summary?token={$token}"
-             . "&start_date=" . urlencode($apiStart)
-             . "&end_date="   . urlencode($apiEnd)
-             . "&grouping=day"
-             . "&fields=" . urlencode('offer_id')
-             . "&offset={$offset}&limit={$limit}";
-        $data = apiGet($url);
-        if (isset($data['error'])) {
-            $apiErrors[] = ['scope' => 'unique_clicks_by_offer', 'error' => $data['error']];
-            error_log("refresh_unique_clicks(by_offer): error " . json_encode($data['error']));
-            if (!empty($data['status']) && (int)$data['status'] === 429) {
-                $rateLimited = true;
-                if (!empty($data['retry_after'])) $retryAfter = max($retryAfter, (int)$data['retry_after']);
-            }
-            break;
-        }
-        $rows = $data['data'] ?? [];
-        if ($rows) $uniqueByOfferRows = array_merge($uniqueByOfferRows, $rows);
-        if (count($rows) < $limit) break;
-        $offset += $limit;
-    }
+    [$uniqueByOfferRows, $errs, $rateLimited, $retryAfter] =
+        fetchLeadsSummaryPaged($token, $apiStart, $apiEnd, 'day', 'offer_id', '', 'unique_clicks_by_offer');
+    if ($errs) $apiErrors = array_merge($apiErrors, $errs);
     $savedUniqueByOffer = ($rateLimited || $apiErrors || !$uniqueByOfferRows)
         ? saveUniqueClicksByOfferRows($db, $uniqueByOfferRows, $offerMap)
         : replaceUniqueClicksByOfferRowsForRange($db, $uniqueByOfferRows, $offerMap, $apiStart, $apiEnd);
@@ -3751,7 +3802,6 @@ if ($action === 'refresh_unique_clicks') {
         'saved_unique_clicks' => $savedUnique,
         'saved_unique_clicks_by_offer' => $savedUniqueByOffer,
         'saved_account_totals' => $savedAccountTotals,
-        'platforms_processed' => count($platforms),
         'errors' => $apiErrors,
     ]);
     exit;
