@@ -764,6 +764,34 @@ try {
         value TEXT
     )');
 
+    // Журнал синхронизации с leads.su. Одна строка на «проход» (report/unique/
+    // unique_by_offer/account_totals) внутри одного запуска `update_stats`.
+    // UI читает этот журнал, чтобы показать пользователю ровно, какие проходы
+    // отработали, какие упали (HTTP-код, retry_after) и сколько строк они
+    // записали — без этого при частичном 429 «нули на дашборде» невозможно
+    // диагностировать со стороны фронта.
+    $db->exec('CREATE TABLE IF NOT EXISTS sync_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id TEXT NOT NULL,
+        pass TEXT NOT NULL,
+        started_at INTEGER NOT NULL,
+        finished_at INTEGER,
+        http_status INTEGER,
+        retry_after INTEGER,
+        rows_saved INTEGER DEFAULT 0,
+        rows_total INTEGER DEFAULT 0,
+        missing_unique_clicks INTEGER DEFAULT 0,
+        missing_platform INTEGER DEFAULT 0,
+        missing_date INTEGER DEFAULT 0,
+        aggregate_skipped INTEGER DEFAULT 0,
+        start_date TEXT,
+        end_date TEXT,
+        status TEXT,
+        message TEXT
+    )');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_sync_log_run ON sync_log(run_id)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_sync_log_started ON sync_log(started_at)');
+
     // ============================================================================
     // Дашборд монетизации отказного трафика — каркас (PR 1).
     // Таблицы создаются заранее, чтобы FE/AI-аналитика могли писать в них по
@@ -1218,6 +1246,129 @@ function syntheticOfferId($name) {
 }
 
 /**
+ * Нормализация дат для запросов к leads.su API.
+ * Возвращает [$apiStart, $apiEnd] в виде "Y-m-d HH:MM:SS": голый Y-m-d
+ * трактуется API как эксклюзивная граница и обрезает текущий день,
+ * поэтому единой точкой формируем полный день "$from 00:00:00 →
+ * $to 23:59:59". Если время уже указано в исходной строке — не трогаем.
+ */
+function normalizeApiDates($startDate, $endDate) {
+    $s = trim((string)$startDate);
+    $e = trim((string)$endDate);
+    if ($s !== '' && strlen($s) === 10) $s .= ' 00:00:00';
+    if ($e !== '' && strlen($e) === 10) $e .= ' 23:59:59';
+    return [$s, $e];
+}
+
+/**
+ * Preflight-запрос к /webmaster/platforms?limit=1: проверяет, что токен
+ * действительно работает, ДО того как update_stats начнёт 4 тяжёлых прохода.
+ * Возвращает ['ok' => bool, 'reason' => string, 'message' => string,
+ * 'http_status' => int]. При ok=false нельзя удалять существующие
+ * срезы данных — иначе валидные исторические цифры затираются нулями
+ * из-за пустого/ошибочного ответа API.
+ */
+function leadsPreflight($token) {
+    $url = 'https://api.leads.su/webmaster/platforms?token=' . urlencode($token) . '&limit=1&offset=0';
+    $ch = curl_init();
+    curl_setopt_array($ch, [
+        CURLOPT_URL => $url,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_TIMEOUT => 15,
+        CURLOPT_SSL_VERIFYPEER => false,
+        CURLOPT_HTTPHEADER => ['Accept: application/json', 'User-Agent: leads-proxy/3.0'],
+    ]);
+    $body = curl_exec($ch);
+    $http = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $curlErr = curl_error($ch);
+    curl_close($ch);
+    if ($curlErr) {
+        return ['ok' => false, 'reason' => 'network_error',
+            'message' => 'Сетевая ошибка preflight: ' . $curlErr, 'http_status' => $http];
+    }
+    if ($http !== 200) {
+        return ['ok' => false, 'reason' => 'http_' . $http,
+            'message' => "Leads.su preflight вернул HTTP {$http}. Проверьте токен и доступность API.",
+            'http_status' => $http];
+    }
+    $json = json_decode((string)$body, true);
+    if (!is_array($json)) {
+        return ['ok' => false, 'reason' => 'invalid_json',
+            'message' => 'Leads.su preflight вернул невалидный JSON.', 'http_status' => $http];
+    }
+    $rows = $json['data'] ?? $json['platforms'] ?? $json['items'] ?? [];
+    if (!is_array($rows) || count($rows) === 0) {
+        return ['ok' => false, 'reason' => 'empty_platforms',
+            'message' => 'Leads.su preflight не вернул ни одной площадки. Токен работает, но у аккаунта нет активных площадок.',
+            'http_status' => $http];
+    }
+    return ['ok' => true, 'reason' => '', 'message' => '', 'http_status' => $http];
+}
+
+/**
+ * Генерирует run_id для одного запуска update_stats: unix-ts + короткий rand.
+ * Используется во всех строках sync_log одного прогона.
+ */
+function syncLogNewRunId() {
+    return sprintf('%d-%04x', time(), random_int(0, 0xFFFF));
+}
+
+/**
+ * Начать запись прохода в sync_log. Возвращает id строки, чтобы её потом
+ * можно было финализировать (finished_at, http_status, rows_saved, ...).
+ */
+function syncLogStart($db, $runId, $pass, $startDate, $endDate) {
+    if (!($db instanceof SQLite3)) return 0;
+    $stmt = @$db->prepare('INSERT INTO sync_log
+        (run_id, pass, started_at, start_date, end_date, status)
+        VALUES (:run_id, :pass, :started_at, :start_date, :end_date, :status)');
+    if (!$stmt) return 0;
+    $stmt->bindValue(':run_id', (string)$runId, SQLITE3_TEXT);
+    $stmt->bindValue(':pass', (string)$pass, SQLITE3_TEXT);
+    $stmt->bindValue(':started_at', time(), SQLITE3_INTEGER);
+    $stmt->bindValue(':start_date', (string)$startDate, SQLITE3_TEXT);
+    $stmt->bindValue(':end_date', (string)$endDate, SQLITE3_TEXT);
+    $stmt->bindValue(':status', 'running', SQLITE3_TEXT);
+    @$stmt->execute();
+    $id = (int)$db->lastInsertRowID();
+    @$stmt->close();
+    return $id;
+}
+
+/**
+ * Финализировать запись прохода в sync_log. $fields — ассоциативный массив
+ * с любым подмножеством: rows_saved, rows_total, missing_unique_clicks,
+ * missing_platform, missing_date, aggregate_skipped, http_status,
+ * retry_after, status, message.
+ */
+function syncLogFinish($db, $id, array $fields) {
+    if (!($db instanceof SQLite3) || $id <= 0) return;
+    $allowed = ['rows_saved', 'rows_total', 'missing_unique_clicks',
+        'missing_platform', 'missing_date', 'aggregate_skipped',
+        'http_status', 'retry_after', 'status', 'message'];
+    $sets = ['finished_at = :finished_at'];
+    $binds = [':finished_at' => [time(), SQLITE3_INTEGER]];
+    foreach ($allowed as $k) {
+        if (!array_key_exists($k, $fields)) continue;
+        $sets[] = "{$k} = :{$k}";
+        $val = $fields[$k];
+        if (in_array($k, ['status', 'message'], true)) {
+            $binds[":{$k}"] = [(string)$val, SQLITE3_TEXT];
+        } else {
+            $binds[":{$k}"] = [(int)$val, SQLITE3_INTEGER];
+        }
+    }
+    $sql = 'UPDATE sync_log SET ' . implode(', ', $sets) . ' WHERE id = :id';
+    $stmt = @$db->prepare($sql);
+    if (!$stmt) return;
+    foreach ($binds as $key => [$v, $t]) $stmt->bindValue($key, $v, $t);
+    $stmt->bindValue(':id', $id, SQLITE3_INTEGER);
+    @$stmt->execute();
+    @$stmt->close();
+}
+
+/**
  * Действующий токен Leads.su: явный token из запроса (обратная совместимость),
  * затем переменная окружения LEADS_API_TOKEN, затем app_settings.leads_api_token.
  * Клиент может больше не передавать токен в каждом URL, если он сохранён на сервере.
@@ -1534,25 +1685,33 @@ function deleteDateRangeRows($db, $table, $startDate, $endDate, $scopeColumn = '
     return $db->changes();
 }
 
-function replaceReportRowsForRange($db, $rows, $offerMap, $startDate, $endDate, $sourceIds) {
-    return leadsWithImmediateTransaction($db, function () use ($db, $rows, $offerMap, $startDate, $endDate, $sourceIds) {
+function replaceReportRowsForRange($db, $rows, $offerMap, $startDate, $endDate, $sourceIds, &$coverage = null) {
+    return leadsWithImmediateTransaction($db, function () use ($db, $rows, $offerMap, $startDate, $endDate, $sourceIds, &$coverage) {
         deleteDateRangeRows($db, 'daily_stats', $startDate, $endDate, 'source_id', $sourceIds);
-        return saveReportRows($db, $rows, $offerMap);
+        return saveReportRows($db, $rows, $offerMap, $coverage);
     });
 }
 
-function saveUniqueClickBatches($db, $batches) {
+function saveUniqueClickBatches($db, $batches, &$coverage = null) {
     $saved = 0;
+    $agg = ['rows_total' => 0, 'rows_saved' => 0,
+        'missing_unique_clicks' => 0, 'missing_platform' => 0,
+        'missing_date' => 0, 'aggregate_skipped' => 0];
     foreach ($batches as $batch) {
-        $saved += saveUniqueClicksRows($db, $batch['rows'], $batch['pid'], $batch['pname']);
+        $batchCov = null;
+        $saved += saveUniqueClicksRows($db, $batch['rows'], $batch['pid'], $batch['pname'], $batchCov);
+        if (is_array($batchCov)) {
+            foreach ($agg as $k => $_) $agg[$k] += (int)($batchCov[$k] ?? 0);
+        }
     }
+    $coverage = $agg;
     return $saved;
 }
 
-function replaceUniqueClickBatchesForRange($db, $batches, $startDate, $endDate, $sourceIds) {
-    return leadsWithImmediateTransaction($db, function () use ($db, $batches, $startDate, $endDate, $sourceIds) {
+function replaceUniqueClickBatchesForRange($db, $batches, $startDate, $endDate, $sourceIds, &$coverage = null) {
+    return leadsWithImmediateTransaction($db, function () use ($db, $batches, $startDate, $endDate, $sourceIds, &$coverage) {
         deleteDateRangeRows($db, 'daily_unique_clicks', $startDate, $endDate, 'source_id', $sourceIds);
-        return saveUniqueClickBatches($db, $batches);
+        return saveUniqueClickBatches($db, $batches, $coverage);
     });
 }
 
@@ -1578,10 +1737,10 @@ function replaceAccountTotalsRowsForRange($db, $rows, $startDate, $endDate) {
  * иначе исчезнувшие у leads.su строки остались бы «висеть» в БД. Вызывать ТОЛЬКО
  * при полностью успешной непустой выгрузке (см. guard в update_stats).
  */
-function replaceReportRowsForFullRange($db, $rows, $offerMap, $startDate, $endDate) {
-    return leadsWithImmediateTransaction($db, function () use ($db, $rows, $offerMap, $startDate, $endDate) {
+function replaceReportRowsForFullRange($db, $rows, $offerMap, $startDate, $endDate, &$coverage = null) {
+    return leadsWithImmediateTransaction($db, function () use ($db, $rows, $offerMap, $startDate, $endDate, &$coverage) {
         deleteDateRangeRows($db, 'daily_stats', $startDate, $endDate);
-        return saveReportRows($db, $rows, $offerMap);
+        return saveReportRows($db, $rows, $offerMap, $coverage);
     });
 }
 
@@ -1590,10 +1749,10 @@ function replaceReportRowsForFullRange($db, $rows, $offerMap, $startDate, $endDa
  * Аналог replaceReportRowsForFullRange для «истинных» уникальных кликов, когда
  * они забраны одним запросом grouping=day&fields=source (по всем площадкам сразу).
  */
-function replaceUniqueClicksRowsForFullRange($db, $rows, $startDate, $endDate) {
-    return leadsWithImmediateTransaction($db, function () use ($db, $rows, $startDate, $endDate) {
+function replaceUniqueClicksRowsForFullRange($db, $rows, $startDate, $endDate, &$coverage = null) {
+    return leadsWithImmediateTransaction($db, function () use ($db, $rows, $startDate, $endDate, &$coverage) {
         deleteDateRangeRows($db, 'daily_unique_clicks', $startDate, $endDate);
-        return saveUniqueClicksRows($db, $rows);
+        return saveUniqueClicksRows($db, $rows, '', '', $coverage);
     });
 }
 
@@ -1720,7 +1879,7 @@ function ymApiGet($url, $ymToken) {
  * `raw_clicks` — обычные clicks из API; храним только для диагностики.
  *                EPC и трафик считаем по `clicks` (уникальным).
  */
-function saveReportRows($db, $rows, $offerMap) {
+function saveReportRows($db, $rows, $offerMap, &$coverage = null) {
     $inserted = 0;
     $stmt = $db->prepare('INSERT INTO daily_stats
         (date, source_id, source_name, offer_id, offer_name, sub1, clicks, raw_clicks, conversions, approved, revenue, pending_payout)
@@ -1742,6 +1901,9 @@ function saveReportRows($db, $rows, $offerMap) {
 
     $missingUniqueClicks = 0;
     $totalRows = 0;
+    $missingPlatform = 0;
+    $missingDate = 0;
+    $aggregateSkipped = 0;
     foreach ($rows as $row) {
         // Нормализация даты: API может вернуть "2024-01-15" или "2024-01-15 00:00:00".
         // В UNIQUE-ключе нужна именно дата без времени, иначе один и тот же день
@@ -1755,18 +1917,26 @@ function saveReportRows($db, $rows, $offerMap) {
             ?? $row['period']
             ?? $row['date']
             ?? null;
-        if (!$rawDate) continue;
+        if (!$rawDate) { $missingDate++; continue; }
         $date = substr((string)$rawDate, 0, 10);
-        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) continue;
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) { $missingDate++; continue; }
 
         // При запросе детализации по source API иногда дополнительно возвращает
         // агрегат по аккаунту без площадки. Такая строка выглядит как Unknown и
         // содержит сумму всех кликов — её нельзя писать в per-platform таблицу.
-        if (!hasSourceDimension($row)) continue;
+        if (!hasSourceDimension($row)) { $aggregateSkipped++; continue; }
 
-        $sourceName = cleanSourceName($row['source'] ?? $row['platform_name'] ?? 'Unknown');
-        // Сначала смотрим на явный platform_id из API, затем — синтезируем из имени.
+        // Явный отказ от «синтетического» source_id='all' для строк, у которых
+        // leads.su не вернул platform_id И имя источника пустое: такая строка —
+        // почти всегда агрегат по аккаунту, дублирующий клики. Пишем её только
+        // если есть хотя бы platform_id или непустое имя площадки.
         $rawSourceId = $row['platform_id'] ?? $row['platformid'] ?? '';
+        $rawSourceName = trim((string)($row['source'] ?? $row['platform_name'] ?? ''));
+        $sourceName = cleanSourceName($rawSourceName !== '' ? $rawSourceName : 'Unknown');
+        if (($rawSourceId === '' || $rawSourceId === null) && $rawSourceName === '') {
+            $missingPlatform++;
+            continue;
+        }
         $sourceId = ($rawSourceId !== '' && $rawSourceId !== null)
             ? (string)$rawSourceId
             : syntheticSourceId($sourceName);
@@ -1841,6 +2011,17 @@ function saveReportRows($db, $rows, $offerMap) {
     } elseif ($missingUniqueClicks > 0) {
         error_log("saveReportRows: leads.su не вернул unique_clicks в {$missingUniqueClicks} из {$totalRows} строк — затронутые строки сохранены с clicks=0.");
     }
+    if ($missingPlatform > 0) {
+        error_log("saveReportRows: пропущено {$missingPlatform} строк без platform_id/source (агрегаты по аккаунту) — они не пишутся как Unknown, чтобы не дублировать клики.");
+    }
+    $coverage = [
+        'rows_total'            => $totalRows,
+        'rows_saved'            => $inserted,
+        'missing_unique_clicks' => $missingUniqueClicks,
+        'missing_platform'      => $missingPlatform,
+        'missing_date'          => $missingDate,
+        'aggregate_skipped'     => $aggregateSkipped,
+    ];
     return $inserted;
 }
 
@@ -1853,7 +2034,10 @@ function saveReportRows($db, $rows, $offerMap) {
  * аддитивны по сумме площадок и дат и совпадают с цифрой «уникальные
  * клики» в личном кабинете leads.su.
  */
-function saveUniqueClicksRows($db, $rows, $defaultSourceId = '', $defaultSourceName = '') {
+function saveUniqueClicksRows($db, $rows, $defaultSourceId = '', $defaultSourceName = '', &$coverage = null) {
+    $coverage = ['rows_total' => 0, 'rows_saved' => 0,
+        'missing_unique_clicks' => 0, 'missing_platform' => 0,
+        'missing_date' => 0, 'aggregate_skipped' => 0];
     if (!$rows) return 0;
     $stmt = $db->prepare('INSERT INTO daily_unique_clicks
         (date, source_id, source_name, unique_clicks, raw_clicks, pending_payout)
@@ -1871,11 +2055,14 @@ function saveUniqueClicksRows($db, $rows, $defaultSourceId = '', $defaultSourceN
             ?? $row['period']
             ?? $row['date']
             ?? null;
-        if (!$rawDate) continue;
+        if (!$rawDate) { $coverage['missing_date']++; continue; }
         $date = substr((string)$rawDate, 0, 10);
-        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) continue;
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) { $coverage['missing_date']++; continue; }
 
-        if (!hasSourceDimension($row, $defaultSourceId, $defaultSourceName)) continue;
+        if (!hasSourceDimension($row, $defaultSourceId, $defaultSourceName)) {
+            $coverage['aggregate_skipped']++;
+            continue;
+        }
 
         $sourceName = cleanSourceName($row['source'] ?? $row['platform_name'] ?? $defaultSourceName ?? '');
         $rawSourceId = $row['platform_id'] ?? $row['platformid'] ?? $defaultSourceId ?? '';
@@ -1883,11 +2070,15 @@ function saveUniqueClicksRows($db, $rows, $defaultSourceId = '', $defaultSourceN
             ? (string)$rawSourceId
             : ($sourceName !== '' ? syntheticSourceId($sourceName) : 'all');
 
+        $coverage['rows_total']++;
         // unique_clicks может отсутствовать (см. saveReportRows). В этом случае
         // фиксируем 0 — KPI на фронте сделает fallback к детальной сумме.
-        $unique = array_key_exists('unique_clicks', $row) && $row['unique_clicks'] !== null
-            ? (int)$row['unique_clicks']
-            : 0;
+        if (array_key_exists('unique_clicks', $row) && $row['unique_clicks'] !== null) {
+            $unique = (int)$row['unique_clicks'];
+        } else {
+            $unique = 0;
+            $coverage['missing_unique_clicks']++;
+        }
         $raw = (int)($row['clicks'] ?? $row['unique_clicks'] ?? 0);
         $pendingPayout = (float)($row['pending_payout'] ?? $row['pendingpayout'] ?? 0);
 
@@ -1900,6 +2091,7 @@ function saveUniqueClicksRows($db, $rows, $defaultSourceId = '', $defaultSourceN
         if ($stmt->execute()) $inserted++;
         $stmt->reset();
     }
+    $coverage['rows_saved'] = $inserted;
     return $inserted;
 }
 
@@ -3724,10 +3916,8 @@ if ($action === 'refresh_unique_clicks') {
         exit;
     }
 
-    // Нормализация дат: API leads.su интерпретирует end_date как ИСКЛЮЧИТЕЛЬНУЮ
-    // границу, если время не указано (см. update_stats). Добиваем явное время.
-    $apiStart = (strlen($start_date) === 10) ? "{$start_date} 00:00:00" : $start_date;
-    $apiEnd   = (strlen($end_date)   === 10) ? "{$end_date} 23:59:59"   : $end_date;
+    // Нормализация дат через единую точку (см. normalizeApiDates).
+    [$apiStart, $apiEnd] = normalizeApiDates($start_date, $end_date);
 
     $savedUnique = 0;
     $apiErrors = [];
@@ -3853,8 +4043,7 @@ if ($action === 'refresh_account_totals') {
         ]);
         exit;
     }
-    $apiStart = (strlen($start_date) === 10) ? "{$start_date} 00:00:00" : $start_date;
-    $apiEnd   = (strlen($end_date)   === 10) ? "{$end_date} 23:59:59"   : $end_date;
+    [$apiStart, $apiEnd] = normalizeApiDates($start_date, $end_date);
     [$saved, $errors] = fetchAndSaveAccountTotals($db, $token, $apiStart, $apiEnd);
     echo json_encode([
         'status' => 'success',
@@ -3977,7 +4166,11 @@ if ($action === 'update_stats') {
     }
     $token = leadsEffectiveToken($db, $token);
     if (!$token) {
-        echo json_encode(['error' => 'token required']);
+        echo json_encode([
+            'status' => 'token_missing',
+            'error' => 'token required',
+            'message' => 'Leads.su token не задан. Сохраните токен в настройках или задайте env LEADS_API_TOKEN.',
+        ]);
         exit;
     }
     if (!leadsApiAcquireLock()) {
@@ -3989,12 +4182,22 @@ if ($action === 'update_stats') {
         exit;
     }
 
-    // Нормализация дат: API leads.su интерпретирует end_date как ИСКЛЮЧИТЕЛЬНУЮ
-    // границу, если время не указано → день обрезается. Если пришли голые
-    // YYYY-MM-DD — добиваем "00:00:00" / "23:59:59", чтобы сегодняшний день
-    // тоже попал в ответ. Если время уже есть — оставляем как прислали.
-    $apiStart = (strlen($start_date) === 10) ? "{$start_date} 00:00:00" : $start_date;
-    $apiEnd   = (strlen($end_date)   === 10) ? "{$end_date} 23:59:59"   : $end_date;
+    // Нормализация дат через единую точку (см. normalizeApiDates).
+    [$apiStart, $apiEnd] = normalizeApiDates($start_date, $end_date);
+
+    // (0) Preflight: проверяем токен ДО удаления/записи данных. Если leads.su
+    // отвечает не 200 / пустым списком — сразу выходим со статусом
+    // token_invalid, не удаляя валидные исторические срезы из БД.
+    $preflight = leadsPreflight($token);
+    if (!$preflight['ok']) {
+        echo json_encode([
+            'status' => 'token_invalid',
+            'reason' => $preflight['reason'],
+            'http_status' => $preflight['http_status'],
+            'message' => $preflight['message'],
+        ], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
 
     // Получаем офферы один раз и параллельно сохраняем в offers_cache
     $offerMap = fetchOffersMap($token, $db);
@@ -4006,20 +4209,23 @@ if ($action === 'update_stats') {
     // (площадку) в каждой строке, поэтому перебор platform_id не нужен. Если
     // запрошена одна площадка (drill-down) — фильтруем &platform_id и сохраняем
     // реальный platform_id как source_id (обратная совместимость).
-    $fieldsList = $fields ?: '';
+    $fieldsList = $fields ?: 'offer_id,source,aff_sub1';
     $drillPlatform = $platform_id ? (string)$platform_id : '';
 
-    $allRows = [];
+    $runId = syncLogNewRunId();
     $apiErrors = [];
-    $rateLimited = false;
-    $retryAfter = 120;
+    $rateLimitedAny = false;
+    $lastRetryAfter = 0;
+    $passStatuses = [];
+    $coverageAll = [];
 
+    // ---------- ПРОХОД 1: детализация (offer × source × sub1) ----------
+    $logId = syncLogStart($db, $runId, 'stats', $apiStart, $apiEnd);
     [$allRows, $errs, $rateLimited, $retryAfter] =
-        fetchLeadsSummaryPaged($token, $apiStart, $apiEnd, $grouping, $fieldsList, $drillPlatform, 'stats');
+        fetchLeadsSummaryPaged($token, $apiStart, $apiEnd, $grouping ?: 'day', $fieldsList, $drillPlatform, 'stats');
     if ($errs) $apiErrors = array_merge($apiErrors, $errs);
+    if ($rateLimited) { $rateLimitedAny = true; $lastRetryAfter = max($lastRetryAfter, (int)$retryAfter); }
     if ($drillPlatform !== '') {
-        // Drill-down по одной площадке: проставляем platform_id/имя явно, чтобы
-        // source_id совпадал с реальным id (как в старом per-platform пути).
         foreach ($allRows as &$r) {
             if (!isset($r['platform_id']) || $r['platform_id'] === '' || $r['platform_id'] === null) {
                 $r['platform_id'] = $drillPlatform;
@@ -4027,115 +4233,155 @@ if ($action === 'update_stats') {
         }
         unset($r);
     }
-
-    // При полностью успешной выгрузке заменяем срез дат целиком: если leads.su
-    // больше не вернул старый offer/source/sub1, локальная строка тоже удаляется.
-    // При частичной выгрузке (ошибка/429) сохраняем только UPSERT-прогресс без
-    // удаления, чтобы не потерять валидные старые данные из-за неполного ответа.
-    // Пустой успешный ответ leads.su (data:[] без error) тоже НЕ считается
-    // авторитетным «данных больше нет» — иначе спорадический пустой ответ
-    // обнуляет весь диапазон дат в БД. См. PR #65 regression.
+    $coverageStats = null;
     if ($rateLimited || $apiErrors || !$allRows) {
-        $saved = saveReportRows($db, $allRows, $offerMap);
+        // Частичный ответ: только UPSERT без удаления, чтобы не потерять
+        // валидные исторические данные из-за неполного ответа API.
+        $saved = saveReportRows($db, $allRows, $offerMap, $coverageStats);
     } elseif ($drillPlatform !== '') {
-        // Один platform_id — заменяем только его срез (source_id = реальный id).
-        $saved = replaceReportRowsForRange($db, $allRows, $offerMap, $apiStart, $apiEnd, [$drillPlatform]);
+        $saved = replaceReportRowsForRange($db, $allRows, $offerMap, $apiStart, $apiEnd, [$drillPlatform], $coverageStats);
     } else {
-        // Весь аккаунт одним запросом — ответ авторитетен по всем площадкам,
-        // поэтому заменяем весь срез дат без фильтра по source_id.
-        $saved = replaceReportRowsForFullRange($db, $allRows, $offerMap, $apiStart, $apiEnd);
+        $saved = replaceReportRowsForFullRange($db, $allRows, $offerMap, $apiStart, $apiEnd, $coverageStats);
     }
+    $passStatuses['stats'] = $rateLimited ? '429' : ($errs ? 'error' : 'success');
+    $coverageAll['stats'] = is_array($coverageStats) ? $coverageStats : [];
+    syncLogFinish($db, $logId, [
+        'rows_saved' => (int)$saved,
+        'rows_total' => (int)($coverageStats['rows_total'] ?? 0),
+        'missing_unique_clicks' => (int)($coverageStats['missing_unique_clicks'] ?? 0),
+        'missing_platform'      => (int)($coverageStats['missing_platform'] ?? 0),
+        'missing_date'          => (int)($coverageStats['missing_date'] ?? 0),
+        'aggregate_skipped'     => (int)($coverageStats['aggregate_skipped'] ?? 0),
+        'http_status'           => $rateLimited ? 429 : 200,
+        'retry_after'           => $rateLimited ? (int)$retryAfter : 0,
+        'status'                => $passStatuses['stats'],
+        'message'               => $errs ? substr(json_encode($errs[0] ?? null, JSON_UNESCAPED_UNICODE) ?: '', 0, 240) : '',
+    ]);
 
-    if ($rateLimited) {
-        echo json_encode([
-            'status' => '429',
-            'error' => 'Rate limit exceeded',
-            'retry_after' => $retryAfter,
-            'saved' => $saved,
-            'errors' => $apiErrors,
-        ]);
-        exit;
-    }
+    // Небольшая пауза между тяжёлыми проходами — 1..2 с даёт API вздохнуть
+    // и заметно снижает шанс словить 429 на длинных диапазонах дат.
+    usleep(1200000);
 
-    // Второй проход: «истинные» уникальные клики per (date, площадка) без
-    // детализации по offer/sub1. Только эта сумма совпадает с цифрой
-    // «уникальные клики» в кабинете leads.su. Используется фронтом для KPI.
-    // Тоже ОДНИМ запросом: grouping=day&fields=source (без перебора площадок).
+    // ---------- ПРОХОД 2: «истинные» уникальные клики per (date, платформа) ----------
     $savedUnique = 0;
+    $coverageUnique = null;
     if ($drillPlatform !== '') {
         [$uniqueRows, $errs, $rateLimited, $retryAfter] =
-            fetchLeadsSummaryPaged($token, $apiStart, $apiEnd, $grouping, '', $drillPlatform, 'unique_clicks');
+            fetchLeadsSummaryPaged($token, $apiStart, $apiEnd, $grouping ?: 'day', '', $drillPlatform, 'unique_clicks');
         if ($errs) $apiErrors = array_merge($apiErrors, $errs);
+        if ($rateLimited) { $rateLimitedAny = true; $lastRetryAfter = max($lastRetryAfter, (int)$retryAfter); }
         foreach ($uniqueRows as &$ur) {
             if (!isset($ur['platform_id']) || $ur['platform_id'] === '' || $ur['platform_id'] === null) {
                 $ur['platform_id'] = $drillPlatform;
             }
         }
         unset($ur);
-        $savedUnique = ($rateLimited || $apiErrors || !$uniqueRows)
-            ? saveUniqueClicksRows($db, $uniqueRows, $drillPlatform)
-            : replaceUniqueClickBatchesForRange($db, [['rows' => $uniqueRows, 'pid' => $drillPlatform, 'pname' => '']], $apiStart, $apiEnd, [$drillPlatform]);
+        $logId = syncLogStart($db, $runId, 'unique_clicks', $apiStart, $apiEnd);
+        if ($rateLimited || $apiErrors || !$uniqueRows) {
+            $savedUnique = saveUniqueClicksRows($db, $uniqueRows, $drillPlatform, '', $coverageUnique);
+        } else {
+            $savedUnique = replaceUniqueClickBatchesForRange($db,
+                [['rows' => $uniqueRows, 'pid' => $drillPlatform, 'pname' => '']],
+                $apiStart, $apiEnd, [$drillPlatform], $coverageUnique);
+        }
     } else {
         [$uniqueRows, $errs, $rateLimited, $retryAfter] =
-            fetchLeadsSummaryPaged($token, $apiStart, $apiEnd, $grouping, 'source', '', 'unique_clicks');
+            fetchLeadsSummaryPaged($token, $apiStart, $apiEnd, $grouping ?: 'day', 'source', '', 'unique_clicks');
         if ($errs) $apiErrors = array_merge($apiErrors, $errs);
-        $savedUnique = ($rateLimited || $apiErrors || !$uniqueRows)
-            ? saveUniqueClicksRows($db, $uniqueRows)
-            : replaceUniqueClicksRowsForFullRange($db, $uniqueRows, $apiStart, $apiEnd);
+        if ($rateLimited) { $rateLimitedAny = true; $lastRetryAfter = max($lastRetryAfter, (int)$retryAfter); }
+        $logId = syncLogStart($db, $runId, 'unique_clicks', $apiStart, $apiEnd);
+        if ($rateLimited || $apiErrors || !$uniqueRows) {
+            $savedUnique = saveUniqueClicksRows($db, $uniqueRows, '', '', $coverageUnique);
+        } else {
+            $savedUnique = replaceUniqueClicksRowsForFullRange($db, $uniqueRows, $apiStart, $apiEnd, $coverageUnique);
+        }
     }
+    $passStatuses['unique_clicks'] = $rateLimited ? '429' : (($errs ?? []) ? 'error' : 'success');
+    $coverageAll['unique_clicks'] = is_array($coverageUnique) ? $coverageUnique : [];
+    syncLogFinish($db, $logId, [
+        'rows_saved' => (int)$savedUnique,
+        'rows_total' => (int)($coverageUnique['rows_total'] ?? 0),
+        'missing_unique_clicks' => (int)($coverageUnique['missing_unique_clicks'] ?? 0),
+        'aggregate_skipped'     => (int)($coverageUnique['aggregate_skipped'] ?? 0),
+        'missing_date'          => (int)($coverageUnique['missing_date'] ?? 0),
+        'http_status'           => $rateLimited ? 429 : 200,
+        'retry_after'           => $rateLimited ? (int)$retryAfter : 0,
+        'status'                => $passStatuses['unique_clicks'],
+        'message'               => ($errs ?? []) ? substr(json_encode($errs[0] ?? null, JSON_UNESCAPED_UNICODE) ?: '', 0, 240) : '',
+    ]);
 
-    if ($rateLimited) {
-        echo json_encode([
-            'status' => '429',
-            'error' => 'Rate limit exceeded',
-            'retry_after' => $retryAfter,
-            'saved' => $saved,
-            'saved_unique_clicks' => $savedUnique,
-            'errors' => $apiErrors,
-        ]);
-        exit;
-    }
+    usleep(1200000);
 
-    // Третий проход: «истинные» уникальные клики per (date, offer_id) без
-    // platform_id и aff_sub1 — для аддитивной суммы по офферам в таблице
-    // «Офферы» дашборда (как в строке оффера в кабинете leads.su).
+    // ---------- ПРОХОД 3: «истинные» уникальные клики per (date, offer_id) ----------
     $savedUniqueByOffer = 0;
     [$uniqueByOfferRows, $errs, $rateLimited, $retryAfter] =
-        fetchLeadsSummaryPaged($token, $apiStart, $apiEnd, $grouping, 'offer_id', '', 'unique_clicks_by_offer');
+        fetchLeadsSummaryPaged($token, $apiStart, $apiEnd, $grouping ?: 'day', 'offer_id', '', 'unique_clicks_by_offer');
     if ($errs) $apiErrors = array_merge($apiErrors, $errs);
+    if ($rateLimited) { $rateLimitedAny = true; $lastRetryAfter = max($lastRetryAfter, (int)$retryAfter); }
+    $logId = syncLogStart($db, $runId, 'unique_clicks_by_offer', $apiStart, $apiEnd);
     $savedUniqueByOffer = ($rateLimited || $apiErrors || !$uniqueByOfferRows)
         ? saveUniqueClicksByOfferRows($db, $uniqueByOfferRows, $offerMap)
         : replaceUniqueClicksByOfferRowsForRange($db, $uniqueByOfferRows, $offerMap, $apiStart, $apiEnd);
+    $passStatuses['unique_clicks_by_offer'] = $rateLimited ? '429' : (($errs ?? []) ? 'error' : 'success');
+    syncLogFinish($db, $logId, [
+        'rows_saved' => (int)$savedUniqueByOffer,
+        'rows_total' => is_array($uniqueByOfferRows) ? count($uniqueByOfferRows) : 0,
+        'http_status' => $rateLimited ? 429 : 200,
+        'retry_after' => $rateLimited ? (int)$retryAfter : 0,
+        'status' => $passStatuses['unique_clicks_by_offer'],
+        'message' => ($errs ?? []) ? substr(json_encode($errs[0] ?? null, JSON_UNESCAPED_UNICODE) ?: '', 0, 240) : '',
+    ]);
 
-    if ($rateLimited) {
-        echo json_encode([
-            'status' => '429',
-            'error' => 'Rate limit exceeded',
-            'retry_after' => $retryAfter,
-            'saved' => $saved,
-            'saved_unique_clicks' => $savedUnique,
-            'saved_unique_clicks_by_offer' => $savedUniqueByOffer,
-            'errors' => $apiErrors,
-        ]);
-        exit;
-    }
+    usleep(1200000);
 
-    // Четвёртый проход: «общая сводка кабинета» — /webmaster/reports/summary
-    // ?grouping=day БЕЗ platform_id и БЕЗ fields. Эти цифры идентичны тому, что
-    // показывает верхний блок ЛК leads.su (см. инструкцию поддержки Leads.su,
-    // п.1-3) и независимы от площадок. Используются фронтом для KPI-карточек
-    // верхнего блока дашборда, чтобы цифры сходились с кабинетом 1-в-1.
+    // ---------- ПРОХОД 4: общая сводка кабинета (account totals) ----------
+    // Самый лёгкий проход: агрегат по дню без field/platform. Делаем его ВСЕГДА,
+    // даже если предыдущие проходы уронили 429 — тогда хотя бы верхние KPI
+    // дашборда не окажутся нулями.
+    $logId = syncLogStart($db, $runId, 'account_totals', $apiStart, $apiEnd);
     [$savedAccountTotals, $accountErrors] = fetchAndSaveAccountTotals($db, $token, $apiStart, $apiEnd);
     if ($accountErrors) $apiErrors = array_merge($apiErrors, $accountErrors);
+    $atStatus = $accountErrors ? 'error' : 'success';
+    // Обнаруживаем 429 внутри accountErrors по совпадению статуса
+    $atHttp = 200; $atRetry = 0;
+    foreach ($accountErrors ?? [] as $ae) {
+        if (isset($ae['error']['status']) && (int)$ae['error']['status'] === 429) {
+            $atHttp = 429; $rateLimitedAny = true;
+            if (isset($ae['error']['retry_after'])) {
+                $atRetry = max($atRetry, (int)$ae['error']['retry_after']);
+                $lastRetryAfter = max($lastRetryAfter, $atRetry);
+            }
+            $atStatus = '429';
+        }
+    }
+    $passStatuses['account_totals'] = $atStatus;
+    syncLogFinish($db, $logId, [
+        'rows_saved' => (int)$savedAccountTotals,
+        'http_status' => $atHttp,
+        'retry_after' => $atRetry,
+        'status' => $atStatus,
+        'message' => $accountErrors ? substr(json_encode($accountErrors[0] ?? null, JSON_UNESCAPED_UNICODE) ?: '', 0, 240) : '',
+    ]);
+
+    $partial = false;
+    foreach ($passStatuses as $st) {
+        if ($st !== 'success') { $partial = true; break; }
+    }
 
     echo json_encode([
-        'status' => 'success',
-        'saved' => $saved,
-        'saved_unique_clicks' => $savedUnique,
-        'saved_unique_clicks_by_offer' => $savedUniqueByOffer,
-        'saved_account_totals' => $savedAccountTotals,
-        'errors' => $apiErrors,
-    ]);
+        'status'                       => $rateLimitedAny ? 'partial_success' : ($partial ? 'partial_success' : 'success'),
+        'run_id'                       => $runId,
+        'partial_success'              => $partial,
+        'rate_limited'                 => $rateLimitedAny,
+        'retry_after'                  => $rateLimitedAny ? max(30, (int)$lastRetryAfter) : 0,
+        'saved'                        => (int)$saved,
+        'saved_unique_clicks'          => (int)$savedUnique,
+        'saved_unique_clicks_by_offer' => (int)$savedUniqueByOffer,
+        'saved_account_totals'         => (int)$savedAccountTotals,
+        'passes'                       => $passStatuses,
+        'coverage'                     => $coverageAll,
+        'errors'                       => $apiErrors,
+    ], JSON_UNESCAPED_UNICODE);
     exit;
 }
 
@@ -4533,6 +4779,38 @@ if ($action === 'health') {
             ],
         ],
     ], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+// Чтение sync_log — последние N записей (по runam), для панели «Последняя
+// синхронизация» на вкладке настроек. Опциональный run_id фильтрует записи
+// одного запуска update_stats.
+if ($action === 'get_sync_log') {
+    $limit = isset($_GET['limit']) ? max(1, min(200, (int)$_GET['limit'])) : 40;
+    $runId = isset($_GET['run_id']) ? trim((string)$_GET['run_id']) : '';
+    if ($runId !== '') {
+        $stmt = $db->prepare('SELECT run_id, pass, rows, http_status, retry_after,
+            started_at, finished_at, message
+            FROM sync_log WHERE run_id = :rid ORDER BY id ASC');
+        $stmt->bindValue(':rid', $runId, SQLITE3_TEXT);
+    } else {
+        $stmt = $db->prepare('SELECT run_id, pass, rows, http_status, retry_after,
+            started_at, finished_at, message
+            FROM sync_log ORDER BY id DESC LIMIT :lim');
+        $stmt->bindValue(':lim', $limit, SQLITE3_INTEGER);
+    }
+    $res = $stmt->execute();
+    $rows = [];
+    while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
+        $rows[] = $row;
+    }
+    // Также вернём последний run_id для UI health-badge.
+    $lastRun = $db->querySingle("SELECT run_id FROM sync_log ORDER BY id DESC LIMIT 1");
+    echo json_encode([
+        'status' => 'success',
+        'last_run_id' => $lastRun ?: null,
+        'data' => $rows,
+    ]);
     exit;
 }
 
