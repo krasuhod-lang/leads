@@ -1622,7 +1622,13 @@ function fetchLeadsSummaryPaged($token, $apiStart, $apiEnd, $grouping = 'day', $
     $fieldsParam = '';
     if ($fields !== '') {
         $fieldArr = array_filter(array_map('trim', explode(',', $fields)));
-        if ($fieldArr) $fieldsParam = '&fields=' . urlencode(implode(',', $fieldArr));
+        if ($fieldArr) {
+            // Leads.su docs table calls this parameter `fields`, but the documented
+            // and currently working example uses singular `field=source,goal_id`.
+            // Using `fields` is ignored by some API deployments, so the response
+            // comes back as account aggregates without source/offer/sub1.
+            $fieldsParam = '&field=' . urlencode(implode(',', $fieldArr));
+        }
     }
 
     // Hard cap на число страниц (200 × 500 = 100 000 строк) — защита от
@@ -6252,11 +6258,11 @@ if ($effectiveToken !== '') {
     $params['token'] = $effectiveToken;
 }
 
-// Нормализация поля `fields` для /webmaster/reports/summary.
-// API ждёт ОДИН параметр `fields=offer_id,source,aff_sub1` (через запятую),
-// а не `field[]=...`. Frontend исторически шлёт `field=offer_id,source,aff_sub1`,
-// поэтому принимаем оба варианта (`field`, `fields`, и массив `field[]`)
-// и склеиваем их в единственный `fields=` со значениями через запятую.
+// Нормализация поля `field` для /webmaster/reports/summary.
+// Frontend исторически шлёт `field=offer_id,source,aff_sub1`, и пример в
+// документации Leads.su тоже использует singular `field`. Принимаем оба
+// варианта (`field`, `fields`, и массив `field[]`) и склеиваем их в один
+// `field=` со значениями через запятую.
 $fieldValues = [];
 foreach (['field', 'fields'] as $key) {
     if (!isset($params[$key])) continue;
@@ -6277,7 +6283,7 @@ if ($fieldValues) {
         $v = trim((string)$v);
         if ($v !== '' && !in_array($v, $clean, true)) $clean[] = $v;
     }
-    if ($clean) $fieldsQuery = '&fields=' . urlencode(implode(',', $clean));
+    if ($clean) $fieldsQuery = '&field=' . urlencode(implode(',', $clean));
 }
 
 $url = "https://api.leads.su/webmaster/" . $method . (empty($params) ? '' : '?' . http_build_query($params)) . $fieldsQuery;
