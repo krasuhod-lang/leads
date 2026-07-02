@@ -2639,6 +2639,34 @@ function dedupSourceId(r) {
   return synth || 'all';
 }
 
+function sourceKey(r) {
+  const id = String((r && r.source_id) || '').trim();
+  if (id && id !== 'all') return id;
+  return `name:${mergeSourceName((r && r.source) || 'Unknown')}`;
+}
+
+function sourceMatches(row, filterValue) {
+  return !filterValue || filterValue === 'all' || sourceKey(row) === filterValue;
+}
+
+function buildSourceOptions(rows = globalRawData) {
+  const byKey = new Map();
+  for (const r of rows || []) {
+    const key = sourceKey(r);
+    const label = mergeSourceName(r.source || 'Unknown') || 'Unknown';
+    const id = String(r.source_id || '').trim();
+    if (!byKey.has(key)) byKey.set(key, { value: key, label, id });
+  }
+  const counts = {};
+  for (const item of byKey.values()) counts[item.label] = (counts[item.label] || 0) + 1;
+  return Array.from(byKey.values()).map(item => ({
+    ...item,
+    display: counts[item.label] > 1 && item.id && item.id !== 'all'
+      ? `${item.label} (#${item.id})`
+      : item.label
+  })).sort((a, b) => a.display.localeCompare(b.display));
+}
+
 // Deduplicates data array by composite key (date+source_id+offer_id+sub1).
 // keepLast=false: first occurrence wins (for fresh API data where dupes are exact copies).
 // keepLast=true: last occurrence wins (for DB merge where DB data should overwrite in-memory).
@@ -2814,15 +2842,15 @@ function buildPlanFactInsight(factRows, baselineRows) {
   const fact = metricsFromTotals(sumLeadRows(factRows));
   const plan = planFromRows(baselineRows, periodDays);
   if (!plan.revenue || fact.revenue >= plan.revenue) return '';
-  const sources = [...new Set(factRows.map(r => r.source).concat(baselineRows.map(r => r.source)).filter(Boolean))];
+  const sources = buildSourceOptions((factRows || []).concat(baselineRows || []));
   let worst = null;
   for (const src of sources) {
-    const fRows = factRows.filter(r => r.source === src);
-    const bRows = baselineRows.filter(r => r.source === src);
+    const fRows = factRows.filter(r => sourceMatches(r, src.value));
+    const bRows = baselineRows.filter(r => sourceMatches(r, src.value));
     const f = metricsFromTotals(sumLeadRows(fRows));
     const p = planFromRows(bRows, periodDays);
     const delta = f.revenue - p.revenue;
-    if (p.revenue > 0 && (!worst || delta < worst.delta)) worst = { source: src, fact: f, plan: p, delta };
+    if (p.revenue > 0 && (!worst || delta < worst.delta)) worst = { source: src.display, fact: f, plan: p, delta };
   }
   const gapPct = plan.revenue > 0 ? (plan.revenue - fact.revenue) / plan.revenue * 100 : 0;
   if (!worst) return ` Фактический доход ниже нормы на ${gapPct.toFixed(1)}%. Недостаточно исторических данных, чтобы выделить площадку-причину.`;
@@ -2867,6 +2895,15 @@ async function fetchAll(method, params = {}) {
     if (rows.length < limit) break;
     offset += rows.length;
     await sleep(400);
+  }
+  if (method === 'platforms') {
+    const seen = new Set();
+    all = all.filter(p => {
+      const id = p && p.id != null ? String(p.id) : '';
+      if (!id || seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    });
   }
   return all;
 }
@@ -3048,10 +3085,14 @@ async function loadFromAPI(opts = {}) {
       else if (id) offerMap[id] = `Offer #${id}`;
     }
     const platformMap = {}; const activePlatformIds = [];
+    const seenPlatformIds = new Set();
     for (const p of platformsData) {
       if (p?.id == null) continue;
-      platformMap[String(p.id)] = p.name || `Platform #${p.id}`;
-      activePlatformIds.push(String(p.id));
+      const pid = String(p.id);
+      if (seenPlatformIds.has(pid)) continue;
+      seenPlatformIds.add(pid);
+      platformMap[pid] = p.name || `Platform #${p.id}`;
+      activePlatformIds.push(pid);
     }
     let reportData = [];
     if (activePlatformIds.length > 0) {
@@ -3636,13 +3677,13 @@ async function applyGlobalFilters() {
   ]);
   renderBannerKPI(); renderBannerChart();
 
-  const sources = [...new Set(globalRawData.map(r => r.source))].sort();
+  const sources = buildSourceOptions(globalRawData);
   for (const selectId of ['chartSourceFilter', 'offerSourceFilter', 'sub1SourceFilter', 'epcSourceSelect']) {
     const sel = document.getElementById(selectId);
     if (!sel) continue;
     const current = sel.value;
-    sel.innerHTML = '<option value="all">Все площадки</option>' + sources.map(s => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join('');
-    if (sources.includes(current)) sel.value = current;
+    sel.innerHTML = '<option value="all">Все площадки</option>' + sources.map(s => `<option value="${escapeHtml(s.value)}">${escapeHtml(s.display)}</option>`).join('');
+    if (sources.some(s => s.value === current)) sel.value = current;
   }
   // Populate sub1 filter
   const sub1Values = [...new Set(globalRawData.map(r => r.sub1).filter(s => s))].sort();
@@ -3689,7 +3730,7 @@ function renderUI() {
   // Данные для нижних визуализаций (воронка, монетизация отказов) —
   // реагируют на фильтр площадки/sub1 графика «Динамика».
   let data = [...globalRawData];
-  if (sf !== 'all') data = data.filter(r => r.source === sf);
+  if (sf !== 'all') data = data.filter(r => sourceMatches(r, sf));
   if (sub1f !== 'all') data = data.filter(r => r.sub1 === sub1f);
   // 6 верхних KPI-ячеек — это ОСНОВНЫЕ показатели бизнеса за ВЕСЬ кабинет.
   // Они намеренно НЕ зависят от фильтра площадки/sub1 графика: всегда считаем
@@ -3933,7 +3974,10 @@ function buildBannerRevenueRelation(data, sourceFilter = 'all', grouping = 'date
     g.impressions += Number(d.impressions) || 0;
     g.banner_clicks += Number(d.clicks) || 0;
   }
-  for (const r of (bouncesData || []).filter(x => sourceFilter === 'all' || x.source === sourceFilter)) {
+  const sourceLabelFilter = sourceFilter === 'all'
+    ? ''
+    : ((buildSourceOptions(globalRawData).find(s => s.value === sourceFilter) || {}).label || '');
+  for (const r of (bouncesData || []).filter(x => sourceFilter === 'all' || (sourceLabelFilter && x.source === sourceLabelFilter))) {
     const key = periodKeyFromDate(r.date, grouping);
     const g = ensure(key);
     if (!g) continue;
@@ -4001,9 +4045,9 @@ function aggregateBy(field, sourceFilter) {
   if (aggregateCache.has(cacheKey)) return aggregateCache.get(cacheKey);
   const map = {};
   for (const r of globalRawData) {
-    if (sourceFilter !== 'all' && r.source !== sourceFilter) continue;
-    const key = r[field];
-    if (!map[key]) map[key] = {clicks:0,conversions:0,approved:0,revenue:0};
+    if (!sourceMatches(r, sourceFilter)) continue;
+    const key = field === 'source' ? sourceKey(r) : r[field];
+    if (!map[key]) map[key] = {clicks:0,conversions:0,approved:0,revenue:0,label: field === 'source' ? (mergeSourceName(r.source || 'Unknown') || 'Unknown') : key};
     map[key].clicks+=r.clicks; map[key].conversions+=r.conversions; map[key].approved+=r.approved; map[key].revenue+=r.revenue;
   }
   aggregateCache.set(cacheKey, map);
@@ -4016,7 +4060,7 @@ function renderTables() {
   // Aggregate offers separately so we can keep offer_id for market EPC lookup
   const offMap = {};
   for (const r of globalRawData) {
-    if (selSrc !== 'all' && r.source !== selSrc) continue;
+    if (!sourceMatches(r, selSrc)) continue;
     const key = r.offer;
     if (!offMap[key]) offMap[key] = { clicks:0, conversions:0, approved:0, revenue:0, offer_id: r.offer_id || '' };
     if (!offMap[key].offer_id && r.offer_id) offMap[key].offer_id = r.offer_id;
@@ -4090,12 +4134,12 @@ function renderTables() {
     return sc.desc ? vb-va : va-vb;
   });
   let sRows = Object.entries(srcMap).map(([n,v]) => {
-    const baseline = planBaselineData.filter(r => r.source === n);
+    const baseline = planBaselineData.filter(r => sourceMatches(r, n));
     const plan = planFromRows(baseline, planFactState.days || 1);
     // Клики берём bucket-sum (v.clicks) — тот же аггрегат, что в sub1-таблице,
     // где пользователь подтвердил соответствие «Уник. кликам» в ЛК leads.su.
     const clicks = v.clicks;
-    return {name:n, clicks, conversions:v.conversions, approved:v.approved, revenue:v.revenue, epc:clicks?(v.revenue/clicks):0, approveRate:v.conversions?(v.approved/v.conversions*100):0, plan};
+    return {name:v.label || n, clicks, conversions:v.conversions, approved:v.approved, revenue:v.revenue, epc:clicks?(v.revenue/clicks):0, approveRate:v.conversions?(v.approved/v.conversions*100):0, plan};
   });
   let oRows = Object.entries(offMap).map(([n,v]) => {
     let clicks = v.clicks;
@@ -4178,7 +4222,7 @@ function renderSub1Table() {
   const filterVal = sel.value || 'all';
   const map = {};
   for (const r of globalRawData) {
-    if (filterVal !== 'all' && r.source !== filterVal) continue;
+    if (!sourceMatches(r, filterVal)) continue;
     const key = r.sub1 && r.sub1.trim() ? r.sub1 : '(пусто)';
     if (!map[key]) map[key] = { clicks: 0, conversions: 0, approved: 0, revenue: 0 };
     map[key].clicks += r.clicks;
@@ -4480,7 +4524,7 @@ function toggleBannerRelationLayer(layer) {
   updateBannerRelationLayerButtons();
   const sourceFilter = ((document.getElementById('chartSourceFilter') || {}).value || 'all');
   let data = [...(globalRawData || [])];
-  if (sourceFilter !== 'all') data = data.filter(r => r.source === sourceFilter);
+  if (sourceFilter !== 'all') data = data.filter(r => sourceMatches(r, sourceFilter));
   renderRejectRevenueAnalysis(data, sourceFilter);
 }
 
@@ -4930,10 +4974,10 @@ function refreshChart() {
   updateChartLayerButtons();
 
   let data = [...globalRawData];
-  if (sf !== 'all') data = data.filter(r => r.source === sf);
+  if (sf !== 'all') data = data.filter(r => sourceMatches(r, sf));
   if (sub1f !== 'all') data = data.filter(r => r.sub1 === sub1f);
   let baseline = [...planBaselineData];
-  if (sf !== 'all') baseline = baseline.filter(r => r.source === sf);
+  if (sf !== 'all') baseline = baseline.filter(r => sourceMatches(r, sf));
   if (sub1f !== 'all') baseline = baseline.filter(r => r.sub1 === sub1f);
 
   const grouped = buildGroupedRows(data, grouping);
@@ -5329,7 +5373,7 @@ function updateTrendHoverReadout(chart, activeEls) {
 function drawExtraCharts() {
   const srcMap = aggregateBy('source','all');
   const offMap = aggregateBy('offer','all');
-  let dd = Object.entries(srcMap).map(([n,s])=>({name:n,revenue:s.revenue})).filter(i=>i.revenue>0).sort((a,b)=>b.revenue-a.revenue);
+  let dd = Object.entries(srcMap).map(([n,s])=>({name:s.label || n,revenue:s.revenue})).filter(i=>i.revenue>0).sort((a,b)=>b.revenue-a.revenue);
   if(dd.length>5){const t5=dd.slice(0,5);t5.push({name:'Другие',revenue:dd.slice(5).reduce((s,i)=>s+i.revenue,0)});dd=t5;}
   const totalRev = dd.reduce((s,i)=>s+i.revenue,0);
   if(donutChartInstance)donutChartInstance.destroy();
@@ -5384,8 +5428,10 @@ function renderPlatformCharts() {
   const periods = [...new Set(globalRawData.map(r => periodKeyFromRow(r, grouping)).filter(Boolean))].sort();
   const sourceTotals = {};
   const bySourcePeriod = {};
+  const sourceLabels = {};
   for (const r of globalRawData) {
-    const src = r.source || 'Unknown';
+    const src = sourceKey(r);
+    if (!sourceLabels[src]) sourceLabels[src] = mergeSourceName(r.source || 'Unknown') || 'Unknown';
     const p = periodKeyFromRow(r, grouping);
     if (!p) continue;
     if (!sourceTotals[src]) sourceTotals[src] = { revenue: 0, clicks: 0 };
@@ -5403,7 +5449,7 @@ function renderPlatformCharts() {
     const top = ranked.slice(0, 6).map(([name]) => name);
     const other = ranked.slice(6).map(([name]) => name);
     const datasets = top.map((src, i) => ({
-      label: src,
+      label: sourceLabels[src] || src,
       data: periods.map(p => (bySourcePeriod[src]?.[p]?.[metric]) || 0),
       borderColor: colorPalette[i % colorPalette.length],
       backgroundColor: colorPalette[i % colorPalette.length] + '22',
@@ -5447,14 +5493,14 @@ function renderPlatformCharts() {
   // Авто-инсайты под platform-чартами: концентрация по метрике + тренд лидера.
   const _topByMetric=(metric)=>Object.entries(sourceTotals)
     .filter(([,v])=>(Number(v[metric])||0)>0)
-    .map(([name,v])=>({name,value:Number(v[metric])||0}))
+    .map(([name,v])=>({name:sourceLabels[name] || name,key:name,value:Number(v[metric])||0}))
     .sort((a,b)=>b.value-a.value);
   const renderPlatformInsight=(elId,metric,unitLabel,trendLabel,fmt)=>{
     const el=document.getElementById(elId);
     if(!el)return;
     const ranked=_topByMetric(metric);
     const leader=ranked[0];
-    const leaderSeries=leader?periods.map(p=>(bySourcePeriod[leader.name]?.[p]?.[metric])||0):[];
+    const leaderSeries=leader?periods.map(p=>(bySourcePeriod[leader.key]?.[p]?.[metric])||0):[];
     el.innerHTML=renderInsightFooter([
       narrateConcentration(ranked,unitLabel),
       leader?narrateTrend(leaderSeries,`${leader.name} · ${trendLabel}`,fmt):null
@@ -5472,7 +5518,7 @@ function renderEPCAnalytics() {
   const sourceF=document.getElementById('epcSourceSelect').value;
   let data=[...globalRawData];
   if(offerF!=='all')data=data.filter(r=>r.offer===offerF);
-  if(sourceF!=='all')data=data.filter(r=>r.source===sourceF);
+  if(sourceF!=='all')data=data.filter(r=>sourceMatches(r,sourceF));
 
   const periodMap={};
   for(const row of data){
@@ -5605,7 +5651,7 @@ let matrixSortState = { field: 'total', desc: true };
 function renderMatrixAnalytics() {
   if(!globalRawData.length) return;
   const metric=document.getElementById('matrixMetric').value;
-  const sources=[...new Set(globalRawData.map(r=>r.source))].sort();
+  const sources=buildSourceOptions(globalRawData);
   const months=[...new Set(globalRawData.map(r=>r.month))].sort();
   const totalRevAll=globalRawData.reduce((s,r)=>s+r.revenue,0);
 
@@ -5619,7 +5665,7 @@ function renderMatrixAnalytics() {
 
   // Pre-calculate all values for sorting
   const sourceRows = sources.map(src => {
-    const srcData = globalRawData.filter(r => r.source === src);
+    const srcData = globalRawData.filter(r => sourceMatches(r, src.value));
     const srcRevenue = srcData.reduce((s,r) => s + r.revenue, 0);
     const srcShare = totalRevAll > 0 ? (srcRevenue / totalRevAll * 100) : 0;
     const monthValues = {};
@@ -5648,7 +5694,7 @@ function renderMatrixAnalytics() {
     const lastShare = lastMonthRevTotal > 0 ? (lastRev / lastMonthRevTotal * 100) : 0;
     const prevShare = prevMonthRevTotal > 0 ? (prevRev / prevMonthRevTotal * 100) : 0;
     const shareDelta = prevMonth ? (lastShare - prevShare) : null; // null => нет данных для сравнения
-    return { name: src, monthValues, total, revenue: srcRevenue, share: srcShare, lastShare, prevShare, shareDelta };
+    return { name: src.display, key: src.value, monthValues, total, revenue: srcRevenue, share: srcShare, lastShare, prevShare, shareDelta };
   });
 
   // Sort
@@ -5725,18 +5771,18 @@ function sortMatrix(field) {
 }
 
 function renderMonthlyShareTable(sources,months) {
-  document.getElementById('matrixMonthlyHeader').innerHTML='<th>Месяц</th><th class="text-right">Трафик</th><th class="text-right">Выручка</th>'+sources.map(s=>`<th class="text-right">${escapeHtml(s)} (%)</th>`).join('');
+  document.getElementById('matrixMonthlyHeader').innerHTML='<th>Месяц</th><th class="text-right">Трафик</th><th class="text-right">Выручка</th>'+sources.map(s=>`<th class="text-right">${escapeHtml(s.display || s)} (%)</th>`).join('');
   document.getElementById('matrixMonthlyBody').innerHTML=months.map(m=>{
     const mr=globalRawData.filter(r=>r.month===m);
     const tc=mr.reduce((s,r)=>s+r.clicks,0);const tr=mr.reduce((s,r)=>s+r.revenue,0);
-    const shares=sources.map(src=>{const sc=mr.filter(r=>r.source===src).reduce((s,r)=>s+r.clicks,0);return `<td class="text-right">${tc>0?(sc/tc*100).toFixed(1):0}%</td>`;}).join('');
+    const shares=sources.map(src=>{const sc=mr.filter(r=>sourceMatches(r, src.value || src)).reduce((s,r)=>s+r.clicks,0);return `<td class="text-right">${tc>0?(sc/tc*100).toFixed(1):0}%</td>`;}).join('');
     return `<tr class="hover:bg-slate-800"><td class="font-bold">${m}</td><td class="text-right">${tc.toLocaleString('ru-RU')}</td><td class="text-right">${Math.round(tr).toLocaleString('ru-RU')} ₽</td>${shares}</tr>`;
   }).join('');
 }
 
 function renderMatrixShareChart(sources,months) {
   const datasets=sources.map((src,i)=>({
-    label:src,data:months.map(m=>{const mr=globalRawData.filter(r=>r.month===m);const tc=mr.reduce((s,r)=>s+r.clicks,0);const sc=mr.filter(r=>r.source===src).reduce((s,r)=>s+r.clicks,0);return tc>0?(sc/tc*100):0;}),
+    label:src.display || src,data:months.map(m=>{const mr=globalRawData.filter(r=>r.month===m);const tc=mr.reduce((s,r)=>s+r.clicks,0);const sc=mr.filter(r=>sourceMatches(r, src.value || src)).reduce((s,r)=>s+r.clicks,0);return tc>0?(sc/tc*100):0;}),
     backgroundColor:colorPalette[i%colorPalette.length],borderRadius:2
   }));
   if(matrixShareChartInstance)matrixShareChartInstance.destroy();
