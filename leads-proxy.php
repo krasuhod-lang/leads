@@ -1257,7 +1257,7 @@ function fetchPlatformsList($token, $db = null) {
                     $dataStmt->close();
                     if ($dataRow && !empty($dataRow['value'])) {
                         $decoded = json_decode($dataRow['value'], true);
-                        if (is_array($decoded) && !empty($decoded)) return $decoded;
+                        if (is_array($decoded) && !empty($decoded)) return dedupePlatformsList($decoded);
                     }
                 }
             }
@@ -1301,7 +1301,34 @@ function fetchPlatformsList($token, $db = null) {
             $upsert->close();
         }
     }
-    return $all;
+    return dedupePlatformsList($all);
+}
+
+/**
+ * Убирает дубли площадок по platform_id, сохраняя первое непустое имя.
+ * Leads.su иногда возвращает один и тот же id повторно (например, при
+ * пагинации/кэше списка площадок); повторный обход такого id создаёт лишние
+ * запросы и путает диагностику кликов по площадкам.
+ */
+function dedupePlatformsList($platforms) {
+    $seen = [];
+    $out = [];
+    foreach ((array)$platforms as $p) {
+        if (!is_array($p)) continue;
+        $id = (string)($p['id'] ?? $p['platform_id'] ?? '');
+        if ($id === '') continue;
+        $name = (string)($p['name'] ?? "Platform #{$id}");
+        if (isset($seen[$id])) {
+            $idx = $seen[$id];
+            if (($out[$idx]['name'] ?? '') === '' && $name !== '') {
+                $out[$idx]['name'] = $name;
+            }
+            continue;
+        }
+        $seen[$id] = count($out);
+        $out[] = ['id' => $id, 'name' => $name];
+    }
+    return $out;
 }
 
 
