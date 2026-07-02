@@ -2000,7 +2000,11 @@ function fetchAndSaveAccountTotals($db, $token, $apiStart, $apiEnd) {
             error_log("fetchAndSaveAccountTotals: hit max iterations ({$maxIterations}) at offset={$offset} — возможна зацикленная пагинация leads.su");
         }
     }
-    $saved = $errors
+    // Destructive replace ТОЛЬКО когда leads.su реально что-то вернул.
+    // Пустой успешный ответ (data:[] без error) не должен затирать весь
+    // диапазон дат в daily_account_totals — иначе спорадический пустой
+    // ответ обнуляет KPI-цифры в дашборде. См. PR #65 regression.
+    $saved = ($errors || !$allRows)
         ? saveAccountTotalsRows($db, $allRows)
         : replaceAccountTotalsRowsForRange($db, $allRows, $apiStart, $apiEnd);
     return [$saved, $errors];
@@ -3662,7 +3666,11 @@ if ($action === 'refresh_unique_clicks') {
         }
     }
     $sourceIds = leadsPlatformScopeIds($platforms);
-    $savedUnique = ($rateLimited || $apiErrors)
+    // Destructive replace выполняем ТОЛЬКО когда синк действительно что-то
+    // выгрузил. Пустой успешный ответ leads.su (data:[] без error) не
+    // считается авторитетным «данных больше нет» — иначе спорадический
+    // пустой ответ обнуляет весь диапазон дат в БД. См. PR #65 regression.
+    $savedUnique = ($rateLimited || $apiErrors || !$uniqueBatches)
         ? saveUniqueClickBatches($db, $uniqueBatches)
         : replaceUniqueClickBatchesForRange($db, $uniqueBatches, $apiStart, $apiEnd, $sourceIds);
 
@@ -3717,7 +3725,7 @@ if ($action === 'refresh_unique_clicks') {
         if (count($rows) < $limit) break;
         $offset += $limit;
     }
-    $savedUniqueByOffer = ($rateLimited || $apiErrors)
+    $savedUniqueByOffer = ($rateLimited || $apiErrors || !$uniqueByOfferRows)
         ? saveUniqueClicksByOfferRows($db, $uniqueByOfferRows, $offerMap)
         : replaceUniqueClicksByOfferRowsForRange($db, $uniqueByOfferRows, $offerMap, $apiStart, $apiEnd);
 
@@ -3989,7 +3997,10 @@ if ($action === 'update_stats') {
     // больше не вернул старый offer/source/sub1, локальная строка тоже удаляется.
     // При частичной выгрузке (ошибка/429) сохраняем только UPSERT-прогресс без
     // удаления, чтобы не потерять валидные старые данные из-за неполного ответа.
-    $saved = ($rateLimited || $apiErrors)
+    // Пустой успешный ответ leads.su (data:[] без error) тоже НЕ считается
+    // авторитетным «данных больше нет» — иначе спорадический пустой ответ
+    // обнуляет весь диапазон дат в БД. См. PR #65 regression.
+    $saved = ($rateLimited || $apiErrors || !$allRows)
         ? saveReportRows($db, $allRows, $offerMap)
         : replaceReportRowsForRange($db, $allRows, $offerMap, $apiStart, $apiEnd, $sourceIds);
 
@@ -4042,7 +4053,7 @@ if ($action === 'update_stats') {
             $offset += $limit;
         }
     }
-    $savedUnique = ($rateLimited || $apiErrors)
+    $savedUnique = ($rateLimited || $apiErrors || !$uniqueBatches)
         ? saveUniqueClickBatches($db, $uniqueBatches)
         : replaceUniqueClickBatchesForRange($db, $uniqueBatches, $apiStart, $apiEnd, $sourceIds);
 
@@ -4088,7 +4099,7 @@ if ($action === 'update_stats') {
         if (count($rows) < $limit) break;
         $offset += $limit;
     }
-    $savedUniqueByOffer = ($rateLimited || $apiErrors)
+    $savedUniqueByOffer = ($rateLimited || $apiErrors || !$uniqueByOfferRows)
         ? saveUniqueClicksByOfferRows($db, $uniqueByOfferRows, $offerMap)
         : replaceUniqueClicksByOfferRowsForRange($db, $uniqueByOfferRows, $offerMap, $apiStart, $apiEnd);
 
