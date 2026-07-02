@@ -3095,26 +3095,17 @@ async function loadFromAPI(opts = {}) {
       activePlatformIds.push(pid);
     }
     let reportData = [];
-    if (activePlatformIds.length > 0) {
-      let loaded = 0;
-      for (const pid of activePlatformIds) {
-        let pct = 10 + Math.round((loaded / activePlatformIds.length) * 80);
-        prog(pct, `Загрузка отчетов: площадка ${loaded + 1} из ${activePlatformIds.length}`);
-        const pData = await fetchAll('reports/summary', {
-          token, start_date: `${dFrom} 00:00:00`, end_date: `${dTo} 23:59:59`,
-          grouping: 'day', field: 'offer_id,source,aff_sub1', platform_id: pid
-        });
-        for (const row of pData) row.platformid = String(pid);
-        reportData = reportData.concat(pData);
-        loaded++;
-      }
-    } else {
-      prog(50, 'Загрузка общего отчета...');
-      reportData = await fetchAll('reports/summary', {
-        token, start_date: `${dFrom} 00:00:00`, end_date: `${dTo} 23:59:59`,
-        grouping: 'day', field: 'offer_id,source,aff_sub1'
-      });
-    }
+    // Единый запрос вместо перебора площадок (раньше тут был foreach по
+    // activePlatformIds — десятки запросов к API и риск HTTP 429). leads.su
+    // возвращает поле `source` (площадку) прямо в строках при
+    // fields=offer_id,source,aff_sub1, поэтому детализация по площадкам,
+    // офферам и sub1 приходит за один пагинированный проход (fetchAll сам
+    // проходит offset/limit по 500).
+    prog(50, 'Загрузка отчета (единый запрос)...');
+    reportData = await fetchAll('reports/summary', {
+      token, start_date: `${dFrom} 00:00:00`, end_date: `${dTo} 23:59:59`,
+      grouping: 'day', field: 'offer_id,source,aff_sub1'
+    });
     prog(95, 'Обработка данных...');
     originalData = [];
     let missingUniqueClicks = 0;
