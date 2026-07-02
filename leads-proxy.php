@@ -1458,6 +1458,106 @@ function fetchOffersExtended($token, $db) {
     return ['offers' => $list];
 }
 
+function leadsDateOnly($value) {
+    $date = substr((string)$value, 0, 10);
+    return preg_match('/^\d{4}-\d{2}-\d{2}$/', $date) ? $date : '';
+}
+
+function leadsPlatformScopeIds($platforms) {
+    $ids = [];
+    foreach ($platforms as $p) {
+        $id = (string)($p['id'] ?? '');
+        $ids[$id !== '' ? $id : 'all'] = true;
+    }
+    return array_keys($ids);
+}
+
+function leadsWithImmediateTransaction($db, $callback) {
+    $db->exec('BEGIN IMMEDIATE TRANSACTION');
+    try {
+        $result = $callback();
+        $db->exec('COMMIT');
+        return $result;
+    } catch (Throwable $e) {
+        @$db->exec('ROLLBACK');
+        throw $e;
+    }
+}
+
+function deleteDateRangeRows($db, $table, $startDate, $endDate, $scopeColumn = '', $scopeValues = null) {
+    $allowedTables = [
+        'daily_stats' => true,
+        'daily_unique_clicks' => true,
+        'daily_unique_clicks_by_offer' => true,
+        'daily_account_totals' => true,
+    ];
+    $allowedScopeColumns = ['source_id' => true];
+    if (!isset($allowedTables[$table])) return 0;
+    if ($scopeColumn !== '' && !isset($allowedScopeColumns[$scopeColumn])) return 0;
+
+    $start = leadsDateOnly($startDate);
+    $end = leadsDateOnly($endDate);
+    if ($start === '' || $end === '') return 0;
+
+    $sql = "DELETE FROM {$table} WHERE date BETWEEN :start AND :end";
+    if ($scopeColumn !== '' && is_array($scopeValues)) {
+        $scopeValues = array_values(array_unique(array_map('strval', $scopeValues)));
+        if (!$scopeValues) return 0;
+        $placeholders = [];
+        foreach ($scopeValues as $i => $_) {
+            $placeholders[] = ':scope' . $i;
+        }
+        $sql .= " AND {$scopeColumn} IN (" . implode(',', $placeholders) . ')';
+    }
+
+    $stmt = $db->prepare($sql);
+    $stmt->bindValue(':start', $start, SQLITE3_TEXT);
+    $stmt->bindValue(':end', $end, SQLITE3_TEXT);
+    if ($scopeColumn !== '' && is_array($scopeValues)) {
+        foreach ($scopeValues as $i => $value) {
+            $stmt->bindValue(':scope' . $i, $value, SQLITE3_TEXT);
+        }
+    }
+    $stmt->execute();
+    return $db->changes();
+}
+
+function replaceReportRowsForRange($db, $rows, $offerMap, $startDate, $endDate, $sourceIds) {
+    return leadsWithImmediateTransaction($db, function () use ($db, $rows, $offerMap, $startDate, $endDate, $sourceIds) {
+        deleteDateRangeRows($db, 'daily_stats', $startDate, $endDate, 'source_id', $sourceIds);
+        return saveReportRows($db, $rows, $offerMap);
+    });
+}
+
+function saveUniqueClickBatches($db, $batches) {
+    $saved = 0;
+    foreach ($batches as $batch) {
+        $saved += saveUniqueClicksRows($db, $batch['rows'], $batch['pid'], $batch['pname']);
+    }
+    return $saved;
+}
+
+function replaceUniqueClickBatchesForRange($db, $batches, $startDate, $endDate, $sourceIds) {
+    return leadsWithImmediateTransaction($db, function () use ($db, $batches, $startDate, $endDate, $sourceIds) {
+        deleteDateRangeRows($db, 'daily_unique_clicks', $startDate, $endDate, 'source_id', $sourceIds);
+        return saveUniqueClickBatches($db, $batches);
+    });
+}
+
+function replaceUniqueClicksByOfferRowsForRange($db, $rows, $offerMap, $startDate, $endDate) {
+    return leadsWithImmediateTransaction($db, function () use ($db, $rows, $offerMap, $startDate, $endDate) {
+        deleteDateRangeRows($db, 'daily_unique_clicks_by_offer', $startDate, $endDate);
+        return saveUniqueClicksByOfferRows($db, $rows, $offerMap);
+    });
+}
+
+function replaceAccountTotalsRowsForRange($db, $rows, $startDate, $endDate) {
+    return leadsWithImmediateTransaction($db, function () use ($db, $rows, $startDate, $endDate) {
+        deleteDateRangeRows($db, 'daily_account_totals', $startDate, $endDate);
+        return saveAccountTotalsRows($db, $rows);
+    });
+}
+
 /**
  * Выполняет GET-запрос к Yandex Metrika API
  */
@@ -1900,7 +2000,9 @@ function fetchAndSaveAccountTotals($db, $token, $apiStart, $apiEnd) {
             error_log("fetchAndSaveAccountTotals: hit max iterations ({$maxIterations}) at offset={$offset} — возможна зацикленная пагинация leads.su");
         }
     }
-    $saved = saveAccountTotalsRows($db, $allRows);
+    $saved = $errors
+        ? saveAccountTotalsRows($db, $allRows)
+        : replaceAccountTotalsRowsForRange($db, $allRows, $apiStart, $apiEnd);
     return [$saved, $errors];
 }
 // Идея, заимствованная из DSPy: вместо "сырого" prompt-а описываем «сигнатуру»
@@ -3519,6 +3621,7 @@ if ($action === 'refresh_unique_clicks') {
     }
 
     $savedUnique = 0;
+    $uniqueBatches = [];
     $apiErrors = [];
     // Флаг «уже поймали 429 от апстрима» — прерывает не только внутреннюю
     // пагинацию, но и внешний foreach по площадкам, и последующие проходы
@@ -3551,11 +3654,17 @@ if ($action === 'refresh_unique_clicks') {
                 break;
             }
             $rows = $data['data'] ?? [];
-            $savedUnique += saveUniqueClicksRows($db, $rows, $pid, $pname);
+            if ($rows) {
+                $uniqueBatches[] = ['rows' => $rows, 'pid' => $pid, 'pname' => $pname];
+            }
             if (count($rows) < $limit) break;
             $offset += $limit;
         }
     }
+    $sourceIds = leadsPlatformScopeIds($platforms);
+    $savedUnique = ($rateLimited || $apiErrors)
+        ? saveUniqueClickBatches($db, $uniqueBatches)
+        : replaceUniqueClickBatchesForRange($db, $uniqueBatches, $apiStart, $apiEnd, $sourceIds);
 
     // Если уже выбили лимит — не запускаем by_offer и account_totals: это
     // дополнительные тяжёлые проходы, они только усугубят бан. Отдаём
@@ -3583,6 +3692,7 @@ if ($action === 'refresh_unique_clicks') {
         }
     }
     $savedUniqueByOffer = 0;
+    $uniqueByOfferRows = [];
     $offset = 0;
     $limit = 500;
     while (true) {
@@ -3603,10 +3713,13 @@ if ($action === 'refresh_unique_clicks') {
             break;
         }
         $rows = $data['data'] ?? [];
-        $savedUniqueByOffer += saveUniqueClicksByOfferRows($db, $rows, $offerMap);
+        if ($rows) $uniqueByOfferRows = array_merge($uniqueByOfferRows, $rows);
         if (count($rows) < $limit) break;
         $offset += $limit;
     }
+    $savedUniqueByOffer = ($rateLimited || $apiErrors)
+        ? saveUniqueClicksByOfferRows($db, $uniqueByOfferRows, $offerMap)
+        : replaceUniqueClicksByOfferRowsForRange($db, $uniqueByOfferRows, $offerMap, $apiStart, $apiEnd);
 
     if ($rateLimited) {
         echo json_encode([
@@ -3871,9 +3984,14 @@ if ($action === 'update_stats') {
         }
     }
 
-    // Всё, что успели скачать ДО 429, сохраняем в базу — иначе теряем
-    // прогресс синка. saveReportRows идемпотентен (UPSERT по dedup-key).
-    $saved = saveReportRows($db, $allRows, $offerMap);
+    $sourceIds = leadsPlatformScopeIds($platforms);
+    // При полностью успешной выгрузке заменяем срез дат целиком: если leads.su
+    // больше не вернул старый offer/source/sub1, локальная строка тоже удаляется.
+    // При частичной выгрузке (ошибка/429) сохраняем только UPSERT-прогресс без
+    // удаления, чтобы не потерять валидные старые данные из-за неполного ответа.
+    $saved = ($rateLimited || $apiErrors)
+        ? saveReportRows($db, $allRows, $offerMap)
+        : replaceReportRowsForRange($db, $allRows, $offerMap, $apiStart, $apiEnd, $sourceIds);
 
     if ($rateLimited) {
         echo json_encode([
@@ -3891,6 +4009,7 @@ if ($action === 'update_stats') {
     // детализации по offer/sub1. Только эта сумма совпадает с цифрой
     // «уникальные клики» в кабинете leads.su. Используется фронтом для KPI.
     $savedUnique = 0;
+    $uniqueBatches = [];
     foreach ($platforms as $p) {
         if ($rateLimited) break;
         $pid = $p['id'] ?? '';
@@ -3916,11 +4035,16 @@ if ($action === 'update_stats') {
                 break;
             }
             $rows = $data['data'] ?? [];
-            $savedUnique += saveUniqueClicksRows($db, $rows, $pid, $pname);
+            if ($rows) {
+                $uniqueBatches[] = ['rows' => $rows, 'pid' => $pid, 'pname' => $pname];
+            }
             if (count($rows) < $limit) break;
             $offset += $limit;
         }
     }
+    $savedUnique = ($rateLimited || $apiErrors)
+        ? saveUniqueClickBatches($db, $uniqueBatches)
+        : replaceUniqueClickBatchesForRange($db, $uniqueBatches, $apiStart, $apiEnd, $sourceIds);
 
     if ($rateLimited) {
         echo json_encode([
@@ -3939,6 +4063,7 @@ if ($action === 'update_stats') {
     // platform_id и aff_sub1 — для аддитивной суммы по офферам в таблице
     // «Офферы» дашборда (как в строке оффера в кабинете leads.su).
     $savedUniqueByOffer = 0;
+    $uniqueByOfferRows = [];
     $offset = 0;
     $limit = 500;
     while (true) {
@@ -3959,10 +4084,13 @@ if ($action === 'update_stats') {
             break;
         }
         $rows = $data['data'] ?? [];
-        $savedUniqueByOffer += saveUniqueClicksByOfferRows($db, $rows, $offerMap);
+        if ($rows) $uniqueByOfferRows = array_merge($uniqueByOfferRows, $rows);
         if (count($rows) < $limit) break;
         $offset += $limit;
     }
+    $savedUniqueByOffer = ($rateLimited || $apiErrors)
+        ? saveUniqueClicksByOfferRows($db, $uniqueByOfferRows, $offerMap)
+        : replaceUniqueClicksByOfferRowsForRange($db, $uniqueByOfferRows, $offerMap, $apiStart, $apiEnd);
 
     if ($rateLimited) {
         echo json_encode([
