@@ -1338,6 +1338,25 @@
         </div>
       </div>
       <p class="text-sm text-slate-400 mb-4">Источник: <code>/webmaster/offers?extendedFields=1</code> → <code>detail_stats.system.other_epc</code> (общий по бирже EPC) и <code>detail_stats.your.other_epc</code> (ваш). Помогает понять, стоит ли продолжать использовать оффер: если ваш EPC ниже рыночного — есть потенциал роста или проблема с трафиком. <span class="text-slate-500">«Потенциал ₽» = ваши клики по офферу × (EPC рынка − ваш EPC) — оценка дополнительной выручки при выходе на рыночный уровень.</span></p>
+      <!-- МФО: наш EPC vs средний по вебам биржи (взвешенное среднее market_epc по нашим кликам за период). -->
+      <div id="mfoEpcCard" class="hidden mb-4 border border-slate-700 rounded-lg p-4 bg-slate-900/50">
+        <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
+          <h3 class="text-white font-semibold">МФО: наш EPC vs рынок</h3>
+          <span class="text-xs text-slate-500" title="Рынок = взвешенный (по нашим кликам) средний EPC биржи по МФО-офферам. Наш = SUM(revenue) / SUM(unique_clicks) по тем же офферам за выбранный период.">только МФО-офферы, за выбранный период</span>
+        </div>
+        <div id="mfoEpcSummary" class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3"></div>
+        <div class="overflow-auto" style="max-height:280px">
+          <table class="w-full text-sm" id="mfoEpcTopTable"><thead><tr>
+            <th>МФО-оффер</th>
+            <th class="text-right">Клики</th>
+            <th class="text-right">Наш EPC</th>
+            <th class="text-right">EPC рынка</th>
+            <th class="text-right">Δ ₽</th>
+            <th class="text-right">Δ %</th>
+            <th class="text-right">Потенциал ₽</th>
+          </tr></thead><tbody></tbody></table>
+        </div>
+      </div>
       <div id="marketSummary" class="hidden grid grid-cols-2 md:grid-cols-4 gap-3 mb-4"></div>
       <div class="overflow-auto" style="max-height:600px">
         <table class="w-full text-sm" id="marketOffersTable"><thead><tr>
@@ -2194,6 +2213,10 @@ let globalAccountTotals = [];
 let planFactState = { from: '', to: '', baselineFrom: '', baselineTo: '', days: 0 };
 let offerMarketMap = {}; // offer_id → { name, market_epc, market_cr, market_ar, your_epc, your_cr }
 let offerMarketByName = {}; // offer_name → market data (для рядов без offer_id из старой БД)
+// platform_id → name из /webmaster/platforms (кэш на бэке). Используется как
+// резолвер имён, когда /reports/summary отдал platform_id без name — иначе
+// таблица «Площадки» показывает Unknown/Platform #N и планирование не мапит.
+let platformNamesById = {};
 
 let epcLineChart = null;
 let epcWeekdayChart = null;
@@ -2652,7 +2675,7 @@ function dedupSourceId(r) {
 function sourceKey(r) {
   const id = String((r && r.source_id) || '').trim();
   if (id && id !== 'all') return id;
-  return `name:${mergeSourceName((r && r.source) || 'Unknown')}`;
+  return `name:${mergeSourceName((r && r.source) || 'Unknown', r && r.source_id)}`;
 }
 
 function sourceMatches(row, filterValue) {
@@ -2694,12 +2717,22 @@ function deduplicateData(data, keepLast = false) {
   return Array.from(dedup.values());
 }
 
-function mergeSourceName(name) {
+function mergeSourceName(name, sourceId) {
   // Remove numeric IDs: "1318157, Займон" → "Займон", "1318157 Займон" → "Займон"
   let cleaned = (name || '').replace(/^\s*\d+[\s,.:;\-]+/, '').trim();
   // Remove trailing ID in parentheses: "Займон (1318157)" → "Займон"
   cleaned = cleaned.replace(/\s*\(\d+\)\s*$/, '').trim();
   if (!cleaned) cleaned = (name || '').trim();
+  // Резолв через кэш /webmaster/platforms: если имя пустое / Unknown /
+  // «Platform #123», а у нас есть source_id — берём имя из кэша.
+  const lowerRaw = cleaned.toLowerCase();
+  const needsResolve = cleaned === '' || lowerRaw === 'unknown' || /^platform #\d+$/i.test(cleaned) || /^\d+$/.test(cleaned);
+  if (needsResolve && sourceId != null) {
+    const key = String(sourceId).trim();
+    if (key && platformNamesById && platformNamesById[key]) {
+      cleaned = String(platformNamesById[key]).trim();
+    }
+  }
   // If the name is still just a numeric ID, label it
   if (/^\d+$/.test(cleaned)) cleaned = 'Platform #' + cleaned;
   const lower = cleaned.toLowerCase();
@@ -2945,7 +2978,7 @@ async function fetchUniqueClicks(start, end) {
       return json.data.map(r => ({
         date: r.date,
         source_id: r.source_id || 'all',
-        source: mergeSourceName(r.source_name),
+        source: mergeSourceName(r.source_name, r.source_id),
         unique_clicks: Number(r.unique_clicks) || 0,
         raw_clicks: Number(r.raw_clicks) || 0
       }));
@@ -3028,7 +3061,7 @@ async function fetchStatsRange(start, end) {
     date: row.date,
     offer: row.offer_name || 'Unknown',
     offer_id: row.offer_id || '',
-    source: mergeSourceName(row.source_name),
+    source: mergeSourceName(row.source_name, row.source_id),
     source_id: row.source_id || 'all',
     sub1: row.sub1 || '',
     clicks: Number(row.clicks) || 0,
@@ -3044,7 +3077,7 @@ async function fetchBouncesStats(start, end) {
     const json = await fetchJsonSafe(buildApiUrl({ action: 'get_bounces', start_date: start, end_date: end }));
     bouncesData = (json.status === 'success' && Array.isArray(json.data)) ? json.data.map(r => ({
       date: r.date,
-      source: mergeSourceName(r.source_name),
+      source: mergeSourceName(r.source_name, r.source_id),
       bounces: Number(r.bounces) || 0
     })) : [];
   } catch(e) { console.warn('fetchBouncesStats:', e); bouncesData = []; }
@@ -3058,7 +3091,7 @@ function processDataFromDb(rows) {
     dayOfWeek: daysOfWeek[new Date(row.date).getDay()],
     offer: row.offer_name || 'Unknown',
     offer_id: row.offer_id || '',
-    source: mergeSourceName(row.source_name),
+    source: mergeSourceName(row.source_name, row.source_id),
     source_id: row.source_id || 'all',
     sub1: row.sub1 || '',
     clicks: row.clicks,
@@ -3398,12 +3431,37 @@ function getOfferMarket(row) {
   return null;
 }
 
+/**
+ * Подтягивает справочник площадок из кэша бэка (/webmaster/platforms).
+ * Заполняет platformNamesById, чтобы mergeSourceName/sourceKey могли
+ * резолвить имя, когда в daily_stats сохранён только platform_id.
+ */
+async function loadPlatformNames() {
+  try {
+    const res = await fetch(`${API_BASE}?action=get_platforms`);
+    const ct = res.headers.get('content-type') || '';
+    if (!res.ok || !ct.toLowerCase().includes('application/json')) return;
+    const json = await res.json();
+    if (json && json.status === 'success' && Array.isArray(json.data)) {
+      const next = {};
+      for (const p of json.data) {
+        const id = String(p.id || '').trim();
+        const name = String(p.name || '').trim();
+        if (id && name) next[id] = name;
+      }
+      platformNamesById = next;
+    }
+  } catch (e) { console.warn('loadPlatformNames failed:', e); }
+}
+
 async function autoLoadSavedStats() {
   const dFrom = document.getElementById('dateFrom').value;
   const dTo = document.getElementById('dateTo').value;
   if (!dFrom || !dTo) return;
   // Подтягиваем рыночные EPC офферов из кэша
   await loadOfferMarketData();
+  // И справочник площадок — используется как резолвер имён (Площадки/планирование).
+  await loadPlatformNames();
   const saved = await fetchSavedStats(dFrom, dTo);
   // «Истинные» уникальные клики per (date, platform) для KPI первого блока,
   // и per (date, offer) — для таблицы офферов. Грузим параллельно с saved-данными;
@@ -3491,7 +3549,7 @@ async function autoLoadSavedStats() {
         dayOfWeek: daysOfWeek[d.getDay()],
         offer: offerName,
         offer_id: row.offer_id || '',
-        source: mergeSourceName(row.source_name),
+        source: mergeSourceName(row.source_name, row.source_id),
         source_id: row.source_id || 'all',
         sub1: row.sub1 || '',
         clicks: row.clicks,
@@ -4400,6 +4458,8 @@ function renderMarketTable() {
     ].join('');
     sumEl.classList.remove('hidden');
   }
+  // Дополнительно рендерим отдельную карточку «МФО: наш EPC vs рынок».
+  renderMfoEpcCard();
   // Build rows with computed delta
   let rows = Object.entries(offerMarketMap).map(([oid, o]) => {
     const yourEpc = o.your_epc || 0;
@@ -4451,6 +4511,85 @@ function renderMarketTable() {
     const updCell = r.updated_at ? `<span class="text-slate-400">${escapeHtml(r.updated_at)}</span>` : '<span class="text-slate-500">—</span>';
     return `<tr class="hover:bg-slate-800"><td>${escapeHtml(r.name)}</td><td class="text-right font-bold">${r.market_epc.toFixed(2)} ₽</td><td class="text-right">${yourEpcCell}</td><td class="text-right">${deltaCell}</td><td class="text-right">${deltaPctCell}</td><td class="text-right">${potentialCell}</td><td class="text-right">${r.market_cr.toFixed(2)}%</td><td class="text-right">${r.market_ar.toFixed(2)}%</td><td class="text-right">${updCell}</td></tr>`;
   }).join('');
+}
+
+// МФО: наш EPC vs рынок. Дёргает action=mfo_epc_summary за текущий период
+// и рисует KPI + топ-N офферов с наибольшим отставанием.
+async function renderMfoEpcCard() {
+  const card = document.getElementById('mfoEpcCard');
+  const sumEl = document.getElementById('mfoEpcSummary');
+  const tbody = document.querySelector('#mfoEpcTopTable tbody');
+  if (!card || !sumEl || !tbody) return;
+  const dFrom = (document.getElementById('dateFrom') || {}).value || '';
+  const dTo   = (document.getElementById('dateTo')   || {}).value || '';
+  if (!dFrom || !dTo) { card.classList.add('hidden'); return; }
+  let json;
+  try {
+    json = await fetchJsonSafe(buildApiUrl({
+      action: 'mfo_epc_summary', start_date: dFrom, end_date: dTo, top: 5
+    }));
+  } catch (e) {
+    console.warn('mfo_epc_summary failed:', e);
+    card.classList.add('hidden');
+    return;
+  }
+  if (!json || json.status !== 'success' || !json.offers_count) {
+    card.classList.add('hidden');
+    return;
+  }
+  const fmtRub = v => (Number(v) || 0).toFixed(2) + ' ₽';
+  const fmtPct = v => (v === null || !Number.isFinite(v)) ? '—' : `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`;
+  const deltaCls = json.delta_abs === null || json.delta_abs === undefined
+    ? 'text-slate-300'
+    : (json.delta_abs >= 0 ? 'text-emerald-400' : 'text-red-400');
+  const card1 = (label, value, sub, cls='text-white') => `
+    <div class="bg-slate-900/60 border border-slate-700 rounded p-3">
+      <div class="text-xs text-slate-400">${label}</div>
+      <div class="text-lg font-bold ${cls}">${value}</div>
+      ${sub ? `<div class="text-[11px] text-slate-500 mt-0.5">${sub}</div>` : ''}
+    </div>`;
+  const deltaVal = (json.delta_abs === null || json.delta_abs === undefined)
+    ? '—'
+    : `${json.delta_abs >= 0 ? '+' : ''}${Number(json.delta_abs).toFixed(2)} ₽ <span class="text-sm">(${fmtPct(json.delta_pct)})</span>`;
+  sumEl.innerHTML = [
+    card1('Наш EPC по МФО',
+          json.our_epc_avg > 0 ? fmtRub(json.our_epc_avg) : '—',
+          `${(json.clicks_total||0).toLocaleString('ru-RU')} уник. кликов`),
+    card1('EPC рынка (вебы биржи)',
+          json.market_epc_avg > 0 ? fmtRub(json.market_epc_avg) : '—',
+          `взвешенно по нашим кликам, ${json.offers_count} офф.`),
+    card1('Мы vs рынок', deltaVal, '', deltaCls),
+    card1('Потенциал выручки',
+          json.potential_rub > 0 ? `+${Math.round(json.potential_rub).toLocaleString('ru-RU')} ₽` : '—',
+          'при выходе на рыночный EPC'),
+  ].join('');
+  const top = Array.isArray(json.top) ? json.top : [];
+  if (!top.length) {
+    tbody.innerHTML = '<tr><td colspan="7" class="text-center text-slate-500 py-3">Нет МФО-офферов с отставанием от рынка за период.</td></tr>';
+  } else {
+    tbody.innerHTML = top.map(o => {
+      const d = (o.delta === null || o.delta === undefined) ? null : Number(o.delta);
+      const dp = (o.delta_pct === null || o.delta_pct === undefined) ? null : Number(o.delta_pct);
+      const cls = d === null ? 'text-slate-300' : (d >= 0 ? 'text-emerald-400' : 'text-red-400');
+      const deltaCell = d === null ? '<span class="text-slate-500">—</span>'
+        : `<span class="${cls}">${d >= 0 ? '+' : ''}${d.toFixed(2)} ₽</span>`;
+      const deltaPctCell = dp === null ? '<span class="text-slate-500">—</span>'
+        : `<span class="${cls}">${dp >= 0 ? '+' : ''}${dp.toFixed(1)}%</span>`;
+      const potCell = Number(o.potential) > 0
+        ? `<span class="text-yellow-400 font-semibold">+${Math.round(o.potential).toLocaleString('ru-RU')} ₽</span>`
+        : '<span class="text-slate-500">—</span>';
+      const marketEpcCell = Number(o.market_epc) > 0 ? `${Number(o.market_epc).toFixed(2)} ₽` : '<span class="text-slate-500">—</span>';
+      const ourEpcCell = Number(o.our_epc) > 0 ? `${Number(o.our_epc).toFixed(2)} ₽` : '<span class="text-slate-500">—</span>';
+      return `<tr class="hover:bg-slate-800"><td>${escapeHtml(o.offer_name || '(без имени)')}</td>`
+           + `<td class="text-right">${(Number(o.clicks)||0).toLocaleString('ru-RU')}</td>`
+           + `<td class="text-right">${ourEpcCell}</td>`
+           + `<td class="text-right">${marketEpcCell}</td>`
+           + `<td class="text-right">${deltaCell}</td>`
+           + `<td class="text-right">${deltaPctCell}</td>`
+           + `<td class="text-right">${potCell}</td></tr>`;
+    }).join('');
+  }
+  card.classList.remove('hidden');
 }
 
 // Применить пресет сортировки таблицы Market: значение вида "field_dir".
