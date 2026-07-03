@@ -1824,6 +1824,60 @@ function fetchLeadsSummaryPaged($token, $apiStart, $apiEnd, $grouping = 'day', $
 }
 
 /**
+ * Пагинированный запрос к /webmaster/reports (БЕЗ /summary).
+ *
+ * В отличие от /reports/summary?field=..., этот эндпоинт возвращает в КАЖДОЙ
+ * строке сами размерности: offer_id, goal_id, source (площадка), aff_sub1..5,
+ * а также clicks и unique_clicks (см. пример ответа в API LEADS.pdf, раздел
+ * «Отчёты → Получение сводного отчёта»). Используется как надёжный fallback,
+ * когда /reports/summary в конкретном развёртывании leads.su отдаёт агрегаты
+ * без source/offer_id/aff_sub1 и детализация по площадкам/офферам/sub1 (и
+ * уникальные клики) не сохраняется.
+ *
+ * $platformId — если задан, добавляет &platform_id=X (drill-down по площадке).
+ *
+ * Возвращает [rows, errors, rateLimited, retryAfter] — тот же контракт, что и
+ * fetchLeadsSummaryPaged, чтобы вызывающий код обрабатывал оба одинаково.
+ */
+function fetchLeadsReportsPaged($token, $apiStart, $apiEnd, $grouping = 'day', $platformId = '', $scopeLabel = '') {
+    $rows = [];
+    $errors = [];
+    $rateLimited = false;
+    $retryAfter = 120;
+    $offset = 0;
+    $limit = 500;
+
+    $maxIterations = 200;
+    for ($i = 0; $i < $maxIterations; $i++) {
+        $url = "https://api.leads.su/webmaster/reports?token={$token}"
+             . "&start_date=" . urlencode($apiStart)
+             . "&end_date="   . urlencode($apiEnd)
+             . "&grouping="   . urlencode($grouping)
+             . "&offset={$offset}&limit={$limit}";
+        if ($platformId !== '') $url .= "&platform_id=" . urlencode($platformId);
+
+        $data = apiGet($url);
+        if (isset($data['error'])) {
+            $errors[] = ['scope' => $scopeLabel, 'offset' => $offset, 'error' => $data['error']];
+            error_log("fetchLeadsReportsPaged({$scopeLabel}): offset={$offset} error " . json_encode($data['error']));
+            if (!empty($data['status']) && (int)$data['status'] === 429) {
+                $rateLimited = true;
+                if (!empty($data['retry_after'])) $retryAfter = max($retryAfter, (int)$data['retry_after']);
+            }
+            break;
+        }
+        $chunk = $data['data'] ?? [];
+        if ($chunk) $rows = array_merge($rows, $chunk);
+        if (count($chunk) < $limit) break;
+        $offset += $limit;
+        if ($i === $maxIterations - 1) {
+            error_log("fetchLeadsReportsPaged({$scopeLabel}): hit max iterations at offset={$offset}");
+        }
+    }
+    return [$rows, $errors, $rateLimited, $retryAfter];
+}
+
+/**
  * Выполняет GET-запрос к Yandex Metrika API
  */
 function ymApiGet($url, $ymToken) {
@@ -4243,6 +4297,41 @@ if ($action === 'update_stats') {
     } else {
         $saved = replaceReportRowsForFullRange($db, $allRows, $offerMap, $apiStart, $apiEnd, $coverageStats);
     }
+
+    // Fallback на /webmaster/reports. /reports/summary?field=offer_id,source,aff_sub1
+    // в части развёртываний leads.su отдаёт агрегаты БЕЗ размерностей source/
+    // offer_id/aff_sub1 (и без unique_clicks), из-за чего saveReportRows() их
+    // пропускает как «агрегаты по аккаунту» и детализация по площадкам/офферам/
+    // sub1 не сохраняется. Эндпоинт /webmaster/reports (без /summary) возвращает
+    // offer_id, source, aff_sub1..5 и unique_clicks В КАЖДОЙ строке — берём его,
+    // если сводка отработала «чисто» (без 429/ошибок), но не дала ни одной
+    // пригодной строки. UPSERT (без destructive replace), чтобы только дозаполнить
+    // диапазон, а не обнулить уже сохранённые данные.
+    if ($saved === 0 && !$rateLimited && !$errs) {
+        [$reportRows, $reportErrs, $reportRateLimited, $reportRetryAfter] =
+            fetchLeadsReportsPaged($token, $apiStart, $apiEnd, $grouping ?: 'day', $drillPlatform, 'stats_reports_fallback');
+        if ($reportErrs) $apiErrors = array_merge($apiErrors, $reportErrs);
+        if ($reportRateLimited) { $rateLimitedAny = true; $lastRetryAfter = max($lastRetryAfter, (int)$reportRetryAfter); }
+        if ($drillPlatform !== '') {
+            foreach ($reportRows as &$rr) {
+                if (!isset($rr['platform_id']) || $rr['platform_id'] === '' || $rr['platform_id'] === null) {
+                    $rr['platform_id'] = $drillPlatform;
+                }
+            }
+            unset($rr);
+        }
+        if ($reportRows) {
+            $coverageFallback = null;
+            $savedFallback = saveReportRows($db, $reportRows, $offerMap, $coverageFallback);
+            if ($savedFallback > 0) {
+                $saved = $savedFallback;
+                $coverageStats = $coverageFallback;
+                $passStatuses['stats_fallback'] = 'success';
+                error_log("update_stats: /reports/summary дал 0 пригодных строк — fallback на /webmaster/reports сохранил {$savedFallback} строк.");
+            }
+        }
+    }
+
     $passStatuses['stats'] = $rateLimited ? '429' : ($errs ? 'error' : 'success');
     $coverageAll['stats'] = is_array($coverageStats) ? $coverageStats : [];
     syncLogFinish($db, $logId, [
