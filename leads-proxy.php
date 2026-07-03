@@ -1499,6 +1499,64 @@ function dedupePlatformsList($platforms) {
     return $out;
 }
 
+/**
+ * Читает кэш площадок из app_settings.platforms_cache (без похода в API).
+ * Возвращает [id => name] и unix-ts обновления. Используется для резолва
+ * source_name на строках, где /reports/summary отдал platform_id, но без
+ * имени площадки — иначе таблица «Площадки» показывает Unknown/Platform #ID
+ * и планирование не может смапить площадку.
+ */
+function loadPlatformsIndex($db) {
+    $out = ['map' => [], 'cached_at' => 0];
+    if (!($db instanceof SQLite3)) return $out;
+    $tsStmt = @$db->prepare('SELECT value FROM app_settings WHERE key = :k');
+    if ($tsStmt) {
+        $tsStmt->bindValue(':k', 'platforms_cache_time', SQLITE3_TEXT);
+        $r = @$tsStmt->execute();
+        $row = $r ? $r->fetchArray(SQLITE3_ASSOC) : null;
+        $tsStmt->close();
+        if ($row) $out['cached_at'] = (int)($row['value'] ?? 0);
+    }
+    $dataStmt = @$db->prepare('SELECT value FROM app_settings WHERE key = :k');
+    if ($dataStmt) {
+        $dataStmt->bindValue(':k', 'platforms_cache', SQLITE3_TEXT);
+        $r = @$dataStmt->execute();
+        $row = $r ? $r->fetchArray(SQLITE3_ASSOC) : null;
+        $dataStmt->close();
+        if ($row && !empty($row['value'])) {
+            $decoded = json_decode($row['value'], true);
+            if (is_array($decoded)) {
+                foreach ($decoded as $p) {
+                    if (!is_array($p)) continue;
+                    $id = (string)($p['id'] ?? '');
+                    if ($id === '') continue;
+                    $name = (string)($p['name'] ?? '');
+                    if ($name !== '') $out['map'][$id] = $name;
+                }
+            }
+        }
+    }
+    return $out;
+}
+
+/**
+ * Эвристика для определения «МФО-офферов» по имени.
+ * Leads.su не возвращает категорию через /webmaster/offers, поэтому
+ * используем ключевые слова в имени (заём/микро/PDL/loan/деньги в долг и т.п.).
+ * Дополнительно можно расширить через app_settings.mfo_offer_ids (CSV) —
+ * whitelist по offer_id, который перекроет эвристику.
+ */
+function isMfoOfferName($name, $whitelistIds = null, $offerId = '') {
+    if ($whitelistIds && $offerId !== '' && isset($whitelistIds[(string)$offerId])) {
+        return true;
+    }
+    $n = mb_strtolower((string)$name, 'UTF-8');
+    if ($n === '') return false;
+    // Русские ключевые слова: заём/займ/микрозайм/микрокредит/pdl/деньги в долг.
+    $rx = '/(зай[мн]|микрозай|микрокредит|pdl|payday|деньг[аи].{0,6}долг|мфо|кредит наличными|быстрые деньги|мгновенн\w* заём|мкк|мфк)/u';
+    return (bool)preg_match($rx, $n);
+}
+
 
 /**
  * Загружает все офферы с постраничной выгрузкой (API limit max = 500).
@@ -1944,7 +2002,12 @@ function saveReportRows($db, $rows, $offerMap, &$coverage = null) {
         (date, source_id, source_name, offer_id, offer_name, sub1, clicks, raw_clicks, conversions, approved, revenue, pending_payout)
         VALUES (:date, :source_id, :source_name, :offer_id, :offer_name, :sub1, :clicks, :raw_clicks, :conversions, :approved, :revenue, :pending_payout)
         ON CONFLICT(date, source_id, offer_id, sub1) DO UPDATE SET
-            source_name = excluded.source_name,
+            source_name = CASE
+                WHEN excluded.source_name != \'\' AND excluded.source_name != \'Unknown\'
+                     AND excluded.source_name NOT LIKE \'Platform #%\'
+                    THEN excluded.source_name
+                ELSE daily_stats.source_name
+            END,
             offer_name = CASE
                 WHEN excluded.offer_name != \'\' AND excluded.offer_name != \'Unknown\'
                      AND excluded.offer_name NOT LIKE \'Offer #%\'
@@ -1957,6 +2020,12 @@ function saveReportRows($db, $rows, $offerMap, &$coverage = null) {
             approved = excluded.approved,
             revenue = excluded.revenue,
             pending_payout = excluded.pending_payout');
+
+    // Резолвим имена площадок из кэша /webmaster/platforms — API-отчёты часто
+    // отдают только platform_id без имени, и тогда таблица «Площадки» показывает
+    // Unknown/Platform #N (это и есть жалоба «не грузится информация по разделу»).
+    $platformsIdx = loadPlatformsIndex($db);
+    $platformNameById = $platformsIdx['map'] ?? [];
 
     $missingUniqueClicks = 0;
     $totalRows = 0;
@@ -2016,6 +2085,14 @@ function saveReportRows($db, $rows, $offerMap, &$coverage = null) {
             $sourceId = ($rawSourceId !== '' && $rawSourceId !== null)
                 ? (string)$rawSourceId
                 : syntheticSourceId($sourceName);
+            // Если имя площадки не пришло в отчёте (или пришло как "Unknown"),
+            // но у нас есть platform_id — берём имя из кэша /webmaster/platforms.
+            $needsResolve = ($sourceName === '' || $sourceName === 'Unknown'
+                || preg_match('/^Platform #\d+$/', (string)$sourceName));
+            if ($needsResolve && isset($platformNameById[$sourceId])
+                && $platformNameById[$sourceId] !== '') {
+                $sourceName = cleanSourceName($platformNameById[$sourceId]);
+            }
         } else {
             // У строки нет размерности по площадке, но есть offer/sub1.
             // Помечаем такой источник стабильным синтетическим id, чтобы
@@ -3955,6 +4032,8 @@ if ($action === 'get_stats') {
         echo json_encode(['error' => 'start_date and end_date required']);
         exit;
     }
+    $platformsIdx = loadPlatformsIndex($db);
+    $platformNameById = $platformsIdx['map'] ?? [];
     // Скрываем синтетические `name:...` offer_id от клиента (отдаём пустую строку),
     // чтобы FE не пытался показать их как «номер оффера». В UNIQUE-ключе и LEFT JOIN
     // они всё равно работают.
@@ -3976,6 +4055,13 @@ if ($action === 'get_stats') {
     $res = $stmt->execute();
     $rows = [];
     while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
+        // Резолвим source_name из кэша площадок, если в БД лежит Unknown/пусто/Platform #N.
+        $sn = (string)($row['source_name'] ?? '');
+        $sid = (string)($row['source_id'] ?? '');
+        $needs = ($sn === '' || $sn === 'Unknown' || preg_match('/^Platform #\d+$/', $sn));
+        if ($needs && $sid !== '' && isset($platformNameById[$sid]) && $platformNameById[$sid] !== '') {
+            $row['source_name'] = $platformNameById[$sid];
+        }
         $rows[] = $row;
     }
     echo json_encode(['status' => 'success', 'data' => $rows]);
@@ -4851,6 +4937,149 @@ if ($action === 'get_offers_market') {
     exit;
 }
 
+// 14a. Список площадок из кэша /webmaster/platforms — фронт использует
+// как резолвер platform_id → name (чтобы «Площадки» и планирование не
+// показывали Unknown, когда /reports/summary отдал только platform_id).
+if ($action === 'get_platforms') {
+    $idx = loadPlatformsIndex($db);
+    $list = [];
+    foreach ($idx['map'] as $id => $name) {
+        $list[] = ['id' => (string)$id, 'name' => (string)$name];
+    }
+    usort($list, function($a, $b) { return strcmp($a['name'], $b['name']); });
+    echo json_encode([
+        'status' => 'success',
+        'count' => count($list),
+        'cached_at' => $idx['cached_at'] ?: null,
+        'cached_at_iso' => $idx['cached_at'] ? date('Y-m-d H:i:s', $idx['cached_at']) : null,
+        'data' => $list,
+    ], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+// 14b. МФО: наш EPC vs рынок (Variant A).
+// Считает по офферам с признаком MFO (эвристика по имени + optional
+// whitelist в app_settings.mfo_offer_ids) взвешенный средний EPC биржи
+// (веса = наши unique_clicks за период) и наш взвешенный EPC за тот же
+// период. Возвращает KPI + топ-N офферов, где мы сильнее всего отстаём.
+if ($action === 'mfo_epc_summary') {
+    if (!$start_date || !$end_date) {
+        echo json_encode(['error' => 'start_date and end_date required']);
+        exit;
+    }
+    $topN = isset($_GET['top']) ? max(1, min(50, (int)$_GET['top'])) : 5;
+    // Whitelist MFO offer_ids из настроек (CSV: "123,456,789").
+    $whitelistIds = [];
+    $whitelistRaw = trim((string)settingGet($db, 'mfo_offer_ids'));
+    if ($whitelistRaw !== '') {
+        foreach (preg_split('/[\s,;]+/', $whitelistRaw) as $tok) {
+            $tok = trim($tok);
+            if ($tok !== '') $whitelistIds[$tok] = true;
+        }
+    }
+    // Забираем рыночный EPC из offers_cache и наши агрегаты (unique_clicks + revenue)
+    // за период из daily_stats. LEFT JOIN на offers_cache даёт нам rows даже когда
+    // /webmaster/offers ещё не подтянут (тогда market_epc = 0 → оффер отфильтруем).
+    $stmt = $db->prepare('SELECT
+            d.offer_id,
+            COALESCE(NULLIF(d.offer_name, \'\'), o.name, \'\') AS offer_name,
+            SUM(d.clicks) AS our_clicks,
+            SUM(d.revenue) AS our_revenue,
+            MAX(o.market_epc) AS market_epc,
+            MAX(o.market_cr) AS market_cr,
+            MAX(o.market_ar) AS market_ar,
+            MAX(o.your_epc) AS your_epc_api
+        FROM daily_stats d
+        LEFT JOIN offers_cache o
+            ON o.offer_id = d.offer_id AND d.offer_id != \'\' AND d.offer_id NOT LIKE \'name:%\'
+        WHERE d.date BETWEEN :start AND :end
+          AND d.offer_id != \'\' AND d.offer_id NOT LIKE \'name:%\'
+        GROUP BY d.offer_id
+        ORDER BY our_revenue DESC');
+    $stmt->bindValue(':start', $start_date, SQLITE3_TEXT);
+    $stmt->bindValue(':end', $end_date, SQLITE3_TEXT);
+    $res = $stmt->execute();
+    $mfoOffers = [];
+    $totalClicks = 0.0;
+    $totalRevenue = 0.0;
+    $weightedMarketEpcNum = 0.0; // Σ (market_epc_i × our_clicks_i)
+    $weightedMarketEpcDen = 0.0; // Σ our_clicks_i (только по офферам с market_epc>0)
+    $marketEpcVals = [];
+    while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
+        $name = (string)($row['offer_name'] ?? '');
+        $oid  = (string)($row['offer_id'] ?? '');
+        if (!isMfoOfferName($name, $whitelistIds, $oid)) continue;
+        $clicks   = (float)($row['our_clicks']  ?? 0);
+        $revenue  = (float)($row['our_revenue'] ?? 0);
+        $marketEpc = (float)($row['market_epc'] ?? 0);
+        $totalClicks  += $clicks;
+        $totalRevenue += $revenue;
+        if ($marketEpc > 0 && $clicks > 0) {
+            $weightedMarketEpcNum += $marketEpc * $clicks;
+            $weightedMarketEpcDen += $clicks;
+            $marketEpcVals[] = $marketEpc;
+        }
+        $ourEpc = $clicks > 0 ? $revenue / $clicks : 0.0;
+        $delta = ($marketEpc > 0 && $ourEpc > 0) ? ($ourEpc - $marketEpc) : null;
+        $deltaPct = ($marketEpc > 0 && $ourEpc > 0) ? (($ourEpc - $marketEpc) / $marketEpc * 100.0) : null;
+        $potential = ($clicks > 0 && $marketEpc > 0 && $ourEpc > 0 && $delta !== null && $delta < 0)
+            ? $clicks * ($marketEpc - $ourEpc)
+            : 0.0;
+        $mfoOffers[] = [
+            'offer_id'     => $oid,
+            'offer_name'   => $name,
+            'clicks'       => (int)$clicks,
+            'revenue'      => $revenue,
+            'our_epc'      => $ourEpc,
+            'market_epc'   => $marketEpc,
+            'market_cr'    => (float)($row['market_cr'] ?? 0),
+            'market_ar'    => (float)($row['market_ar'] ?? 0),
+            'delta'        => $delta,
+            'delta_pct'    => $deltaPct,
+            'potential'    => $potential,
+        ];
+    }
+    $ourEpcAvg = $totalClicks > 0 ? $totalRevenue / $totalClicks : 0.0;
+    $marketEpcAvg = $weightedMarketEpcDen > 0
+        ? $weightedMarketEpcNum / $weightedMarketEpcDen : 0.0;
+    // Медиана market_epc — устойчивее к выбросам единичных офферов.
+    $medMarketEpc = 0.0;
+    if ($marketEpcVals) {
+        sort($marketEpcVals);
+        $c = count($marketEpcVals);
+        $medMarketEpc = ($c % 2)
+            ? $marketEpcVals[(int)($c/2)]
+            : (($marketEpcVals[$c/2 - 1] + $marketEpcVals[$c/2]) / 2.0);
+    }
+    $deltaAbs = ($marketEpcAvg > 0 && $ourEpcAvg > 0) ? ($ourEpcAvg - $marketEpcAvg) : null;
+    $deltaPct = ($marketEpcAvg > 0 && $ourEpcAvg > 0)
+        ? (($ourEpcAvg - $marketEpcAvg) / $marketEpcAvg * 100.0) : null;
+    $totalPotential = 0.0;
+    foreach ($mfoOffers as $o) $totalPotential += (float)$o['potential'];
+    // Топ офферов — по абсолютному потенциалу (где отставание × клики максимально).
+    $top = $mfoOffers;
+    usort($top, function($a, $b) {
+        return ((float)$b['potential']) <=> ((float)$a['potential']);
+    });
+    $top = array_slice($top, 0, $topN);
+    echo json_encode([
+        'status'          => 'success',
+        'period'          => ['start' => $start_date, 'end' => $end_date],
+        'offers_count'    => count($mfoOffers),
+        'clicks_total'    => (int)$totalClicks,
+        'revenue_total'   => $totalRevenue,
+        'our_epc_avg'     => $ourEpcAvg,
+        'market_epc_avg'  => $marketEpcAvg,
+        'market_epc_median' => $medMarketEpc,
+        'delta_abs'       => $deltaAbs,
+        'delta_pct'       => $deltaPct,
+        'potential_rub'   => $totalPotential,
+        'top'             => $top,
+        'whitelist_used'  => !empty($whitelistIds),
+    ], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
 // ============ Журнал событий из Leads.su ============
 // 17. Подтянуть свежие события (новые офферы, изменение выплат, остановки и т.п.)
 //     из /webmaster/notifications и положить в notifications_log без дублей.
@@ -4950,6 +5179,10 @@ if ($action === 'health') {
     $lastEventDate = (string)@$db->querySingle('SELECT MAX(event_date) FROM notifications_log');
     $ymTokenPresent = (bool)@$db->querySingle("SELECT COUNT(*) FROM ym_settings WHERE key = 'oauth_token' AND value != ''");
     $tgConfigured = settingGet($db, 'tg_bot_token') !== '' && settingGet($db, 'tg_chat_id') !== '';
+    $platformsIdx = loadPlatformsIndex($db);
+    $platformsCached = count($platformsIdx['map']);
+    $platformsCachedAt = $platformsIdx['cached_at']
+        ? date('Y-m-d H:i:s', $platformsIdx['cached_at']) : null;
     echo json_encode([
         'status' => 'success',
         'db' => [
@@ -4971,6 +5204,10 @@ if ($action === 'health') {
             'api_key_source' => aiApiKeySource(),
         ],
         'integrations' => [
+            'leads' => [
+                'platforms_cached' => $platformsCached,
+                'platforms_cached_at' => $platformsCachedAt,
+            ],
             'yandex_metrika' => [
                 'token_present' => $ymTokenPresent,
                 'counter_id' => $YM_COUNTER_ID,
