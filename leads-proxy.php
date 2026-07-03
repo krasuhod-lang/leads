@@ -1500,6 +1500,31 @@ function dedupePlatformsList($platforms) {
 }
 
 /**
+ * Возвращает список площадок [{id,name}] для per-platform фолбэка в
+ * update_stats. Сначала читает кэш через loadPlatformsIndex(); если кэш
+ * пуст (либо ещё ни разу не заполнялся, либо истёк), делает один вызов
+ * fetchPlatformsList(), который сам заполнит кэш и вернёт список.
+ *
+ * Изолировано в отдельную функцию, чтобы update_stats мог получить список
+ * ровно один раз за запуск, а вызывающий код не заботился, откуда взялись
+ * данные (кэш vs. свежий /webmaster/platforms).
+ */
+function getPlatformsForFallback($db, $token) {
+    $idx = loadPlatformsIndex($db);
+    if (!empty($idx['map'])) {
+        $out = [];
+        foreach ($idx['map'] as $id => $name) {
+            $out[] = ['id' => (string)$id, 'name' => (string)$name];
+        }
+        return $out;
+    }
+    // Кэш пуст — пробуем загрузить один раз (fetchPlatformsList сам
+    // сохранит результат в app_settings.platforms_cache).
+    $list = fetchPlatformsList($token, $db);
+    return is_array($list) ? $list : [];
+}
+
+/**
  * Читает кэш площадок из app_settings.platforms_cache (без похода в API).
  * Возвращает [id => name] и unix-ts обновления. Используется для резолва
  * source_name на строках, где /reports/summary отдал platform_id, но без
@@ -4561,6 +4586,146 @@ if ($action === 'update_stats') {
         'message'               => $errs ? substr(json_encode($errs[0] ?? null, JSON_UNESCAPED_UNICODE) ?: '', 0, 240) : '',
     ]);
 
+    // ---------- ПРОХОД 1B: per-platform фолбэк ----------
+    // Для аккаунтов, где Leads.su в /reports/summary и /webmaster/reports (без
+    // &platform_id) отдаёт строки с пустым `source`, детализация по площадкам
+    // из основного прохода не приходит: 99% строк оседают в «Не указан
+    // источник», таблица «Площадки» пустая. Единственный надёжный способ
+    // получить разрез — явно фильтровать /webmaster/reports по каждому
+    // platform_id из /webmaster/platforms и проставлять real platform_id на
+    // возвращённых строках (как делает drill-down в update_stats). Запускаем
+    // только когда доля размерных строк < 50% (иначе аккаунтам, где `source`
+    // приходит, лишние HTTP-запросы не нужны) и не запрошен drill-down.
+    $rowsTotalAfter        = (int)($coverageStats['rows_total'] ?? 0);
+    $dimensionedRowsAfter  = (int)($coverageStats['dimensioned_rows'] ?? 0);
+    $needsPerPlatform = ($drillPlatform === '')
+        && (
+            $rowsTotalAfter === 0
+            || ($dimensionedRowsAfter * 2 < $rowsTotalAfter)
+        );
+    // Если предыдущие проходы уже словили не-429 ошибку — не бомбардируем
+    // умирающий API десятками запросов.
+    if ($errs && !$rateLimited) $needsPerPlatform = false;
+    if ($needsPerPlatform) {
+        $platformsList = getPlatformsForFallback($db, $token);
+        $perPfLogId = syncLogStart($db, $runId, 'stats_perpf', $apiStart, $apiEnd);
+        $perPfSaved = 0;
+        $perPfCoverage = ['rows_total'=>0,'rows_saved'=>0,'dimensioned_rows'=>0,
+            'missing_unique_clicks'=>0,'missing_platform'=>0,'missing_date'=>0,
+            'aggregate_skipped'=>0];
+        $perPfErrs = [];
+        $perPfRateLimited = false;
+        $perPfRetryAfter = 0;
+        $platformsUsed = 0;
+        $platformsSkipped = 0;
+        foreach ($platformsList as $p) {
+            $pid = (string)($p['id'] ?? '');
+            if ($pid === '') { $platformsSkipped++; continue; }
+            $pname = (string)($p['name'] ?? '');
+            [$pfRows, $pfErrs, $pfRateLimited, $pfRetryAfter] =
+                fetchLeadsReportsPaged($token, $apiStart, $apiEnd,
+                    $grouping ?: 'day', $pid, "stats_perpf_{$pid}");
+            if ($pfErrs) $perPfErrs = array_merge($perPfErrs, $pfErrs);
+            if ($pfRateLimited) {
+                $perPfRateLimited = true;
+                $rateLimitedAny = true;
+                if ($pfRetryAfter) {
+                    $perPfRetryAfter = max($perPfRetryAfter, (int)$pfRetryAfter);
+                    $lastRetryAfter  = max($lastRetryAfter, (int)$pfRetryAfter);
+                }
+                // 429 → выходим, чтобы не углублять троттлинг.
+                error_log("update_stats: per-platform stats fallback остановлен на 429 "
+                    . "(pid={$pid}, обработано {$platformsUsed} площадок).");
+                break;
+            }
+            $platformsUsed++;
+            if ($pfRows) {
+                // Проставляем реальный platform_id и, если API не вернул имя,
+                // подставляем платформенное имя из кэша — иначе saveReportRows
+                // сохранит source_name = 'Unknown'.
+                foreach ($pfRows as &$rr) {
+                    if (!isset($rr['platform_id']) || $rr['platform_id'] === ''
+                        || $rr['platform_id'] === null) {
+                        $rr['platform_id'] = $pid;
+                    }
+                    if ($pname !== ''
+                        && (empty($rr['source']) || trim((string)$rr['source']) === '')) {
+                        $rr['source'] = $pname;
+                    }
+                }
+                unset($rr);
+                $cov = null;
+                $ins = saveReportRows($db, $pfRows, $offerMap, $cov);
+                $perPfSaved += (int)$ins;
+                foreach (['rows_total','rows_saved','dimensioned_rows',
+                          'missing_unique_clicks','missing_platform',
+                          'missing_date','aggregate_skipped'] as $k) {
+                    $perPfCoverage[$k] += (int)($cov[$k] ?? 0);
+                }
+            }
+            // Троттлинг между площадками (лимит 100 запросов/час на метод —
+            // ~2.5 req/s даёт запас, и пагинация внутри одной платформы
+            // тоже уважает apiGet-пейсинг).
+            usleep(400000);
+        }
+        // Мерджим per-platform покрытие обратно в основной stats coverage —
+        // dimensioned_rows складываются, и результат отражается в KPI/UI.
+        if ($perPfSaved > 0 || $perPfCoverage['rows_total'] > 0) {
+            $mergedCoverage = is_array($coverageStats) ? $coverageStats : [];
+            foreach (['rows_total','rows_saved','dimensioned_rows',
+                      'missing_unique_clicks','missing_platform',
+                      'missing_date','aggregate_skipped'] as $k) {
+                $mergedCoverage[$k] = (int)($mergedCoverage[$k] ?? 0)
+                                    + (int)($perPfCoverage[$k] ?? 0);
+            }
+            $saved += $perPfSaved;
+            $coverageStats = $mergedCoverage;
+            $coverageAll['stats'] = $mergedCoverage;
+        }
+        // Если per-platform полностью прошёл (без 429 и ошибок) — очищаем
+        // синтетический бакет «Не указан источник» за диапазон дат: те же
+        // клики теперь разложены по реальным площадкам, оставлять их в
+        // бакете unassigned значило бы задвоить трафик в таблице «Площадки».
+        // При частичном прогоне (429/ошибка) unassigned оставляем, чтобы
+        // не потерять покрытие для необойдённых площадок.
+        if ($perPfSaved > 0 && !$perPfRateLimited && !$perPfErrs) {
+            $unassignedId = syntheticSourceId('unassigned');
+            $del = @$db->prepare('DELETE FROM daily_stats
+                WHERE date BETWEEN :s AND :e AND source_id = :sid');
+            if ($del) {
+                $del->bindValue(':s', $apiStart, SQLITE3_TEXT);
+                $del->bindValue(':e', $apiEnd, SQLITE3_TEXT);
+                $del->bindValue(':sid', $unassignedId, SQLITE3_TEXT);
+                @$del->execute();
+                $del->close();
+            }
+        }
+        if ($perPfErrs) $apiErrors = array_merge($apiErrors, $perPfErrs);
+        $perPfStatus = $perPfRateLimited
+            ? '429'
+            : ($perPfErrs ? 'error' : ($perPfSaved > 0 ? 'success' : 'empty'));
+        $passStatuses['stats_perpf'] = $perPfStatus;
+        $coverageAll['stats_perpf'] = $perPfCoverage;
+        error_log("update_stats: per-platform stats fallback обошёл {$platformsUsed} площадок, "
+            . "сохранено {$perPfSaved} строк (dimensioned={$perPfCoverage['dimensioned_rows']} "
+            . "из {$perPfCoverage['rows_total']}), rate_limited=" . ($perPfRateLimited ? 'yes' : 'no') . ".");
+        syncLogFinish($db, $perPfLogId, [
+            'rows_saved' => (int)$perPfSaved,
+            'rows_total' => (int)$perPfCoverage['rows_total'],
+            'dimensioned_rows'      => (int)$perPfCoverage['dimensioned_rows'],
+            'missing_unique_clicks' => (int)$perPfCoverage['missing_unique_clicks'],
+            'missing_platform'      => (int)$perPfCoverage['missing_platform'],
+            'missing_date'          => (int)$perPfCoverage['missing_date'],
+            'aggregate_skipped'     => (int)$perPfCoverage['aggregate_skipped'],
+            'http_status'           => $perPfRateLimited ? 429 : ($perPfErrs ? 500 : 200),
+            'retry_after'           => $perPfRateLimited ? (int)$perPfRetryAfter : 0,
+            'status'                => $perPfStatus,
+            'message'               => 'platforms_used=' . $platformsUsed
+                . ($platformsSkipped ? ", skipped={$platformsSkipped}" : '')
+                . ($perPfErrs ? '; ' . substr(json_encode($perPfErrs[0] ?? null, JSON_UNESCAPED_UNICODE) ?: '', 0, 200) : ''),
+        ]);
+    }
+
     // Небольшая пауза между тяжёлыми проходами — 1..2 с даёт API вздохнуть
     // и заметно снижает шанс словить 429 на длинных диапазонах дат.
     usleep(1200000);
@@ -4613,9 +4778,99 @@ if ($action === 'update_stats') {
         'message'               => ($errs ?? []) ? substr(json_encode($errs[0] ?? null, JSON_UNESCAPED_UNICODE) ?: '', 0, 240) : '',
     ]);
 
-    usleep(1200000);
+    // ---------- ПРОХОД 2B: unique_clicks per platform ----------
+    // Тот же корень, что и в stats: /reports/summary?field=source в некоторых
+    // развёртываниях leads.su возвращает агрегаты без source, из-за чего
+    // saveUniqueClicksRows скипает все строки (aggregate_skipped) и
+    // daily_unique_clicks заполнен только `source_id='all'` строкой.
+    // Пробуем per-platform запросом (без field=, но с &platform_id=X) —
+    // тогда response относится только к одной площадке и мы проставляем
+    // её id/name на строках вручную. Триггер: не drill-down, основной проход
+    // ничего не сохранил / все ушли в aggregate_skipped.
+    $ucRowsTotalAfter = (int)($coverageUnique['rows_total'] ?? 0);
+    $ucAggSkipped     = (int)($coverageUnique['aggregate_skipped'] ?? 0);
+    $ucSaved0         = ($savedUnique <= 0);
+    $ucMostlyAgg      = ($ucRowsTotalAfter > 0)
+                        && ($ucAggSkipped * 2 >= $ucRowsTotalAfter);
+    $needsUcPerPlatform = ($drillPlatform === '')
+        && ($ucSaved0 || $ucMostlyAgg);
+    if (($errs ?? []) && !$rateLimited) $needsUcPerPlatform = false;
+    if ($needsUcPerPlatform) {
+        $platformsList = $platformsList ?? getPlatformsForFallback($db, $token);
+        $ucPfLogId = syncLogStart($db, $runId, 'unique_clicks_perpf', $apiStart, $apiEnd);
+        $ucPfSaved = 0;
+        $ucPfCoverage = ['rows_total'=>0,'rows_saved'=>0,
+            'missing_unique_clicks'=>0,'missing_platform'=>0,
+            'missing_date'=>0,'aggregate_skipped'=>0];
+        $ucPfErrs = [];
+        $ucPfRateLimited = false;
+        $ucPfRetryAfter = 0;
+        $ucPlatformsUsed = 0;
+        foreach ($platformsList as $p) {
+            $pid = (string)($p['id'] ?? '');
+            if ($pid === '') continue;
+            $pname = (string)($p['name'] ?? '');
+            [$pfRows, $pfErrs, $pfRateLimited, $pfRetryAfter] =
+                fetchLeadsSummaryPaged($token, $apiStart, $apiEnd,
+                    $grouping ?: 'day', '', $pid, "uc_perpf_{$pid}");
+            if ($pfErrs) $ucPfErrs = array_merge($ucPfErrs, $pfErrs);
+            if ($pfRateLimited) {
+                $ucPfRateLimited = true;
+                $rateLimitedAny = true;
+                if ($pfRetryAfter) {
+                    $ucPfRetryAfter = max($ucPfRetryAfter, (int)$pfRetryAfter);
+                    $lastRetryAfter = max($lastRetryAfter, (int)$pfRetryAfter);
+                }
+                error_log("update_stats: per-platform unique_clicks fallback остановлен на 429 "
+                    . "(pid={$pid}, обработано {$ucPlatformsUsed} площадок).");
+                break;
+            }
+            $ucPlatformsUsed++;
+            if ($pfRows) {
+                $cov = null;
+                $ins = saveUniqueClicksRows($db, $pfRows, $pid, $pname, $cov);
+                $ucPfSaved += (int)$ins;
+                foreach (['rows_total','rows_saved','missing_unique_clicks',
+                          'missing_platform','missing_date','aggregate_skipped'] as $k) {
+                    $ucPfCoverage[$k] += (int)($cov[$k] ?? 0);
+                }
+            }
+            usleep(400000);
+        }
+        if ($ucPfSaved > 0 || $ucPfCoverage['rows_total'] > 0) {
+            $mergedUc = is_array($coverageUnique) ? $coverageUnique : [];
+            foreach (['rows_total','rows_saved','missing_unique_clicks',
+                      'missing_platform','missing_date','aggregate_skipped'] as $k) {
+                $mergedUc[$k] = (int)($mergedUc[$k] ?? 0)
+                              + (int)($ucPfCoverage[$k] ?? 0);
+            }
+            $savedUnique += $ucPfSaved;
+            $coverageUnique = $mergedUc;
+            $coverageAll['unique_clicks'] = $mergedUc;
+        }
+        if ($ucPfErrs) $apiErrors = array_merge($apiErrors, $ucPfErrs);
+        $ucPfStatus = $ucPfRateLimited
+            ? '429'
+            : ($ucPfErrs ? 'error' : ($ucPfSaved > 0 ? 'success' : 'empty'));
+        $passStatuses['unique_clicks_perpf'] = $ucPfStatus;
+        $coverageAll['unique_clicks_perpf'] = $ucPfCoverage;
+        error_log("update_stats: per-platform unique_clicks fallback обошёл {$ucPlatformsUsed} площадок, "
+            . "сохранено {$ucPfSaved} строк, rate_limited=" . ($ucPfRateLimited ? 'yes' : 'no') . ".");
+        syncLogFinish($db, $ucPfLogId, [
+            'rows_saved' => (int)$ucPfSaved,
+            'rows_total' => (int)$ucPfCoverage['rows_total'],
+            'missing_unique_clicks' => (int)$ucPfCoverage['missing_unique_clicks'],
+            'aggregate_skipped'     => (int)$ucPfCoverage['aggregate_skipped'],
+            'missing_date'          => (int)$ucPfCoverage['missing_date'],
+            'http_status'           => $ucPfRateLimited ? 429 : ($ucPfErrs ? 500 : 200),
+            'retry_after'           => $ucPfRateLimited ? (int)$ucPfRetryAfter : 0,
+            'status'                => $ucPfStatus,
+            'message'               => 'platforms_used=' . $ucPlatformsUsed
+                . ($ucPfErrs ? '; ' . substr(json_encode($ucPfErrs[0] ?? null, JSON_UNESCAPED_UNICODE) ?: '', 0, 200) : ''),
+        ]);
+    }
 
-    // ---------- ПРОХОД 3: «истинные» уникальные клики per (date, offer_id) ----------
+    usleep(1200000);
     $savedUniqueByOffer = 0;
     [$uniqueByOfferRows, $errs, $rateLimited, $retryAfter] =
         fetchLeadsSummaryPaged($token, $apiStart, $apiEnd, $grouping ?: 'day', 'offer_id', '', 'unique_clicks_by_offer');
