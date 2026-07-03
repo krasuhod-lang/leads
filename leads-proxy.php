@@ -791,6 +791,10 @@ try {
     )');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_sync_log_run ON sync_log(run_id)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_sync_log_started ON sync_log(started_at)');
+    // FR-5: dimensioned_rows — сколько строк из batchа имели реальный source
+    // (а не были сохранены с синтетическим «Не указан источник»). Идёт через
+    // addColumnIfMissing, чтобы старые БД добрали колонку без ручной миграции.
+    $addColumnIfMissing('sync_log', 'dimensioned_rows', 'INTEGER DEFAULT 0');
 
     // ============================================================================
     // Дашборд монетизации отказного трафика — каркас (PR 1).
@@ -1338,14 +1342,15 @@ function syncLogStart($db, $runId, $pass, $startDate, $endDate) {
 
 /**
  * Финализировать запись прохода в sync_log. $fields — ассоциативный массив
- * с любым подмножеством: rows_saved, rows_total, missing_unique_clicks,
- * missing_platform, missing_date, aggregate_skipped, http_status,
- * retry_after, status, message.
+ * с любым подмножеством: rows_saved, rows_total, dimensioned_rows,
+ * missing_unique_clicks, missing_platform, missing_date, aggregate_skipped,
+ * http_status, retry_after, status, message.
  */
 function syncLogFinish($db, $id, array $fields) {
     if (!($db instanceof SQLite3) || $id <= 0) return;
-    $allowed = ['rows_saved', 'rows_total', 'missing_unique_clicks',
-        'missing_platform', 'missing_date', 'aggregate_skipped',
+    $allowed = ['rows_saved', 'rows_total', 'dimensioned_rows',
+        'missing_unique_clicks', 'missing_platform', 'missing_date',
+        'aggregate_skipped',
         'http_status', 'retry_after', 'status', 'message'];
     $sets = ['finished_at = :finished_at'];
     $binds = [':finished_at' => [time(), SQLITE3_INTEGER]];
@@ -1975,27 +1980,54 @@ function saveReportRows($db, $rows, $offerMap, &$coverage = null) {
         $date = substr((string)$rawDate, 0, 10);
         if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) { $missingDate++; continue; }
 
-        // При запросе детализации по source API иногда дополнительно возвращает
-        // агрегат по аккаунту без площадки. Такая строка выглядит как Unknown и
-        // содержит сумму всех кликов — её нельзя писать в per-platform таблицу.
-        if (!hasSourceDimension($row)) { $aggregateSkipped++; continue; }
-
-        // Явный отказ от «синтетического» source_id='all' для строк, у которых
-        // leads.su не вернул platform_id И имя источника пустое: такая строка —
-        // почти всегда агрегат по аккаунту, дублирующий клики. Пишем её только
-        // если есть хотя бы platform_id или непустое имя площадки.
+        // FR-2: строка считается «агрегатом кабинета» только если пусты
+        // одновременно ВСЕ размерности (source/offer/aff_sub1..5). Если есть
+        // хотя бы одно измерение — сохраняем, для отсутствующих генерируем
+        // синтетические id. Это восстанавливает разрез по площадкам/офферам/
+        // sub1, когда leads.su в /reports/summary?field=... отдаёт часть строк
+        // без source (только offer+sub1) или без offer (только source+sub1).
         $rawSourceId = $row['platform_id'] ?? $row['platformid'] ?? '';
         $rawSourceName = trim((string)($row['source'] ?? $row['platform_name'] ?? ''));
-        $sourceName = cleanSourceName($rawSourceName !== '' ? $rawSourceName : 'Unknown');
-        if (($rawSourceId === '' || $rawSourceId === null) && $rawSourceName === '') {
-            $missingPlatform++;
+        $rawOfferId = trim((string)($row['offer_id'] ?? $row['offerid'] ?? ''));
+        $rawOfferName = trim((string)($row['offer_name'] ?? $row['offername'] ?? $row['offer'] ?? ''));
+        $hasSub = false;
+        foreach (['aff_sub1','aff_sub2','aff_sub3','aff_sub4','aff_sub5','sub1'] as $sk) {
+            if (isset($row[$sk]) && trim((string)$row[$sk]) !== '') { $hasSub = true; break; }
+        }
+        $hasSourceDim = ($rawSourceId !== '' && $rawSourceId !== null
+                         && strcasecmp((string)$rawSourceId, 'all') !== 0)
+                     || ($rawSourceName !== ''
+                         && strcasecmp($rawSourceName, 'all') !== 0
+                         && strcasecmp($rawSourceName, 'unknown') !== 0);
+        $hasOfferDim  = ($rawOfferId !== '' && strcasecmp($rawOfferId, 'all') !== 0)
+                     || ($rawOfferName !== ''
+                         && strcasecmp($rawOfferName, 'all') !== 0
+                         && strcasecmp($rawOfferName, 'unknown') !== 0);
+
+        // Полностью безразмерная строка = агрегат по аккаунту → скипаем,
+        // чтобы не дублировать клики уже сохранённых детализированных строк.
+        if (!$hasSourceDim && !$hasOfferDim && !$hasSub) {
+            $aggregateSkipped++;
             continue;
         }
-        $sourceId = ($rawSourceId !== '' && $rawSourceId !== null)
-            ? (string)$rawSourceId
-            : syntheticSourceId($sourceName);
 
-        $offerId = (string)($row['offer_id'] ?? $row['offerid'] ?? '');
+        $sourceName = cleanSourceName($rawSourceName !== '' ? $rawSourceName : 'Unknown');
+        if ($hasSourceDim) {
+            $sourceId = ($rawSourceId !== '' && $rawSourceId !== null)
+                ? (string)$rawSourceId
+                : syntheticSourceId($sourceName);
+        } else {
+            // У строки нет размерности по площадке, но есть offer/sub1.
+            // Помечаем такой источник стабильным синтетическим id, чтобы
+            // (а) UNIQUE(date, source_id, offer_id, sub1) не схлопывал разные
+            // строки в одну и (б) в UI такие клики оседали в бакете
+            // «Не указан источник» и не смешивались с валидной площадкой.
+            $sourceId = syntheticSourceId('unassigned');
+            $sourceName = 'Не указан источник';
+            $missingPlatform++;
+        }
+
+        $offerId = $rawOfferId;
         // Try to resolve offer name from map, then from row data, then fallback
         $offerName = '';
         if ($offerId && isset($offerMap[$offerId])) {
@@ -2066,11 +2098,17 @@ function saveReportRows($db, $rows, $offerMap, &$coverage = null) {
         error_log("saveReportRows: leads.su не вернул unique_clicks в {$missingUniqueClicks} из {$totalRows} строк — затронутые строки сохранены с clicks=0.");
     }
     if ($missingPlatform > 0) {
-        error_log("saveReportRows: пропущено {$missingPlatform} строк без platform_id/source (агрегаты по аккаунту) — они не пишутся как Unknown, чтобы не дублировать клики.");
+        error_log("saveReportRows: {$missingPlatform} строк без platform_id/source сохранены как «Не указан источник» (offer/sub1 присутствовали).");
     }
+    // dimensioned_rows — сколько строк из ответа имели хотя бы одно РЕАЛЬНОЕ
+    // измерение (source), т.е. попали в таблицу как обычные строки, а не как
+    // «Не указан источник». Полезно для sync_log: если 0 — детализация из
+    // /reports/summary не пришла и нужен фолбэк на /webmaster/reports.
+    $dimensionedRows = max(0, $inserted - $missingPlatform);
     $coverage = [
         'rows_total'            => $totalRows,
         'rows_saved'            => $inserted,
+        'dimensioned_rows'      => $dimensionedRows,
         'missing_unique_clicks' => $missingUniqueClicks,
         'missing_platform'      => $missingPlatform,
         'missing_date'          => $missingDate,
@@ -2366,7 +2404,64 @@ function fetchAndSaveAccountTotals($db, $token, $apiStart, $apiEnd) {
     $saved = ($errors || !$allRows)
         ? saveAccountTotalsRows($db, $allRows)
         : replaceAccountTotalsRowsForRange($db, $allRows, $apiStart, $apiEnd);
+
+    // FR-4: страховка от unique_clicks=0 в daily_account_totals. Часть
+    // развёртываний leads.su в /reports/summary?grouping=day (без field)
+    // отдаёт только clicks, но не unique_clicks — тогда KPI-плитка «Уник.
+    // клики» показывает 0. Здесь для КАЖДОГО дня диапазона, где итог
+    // account_totals.unique_clicks = 0, а сумма daily_unique_clicks за тот
+    // же день > 0, подменяем unique_clicks на эту сумму. Это аддитивный
+    // срез из уже сохранённого прохода 2 (per-platform), не увеличивает
+    // цифру за счёт бакетов, а даёт «истинную» сумму площадок за день.
+    $backfilled = accountTotalsBackfillUniqueClicks($db, substr($apiStart, 0, 10), substr($apiEnd, 0, 10));
+    if ($backfilled > 0) {
+        error_log("fetchAndSaveAccountTotals: unique_clicks=0 у {$backfilled} дней — подменили суммой daily_unique_clicks.");
+    }
     return [$saved, $errors];
+}
+
+/**
+ * FR-4: точечный бэкфилл daily_account_totals.unique_clicks из
+ * daily_unique_clicks для тех дней диапазона, где по каким-то причинам
+ * leads.su в /reports/summary без `fields` не вернул `unique_clicks`
+ * (grouping=day). Не трогаем дни, где unique_clicks уже > 0 — там значение
+ * пришло от API и является source-of-truth. Возвращает число обновлённых дней.
+ */
+function accountTotalsBackfillUniqueClicks($db, $startDate, $endDate) {
+    if (!($db instanceof SQLite3)) return 0;
+    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', (string)$startDate)) return 0;
+    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', (string)$endDate))   return 0;
+
+    // Находим дни с unique_clicks<=0 в account_totals, но с суммой в
+    // daily_unique_clicks. Плюс дни, которых нет в account_totals вовсе —
+    // тогда INSERT нулевую строку с корректным unique_clicks (KPI не рухнет).
+    $stmt = $db->prepare('
+        INSERT INTO daily_account_totals
+            (date, unique_clicks, raw_clicks, payout, pending_payout, conversions, approved)
+        SELECT u.date, SUM(u.unique_clicks), COALESCE(SUM(u.raw_clicks),0), 0, 0, 0, 0
+          FROM daily_unique_clicks u
+         WHERE u.date BETWEEN :start AND :end
+         GROUP BY u.date
+         HAVING SUM(u.unique_clicks) > 0
+        ON CONFLICT(date) DO UPDATE SET
+            unique_clicks = CASE
+                WHEN COALESCE(daily_account_totals.unique_clicks, 0) <= 0
+                    THEN excluded.unique_clicks
+                ELSE daily_account_totals.unique_clicks
+            END,
+            raw_clicks = CASE
+                WHEN COALESCE(daily_account_totals.raw_clicks, 0) <= 0
+                    THEN excluded.raw_clicks
+                ELSE daily_account_totals.raw_clicks
+            END
+    ');
+    if (!$stmt) return 0;
+    $stmt->bindValue(':start', $startDate, SQLITE3_TEXT);
+    $stmt->bindValue(':end',   $endDate,   SQLITE3_TEXT);
+    $ok = @$stmt->execute();
+    $changes = $ok ? $db->changes() : 0;
+    @$stmt->close();
+    return (int)$changes;
 }
 // Идея, заимствованная из DSPy: вместо "сырого" prompt-а описываем «сигнатуру»
 // (типизированные input/output поля + назначения), формируем по ней system-prompt
@@ -4307,7 +4402,28 @@ if ($action === 'update_stats') {
     // если сводка отработала «чисто» (без 429/ошибок), но не дала ни одной
     // пригодной строки. UPSERT (без destructive replace), чтобы только дозаполнить
     // диапазон, а не обнулить уже сохранённые данные.
-    if ($saved === 0 && !$rateLimited && !$errs) {
+    // FR-1: расширенный триггер фолбэка. Запускаем /webmaster/reports когда:
+    //   - основной проход /reports/summary сохранил 0 строк, ИЛИ
+    //   - большинство строк ушли в aggregate_skipped (безразмерные агрегаты), ИЛИ
+    //   - dimensioned_rows / rows_total < 50% (детализация по source почти не пришла), ИЛИ
+    //   - партиал по 429 (rate limited) — /webmaster/reports часто отдаёт данные
+    //     на других страницах пагинации, а UPSERT не затрёт валидные строки.
+    // Не запускаем, если основной проход завершился с не-429 ошибкой (сеть/500) —
+    // повторный тяжёлый запрос будет только мешать.
+    $rowsTotal        = (int)($coverageStats['rows_total'] ?? 0);
+    $dimensionedRows  = (int)($coverageStats['dimensioned_rows'] ?? 0);
+    $aggregateSkipped = (int)($coverageStats['aggregate_skipped'] ?? 0);
+    $lowDetailShare   = ($rowsTotal > 0)
+        && ($dimensionedRows * 2 < $rowsTotal);          // <50%
+    $mostlyAggregate  = ($rowsTotal > 0)
+        && ($aggregateSkipped * 2 >= $rowsTotal);        // ≥50%
+    $shouldFallback   = ($saved === 0)
+        || $lowDetailShare
+        || $mostlyAggregate
+        || ($rateLimited && $saved > 0);
+    // Не запускаем при явной ошибке (не-429) — иначе можем спамить умирающий API.
+    if ($errs && !$rateLimited) $shouldFallback = false;
+    if ($shouldFallback) {
         [$reportRows, $reportErrs, $reportRateLimited, $reportRetryAfter] =
             fetchLeadsReportsPaged($token, $apiStart, $apiEnd, $grouping ?: 'day', $drillPlatform, 'stats_reports_fallback');
         if ($reportErrs) $apiErrors = array_merge($apiErrors, $reportErrs);
@@ -4324,10 +4440,21 @@ if ($action === 'update_stats') {
             $coverageFallback = null;
             $savedFallback = saveReportRows($db, $reportRows, $offerMap, $coverageFallback);
             if ($savedFallback > 0) {
-                $saved = $savedFallback;
-                $coverageStats = $coverageFallback;
+                // При «дозаполняющем» фолбэке (когда $saved уже > 0) складываем
+                // счётчики: UPSERT дозаписал строки поверх, каждая новая
+                // размерная строка увеличивает покрытие. Coverage мержим так,
+                // чтобы dimensioned_rows/rows_total отражали суммарную картину.
+                $mergedCoverage = is_array($coverageStats) ? $coverageStats : [];
+                foreach (['rows_total','rows_saved','dimensioned_rows',
+                          'missing_unique_clicks','missing_platform',
+                          'missing_date','aggregate_skipped'] as $k) {
+                    $mergedCoverage[$k] = (int)($mergedCoverage[$k] ?? 0)
+                                        + (int)($coverageFallback[$k] ?? 0);
+                }
+                $saved += $savedFallback;
+                $coverageStats = $mergedCoverage;
                 $passStatuses['stats_fallback'] = 'success';
-                error_log("update_stats: /reports/summary дал 0 пригодных строк — fallback на /webmaster/reports сохранил {$savedFallback} строк.");
+                error_log("update_stats: /webmaster/reports fallback сохранил {$savedFallback} строк (dimensioned={$coverageFallback['dimensioned_rows']} из {$coverageFallback['rows_total']}).");
             }
         }
     }
@@ -4337,6 +4464,7 @@ if ($action === 'update_stats') {
     syncLogFinish($db, $logId, [
         'rows_saved' => (int)$saved,
         'rows_total' => (int)($coverageStats['rows_total'] ?? 0),
+        'dimensioned_rows'      => (int)($coverageStats['dimensioned_rows'] ?? 0),
         'missing_unique_clicks' => (int)($coverageStats['missing_unique_clicks'] ?? 0),
         'missing_platform'      => (int)($coverageStats['missing_platform'] ?? 0),
         'missing_date'          => (int)($coverageStats['missing_date'] ?? 0),
