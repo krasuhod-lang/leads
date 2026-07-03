@@ -3704,7 +3704,29 @@ function renderUI() {
   const dFromKpi = (document.getElementById('dateFrom') || {}).value || '';
   const dToKpi   = (document.getElementById('dateTo')   || {}).value || '';
   const accountTotals = accountTotalsForRange(dFromKpi, dToKpi);
-  const clicksForKpi = t.clicks;
+  let clicksForKpi = t.clicks;
+  let clicksSource = 'bucket'; // 'bucket' | 'unique_clicks' | 'account'
+  // FR-7: если детальный срез не пришёл (globalRawData пуст → t.clicks=0),
+  // а у нас есть агрегат /daily_unique_clicks или /daily_account_totals —
+  // берём клики оттуда. Без этого фолбэка KPI «Уник. клики» показывает 0
+  // при частичном ответе API, хотя валидные данные лежат в БД.
+  if (clicksForKpi <= 0) {
+    if (accountTotals && accountTotals.unique_clicks > 0) {
+      clicksForKpi = accountTotals.unique_clicks;
+      clicksSource = 'account';
+    } else if (Array.isArray(globalUniqueClicks) && globalUniqueClicks.length) {
+      let sum = 0;
+      for (const u of globalUniqueClicks) {
+        if (dFromKpi && u.date < dFromKpi) continue;
+        if (dToKpi && u.date > dToKpi) continue;
+        sum += (u.unique_clicks || 0);
+      }
+      if (sum > 0) {
+        clicksForKpi = sum;
+        clicksSource = 'unique_clicks';
+      }
+    }
+  }
   let revenueForKpi, conversionsForKpi, approvedForKpi, pendingPayoutForKpi;
   let kpiSource; // 'account' | 'bucket' — используется только для тултипов дохода
   if (accountTotals && accountTotals.unique_clicks > 0) {
@@ -3732,7 +3754,11 @@ function renderUI() {
     <div class="kpi-pf mt-3">${planFactBar(fact, planValue, fmt)}</div>
   </div>`;
   const noDataHint = !globalRawData.length ? '<div class="col-span-full text-center text-slate-500 text-sm py-2">Нет данных за выбранный период. Нажмите « Загрузить из кабинета» для загрузки.</div>' : '';
-  const clicksTip = 'Уник. клики за период — сумма unique_clicks по детальным строкам /webmaster/reports/summary?fields=offer_id,source,aff_sub1 (тот же аггрегат, что в таблицах «Площадки» и «Sub1»). Совпадает с колонкой «Уник. клики» в ЛК leads.su. Знаменатель для CR и EPC.';
+  const clicksTip = (clicksSource === 'unique_clicks')
+    ? 'Уник. клики за период — сумма unique_clicks из /webmaster/reports/summary?field=source (аддитивный срез per (date, площадка), сохранённый в daily_unique_clicks). Используется, когда детальный срез /reports/summary?fields=offer_id,source,aff_sub1 не пришёл; совпадает с колонкой «Уник. клики» в ЛК leads.su.'
+    : (clicksSource === 'account')
+      ? 'Уник. клики за период — из общей сводки ЛК leads.su (/webmaster/reports/summary?grouping=day, таблица daily_account_totals). Используется, когда детальный срез недоступен.'
+      : 'Уник. клики за период — сумма unique_clicks по детальным строкам /webmaster/reports/summary?fields=offer_id,source,aff_sub1 (тот же аггрегат, что в таблицах «Площадки» и «Sub1»). Совпадает с колонкой «Уник. клики» в ЛК leads.su. Знаменатель для CR и EPC.';
   const epcTip = 'EPC = Доход ÷ Уник. клики за период. Сколько ₽ в среднем приносит один уникальный клик.';
   const crTip = 'CR (Conversion Rate) = Лиды ÷ Уник. клики × 100%.';
   const revenueTip = (kpiSource === 'account')
@@ -4147,14 +4173,93 @@ function renderTables() {
   });
   doSort(sRows, tableSort.sourceTable);
   doSort(oRows, tableSort.offerTable);
+
+  // FR-8: если детальный срез не пришёл (sRows пуст), но есть агрегат
+  // per (date, платформа) в globalUniqueClicks — строим placeholder-строки,
+  // чтобы пользователь видел хотя бы список площадок с кликами.
+  // Тултип объясняет, что revenue/leads/approve отсутствуют для этих строк.
+  const dFromT = (document.getElementById('dateFrom') || {}).value || '';
+  const dToT   = (document.getElementById('dateTo')   || {}).value || '';
+  let srcTableDegraded = false;
+  if (!sRows.length && Array.isArray(globalUniqueClicks) && globalUniqueClicks.length) {
+    const clicksByPlatform = {};
+    for (const u of globalUniqueClicks) {
+      if (dFromT && u.date < dFromT) continue;
+      if (dToT && u.date > dToT) continue;
+      const key = mergeSourceName(u.source) || u.source_id || 'Unknown';
+      clicksByPlatform[key] = (clicksByPlatform[key] || 0) + (u.unique_clicks || 0);
+    }
+    sRows = Object.entries(clicksByPlatform)
+      .filter(([, c]) => c > 0)
+      .map(([name, clicks]) => ({
+        name, clicks, conversions: 0, approved: 0, revenue: 0,
+        epc: 0, approveRate: 0,
+        plan: planFromRows(planBaselineData.filter(r => sourceMatches(r, name)), planFactState.days || 1),
+        _degraded: true
+      }));
+    doSort(sRows, tableSort.sourceTable);
+    srcTableDegraded = sRows.length > 0;
+  }
+
+  // FR-9: аналогично для таблицы офферов — если детальный срез пуст, но
+  // globalUniqueClicksByOffer содержит клики/revenue — строим таблицу оттуда.
+  let offerTableDegraded = false;
+  if (!oRows.length && Array.isArray(globalUniqueClicksByOffer) && globalUniqueClicksByOffer.length) {
+    const idToOfferName = {};
+    for (const r of globalRawData) {
+      if (r.offer_id && r.offer && !idToOfferName[r.offer_id]) idToOfferName[r.offer_id] = r.offer;
+    }
+    const aggByOffer = {};
+    for (const u of globalUniqueClicksByOffer) {
+      if (dFromT && u.date < dFromT) continue;
+      if (dToT && u.date > dToT) continue;
+      const key = idToOfferName[u.offer_id] || u.offer || u.offer_id || 'Unknown';
+      if (!aggByOffer[key]) aggByOffer[key] = { clicks:0, revenue:0, conversions:0, approved:0, offer_id: u.offer_id || '' };
+      aggByOffer[key].clicks      += (u.unique_clicks || 0);
+      aggByOffer[key].revenue     += (u.revenue       || 0);
+      aggByOffer[key].conversions += (u.conversions   || 0);
+      aggByOffer[key].approved    += (u.approved      || 0);
+    }
+    oRows = Object.entries(aggByOffer)
+      .filter(([, v]) => v.clicks > 0)
+      .map(([name, v]) => {
+        const market = (v.offer_id && offerMarketMap[v.offer_id]) || offerMarketByName[name] || null;
+        const marketEpc = market ? market.market_epc : 0;
+        const epc = v.clicks ? (v.revenue / v.clicks) : 0;
+        return {
+          name, clicks: v.clicks, conversions: v.conversions,
+          approved: v.approved, revenue: v.revenue,
+          epc, approveRate: v.conversions ? (v.approved / v.conversions * 100) : 0,
+          marketEpc, epcDelta: marketEpc > 0 ? (epc - marketEpc) : 0,
+          _degraded: true
+        };
+      });
+    doSort(oRows, tableSort.offerTable);
+    offerTableDegraded = oRows.length > 0;
+  }
   const insightEl = document.getElementById('planFactInsight');
   if (insightEl) {
     const insight = buildPlanFactInsight(globalRawData, planBaselineData);
     insightEl.innerHTML = insight;
     insightEl.classList.toggle('hidden', !insight);
   }
-  document.querySelector('#sourceTable tbody').innerHTML = sRows.map(r => `<tr class="hover:bg-slate-800"><td>${escapeHtml(r.name)}</td><td class="text-right">${r.clicks.toLocaleString('ru-RU')}</td><td class="text-right">${r.conversions.toLocaleString('ru-RU')}</td><td class="text-right">${r.approveRate.toFixed(1)}%</td><td class="text-right">${Math.round(r.revenue).toLocaleString('ru-RU')} ₽</td><td class="text-right font-semibold">${r.epc.toFixed(2)} ₽</td><td class="text-right">${planFactBar(r.revenue, r.plan.revenue, v => Math.round(v).toLocaleString('ru-RU') + ' ₽')}</td></tr>`).join('');
+  const degradedHint = 'Детализация /reports/summary недоступна за этот период — показаны только клики из daily_unique_clicks. Доход/лиды/apr появятся после следующей успешной синхронизации.';
+  const dashCell = `<span class="text-slate-500" title="${degradedHint}">—</span>`;
+  document.querySelector('#sourceTable tbody').innerHTML = sRows.map(r => {
+    if (r._degraded) {
+      return `<tr class="hover:bg-slate-800" title="${degradedHint}"><td>${escapeHtml(r.name)}</td><td class="text-right">${r.clicks.toLocaleString('ru-RU')}</td><td class="text-right">${dashCell}</td><td class="text-right">${dashCell}</td><td class="text-right">${dashCell}</td><td class="text-right">${dashCell}</td><td class="text-right">${dashCell}</td></tr>`;
+    }
+    return `<tr class="hover:bg-slate-800"><td>${escapeHtml(r.name)}</td><td class="text-right">${r.clicks.toLocaleString('ru-RU')}</td><td class="text-right">${r.conversions.toLocaleString('ru-RU')}</td><td class="text-right">${r.approveRate.toFixed(1)}%</td><td class="text-right">${Math.round(r.revenue).toLocaleString('ru-RU')} ₽</td><td class="text-right font-semibold">${r.epc.toFixed(2)} ₽</td><td class="text-right">${planFactBar(r.revenue, r.plan.revenue, v => Math.round(v).toLocaleString('ru-RU') + ' ₽')}</td></tr>`;
+  }).join('');
   document.querySelector('#offerTable tbody').innerHTML = oRows.map(r => {
+    if (r._degraded) {
+      // Для degraded строк клики/доход/EPC берём из агрегата (у нас они есть),
+      // а вот лиды/approve/market-EPC-дельта не заполнены — ставим прочерк.
+      const revCell = r.revenue > 0 ? `${Math.round(r.revenue).toLocaleString('ru-RU')} ₽` : dashCell;
+      const epcCell = r.clicks && r.revenue > 0 ? `${r.epc.toFixed(2)} ₽` : dashCell;
+      const mEpcCell = r.marketEpc > 0 ? `${r.marketEpc.toFixed(2)} ₽` : dashCell;
+      return `<tr class="hover:bg-slate-800" title="${degradedHint}"><td>${escapeHtml(r.name)}</td><td class="text-right">${r.clicks.toLocaleString('ru-RU')}</td><td class="text-right">${dashCell}</td><td class="text-right">${dashCell}</td><td class="text-right">${revCell}</td><td class="text-right">${epcCell}</td><td class="text-right">${mEpcCell}</td><td class="text-right">${dashCell}</td></tr>`;
+    }
     let cc='text-red-400';
     if(r.epc>=80&&r.epc<100)cc='text-yellow-400';else if(r.epc>=100&&r.epc<140)cc='text-green-500';else if(r.epc>=140)cc='text-emerald-300';
     if(!r.clicks)cc='text-slate-400';
@@ -4200,7 +4305,15 @@ function renderSub1Table() {
   const tbody = document.querySelector('#sub1Table tbody');
   if (!tbody) return;
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="6" class="text-center text-slate-500 py-4">Нет данных Sub1 за выбранный период</td></tr>';
+    // FR-10: объясняем, ПОЧЕМУ пусто, чтобы пользователь не думал, что
+    // сломан дашборд. Разрез по sub1 приходит только из детального
+    // /reports/summary?field=offer_id,source,aff_sub1; если API вернул
+    // безразмерные агрегаты, sub1 недоступен до следующей синхронизации.
+    const hasRawData = Array.isArray(globalRawData) && globalRawData.length > 0;
+    const msg = hasRawData
+      ? 'Нет данных Sub1 за выбранный период (в выборке нет строк с непустым aff_sub1).'
+      : 'Разрез по Sub1 не пришёл из API за выбранный период. Попробуйте другой диапазон или дождитесь следующего автообновления (каждые 15 минут).';
+    tbody.innerHTML = `<tr><td colspan="6" class="text-center text-slate-500 py-4">${msg}</td></tr>`;
     return;
   }
   tbody.innerHTML = rows.map(r => `<tr class="hover:bg-slate-800"><td>${escapeHtml(r.name)}</td><td class="text-right">${r.clicks.toLocaleString('ru-RU')}</td><td class="text-right">${r.conversions.toLocaleString('ru-RU')}</td><td class="text-right">${r.approveRate.toFixed(1)}%</td><td class="text-right">${Math.round(r.revenue).toLocaleString('ru-RU')} ₽</td><td class="text-right font-semibold">${r.epc.toFixed(2)} ₽</td></tr>`).join('');
