@@ -5870,9 +5870,23 @@ if ($action === 'channels_overview') {
         $byChannel[$cid] = [
             'traffic' => 0, 'fact_revenue' => 0.0,
             'plan_revenue' => 0.0, 'plan_manual' => false,
+            'plan_to_date_manual' => 0.0,
             'costs' => 0.0,
             'baseline_clicks' => 0, 'baseline_revenue' => 0.0,
         ];
+    }
+
+    // Прожитые дни периода: план на месяц — константа, но темп выполнения
+    // считаем к плану «на текущий день» = план × прожитые дни / дни периода.
+    $today       = date('Y-m-d');
+    $periodDays  = 1;
+    $elapsedDays = 0;
+    if ($dFrom && $dTo) {
+        $periodDays = max(1, (int)((strtotime($dTo) - strtotime($dFrom)) / 86400) + 1);
+        $toDateEnd  = min($dTo, $today);
+        $elapsedDays = $toDateEnd >= $dFrom
+            ? min($periodDays, (int)((strtotime($toDateEnd) - strtotime($dFrom)) / 86400) + 1)
+            : 0;
     }
 
     if ($dFrom && $dTo) {
@@ -5902,17 +5916,31 @@ if ($action === 'channels_overview') {
 
         // План по каналу (пересекающие период строки берём целиком — план
         // обычно задаётся помесячно, и точная пропорция не требуется).
-        $stmt = $db->prepare("SELECT channel, SUM(plan_revenue) AS plan, COUNT(*) AS cnt
+        // Дополнительно считаем «план на текущий день»: суточная ставка
+        // строки плана (plan_revenue / дни строки) × прожитые дни пересечения
+        // строки с периодом — так недельный срез месяца сравнивается с 7/30
+        // месячного плана, а не с целым месяцем.
+        $stmt = $db->prepare("SELECT channel, period_start, period_end, plan_revenue
             FROM channel_plan
-            WHERE NOT (period_end < :a OR period_start > :b)
-            GROUP BY channel");
+            WHERE NOT (period_end < :a OR period_start > :b)");
         $stmt->bindValue(':a', $dFrom, SQLITE3_TEXT);
         $stmt->bindValue(':b', $dTo,   SQLITE3_TEXT);
         $res = $stmt->execute();
+        $toDateEnd = min($dTo, $today);
         while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
             $ch = normalizeChannelId($row['channel']);
-            $byChannel[$ch]['plan_revenue'] += (float)$row['plan'];
-            if ((int)$row['cnt'] > 0) $byChannel[$ch]['plan_manual'] = true;
+            $plan = (float)$row['plan_revenue'];
+            $ps = substr((string)$row['period_start'], 0, 10);
+            $pe = substr((string)$row['period_end'],   0, 10);
+            $byChannel[$ch]['plan_revenue'] += $plan;
+            $byChannel[$ch]['plan_manual'] = true;
+            $rowDays = max(1, (int)((strtotime($pe) - strtotime($ps)) / 86400) + 1);
+            $ovFrom = max($ps, $dFrom);
+            $ovTo   = min($pe, $toDateEnd);
+            if ($ovTo >= $ovFrom) {
+                $ovDays = (int)((strtotime($ovTo) - strtotime($ovFrom)) / 86400) + 1;
+                $byChannel[$ch]['plan_to_date_manual'] += $plan * ($ovDays / $rowDays);
+            }
         }
 
         // Расходы — суммируем по дням внутри периода.
@@ -5956,7 +5984,6 @@ if ($action === 'channels_overview') {
         // из Я.Метрики). Если баннер проседает — множитель < 1, и план ниже;
         // если растёт — план выше. Так план следует за реальным трендом входящего
         // трафика, а не проецирует baseline «в лоб».
-        $periodDays   = max(1, (int)((strtotime($dTo) - strtotime($dFrom)) / 86400) + 1);
         $baselineDays = 30;
         $bannerTrend  = bannerVolumeTrendFactor($db, $baseFrom, $baseTo, $dFrom, $dTo);
         $trendMul     = $bannerTrend !== null ? $bannerTrend : 1.0;
@@ -5992,6 +6019,12 @@ if ($action === 'channels_overview') {
         $traffic = (int)$b['traffic'];
         $costs = (float)$b['costs'];
         $planCompletion = $planEffective > 0 ? round($fact / $planEffective * 100, 1) : null;
+        // План «на текущий день»: ручной — по суточной ставке строк плана,
+        // авто — план периода × прожитые дни / дни периода. Темп = факт / план на сегодня.
+        $planToDate = $planManual
+            ? (float)$b['plan_to_date_manual']
+            : $planAuto * ($elapsedDays / $periodDays);
+        $planCompletionToDate = $planToDate > 0 ? round($fact / $planToDate * 100, 1) : null;
         $epc = $traffic > 0 ? round($fact / $traffic, 2) : null;
         if ($traffic > 0 || $fact > 0 || $planEffective > 0 || $costs > 0) $hasAnyData = true;
         $rows[] = [
@@ -6003,6 +6036,8 @@ if ($action === 'channels_overview') {
             'plan_source'       => $planSource,
             'fact_revenue'      => round($fact, 2),
             'plan_completion'   => $planCompletion,
+            'plan_to_date'              => round($planToDate, 2),
+            'plan_completion_to_date'   => $planCompletionToDate,
             'costs'             => round($costs, 2),
             'gross_profit'      => round($fact - $costs, 2),
             'epc'               => $epc,
@@ -6018,6 +6053,14 @@ if ($action === 'channels_overview') {
         'start_date'      => $start_date,
         'end_date'        => $end_date,
         'channels'        => $rows,
+        'period_days'     => $periodDays,
+        'elapsed_days'    => $elapsedDays,
+        'totals'          => [
+            'plan_revenue'    => round(array_sum(array_column($rows, 'plan_revenue')), 2),
+            'plan_to_date'    => round(array_sum(array_column($rows, 'plan_to_date')), 2),
+            'fact_revenue'    => round(array_sum(array_column($rows, 'fact_revenue')), 2),
+            'plan_manual_any' => in_array('manual', array_column($rows, 'plan_source'), true),
+        ],
         'pending_sources' => $hasAnyData ? [] : ['channel_plan', 'channel_costs_log', 'daily_stats'],
     ], JSON_UNESCAPED_UNICODE);
     exit;

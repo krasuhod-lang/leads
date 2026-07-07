@@ -1618,6 +1618,9 @@
                 </th>
                 <th class="px-2 py-2 text-right">Выручка ФАКТ, ₽</th>
                 <th class="px-2 py-2 text-right">Выполнение плана</th>
+                <th class="px-2 py-2 text-right">Темп на сегодня
+                  <i class="info-tip" tabindex="0" role="img" aria-label="Выполнение плана на текущий день: факт ÷ (план × прожитые дни ÷ дни периода). План на месяц — константа, но за 7 прожитых дней сравниваемся с 7/30 плана: ≥100% — идём в плане или с опережением." title="Выполнение плана на текущий день: факт ÷ (план × прожитые дни ÷ дни периода). План на месяц — константа, но за 7 прожитых дней сравниваемся с 7/30 плана: ≥100% — идём в плане или с опережением."></i>
+                </th>
                 <th class="px-2 py-2 text-right">Расходы, ₽
                   <i class="info-tip" tabindex="0" role="img" aria-label="Введённые вручную расходы на канал (СМС, e-mail, печать, площадки и т.п.). Управляются кнопкой «+ Расход по каналу»." title="Введённые вручную расходы на канал (СМС, e-mail, печать, площадки и т.п.). Управляются кнопкой «+ Расход по каналу»."></i>
                 </th>
@@ -2218,7 +2221,7 @@ let globalUniqueClicksByOffer = [];
 // площадки/sub1 = "all", чтобы цифры дашборда сходились с кабинетом 1-в-1.
 // Поля: {date, unique_clicks, raw_clicks, payout, pending_payout, conversions, approved}.
 let globalAccountTotals = [];
-let planFactState = { from: '', to: '', baselineFrom: '', baselineTo: '', days: 0, trafficCoef: 1, traffic: null };
+let planFactState = { from: '', to: '', baselineFrom: '', baselineTo: '', days: 0, trafficCoef: 1, traffic: null, planCalib: 1, boardPlan: null };
 let offerMarketMap = {}; // offer_id → { name, market_epc, market_cr, market_ar, your_epc, your_cr }
 let offerMarketByName = {}; // offer_name → market data (для рядов без offer_id из старой БД)
 // platform_id → name из /webmaster/platforms (кэш на бэке). Используется как
@@ -2893,12 +2896,18 @@ function planFromRows(rows, periodDays, trafficCoef) {
   const k = (typeof trafficCoef === 'number' && isFinite(trafficCoef) && trafficCoef > 0)
     ? trafficCoef
     : ((planFactState && Number(planFactState.trafficCoef) > 0) ? Number(planFactState.trafficCoef) : 1);
+  // Калибровка к плану раздела «Планирование» (channel_plan / авто-план по
+  // каналам, пересчитанный на текущий день). Применяется к плановому ТРАФИКУ,
+  // поэтому все объёмные метрики (клики, лиды, доход) масштабируются
+  // согласованно, а ставки (EPC, CR, средний чек, AR) не искажаются. Так план
+  // по борду один и тот же во всех вкладках, и ручной план тянется везде.
+  const calib = (planFactState && Number(planFactState.planCalib) > 0) ? Number(planFactState.planCalib) : 1;
   // План-факторная модель: Выручка = Трафик × Конверсия × Средний чек.
   // 1) Плановый трафик = среднесуточный трафик за 3 мес. × дни × коэффициент.
   // 2) Плановая конверсия = средняя за 3 мес.: Σпокупатели / Σтрафик.
   // 3) Плановый средний чек = средний за 3 мес.: Σвыручка / Σзаказы.
   // Так при невыполнении плана видно, какой множитель провалился.
-  const planClicks = adjClicks / baselineDays * periodDays * k;
+  const planClicks = adjClicks / baselineDays * periodDays * k * calib;
   const cr = adjClicks ? totals.conversions / adjClicks : 0;
   const avgCheck = totals.conversions ? totals.revenue / totals.conversions : 0;
   const approveRate = totals.conversions ? totals.approved / totals.conversions : 0;
@@ -2988,9 +2997,52 @@ function computePlanTrafficCoef() {
   return { coef, ratioNow, trendMonthly, declining };
 }
 
+// Синхронизация с планом раздела «Планирование» (channels_overview).
+// План борда (Σ по 5 каналам: ручной channel_plan приоритетнее авто) —
+// единый источник планового дохода. Модель planFromRows калибруется так,
+// чтобы её плановый доход равнялся плану борда НА ТЕКУЩИЙ ДЕНЬ
+// (план периода × прожитые дни ÷ дни периода): план на месяц — константа,
+// а «идём ли в плане» оцениваем по прожитым дням. Вызывается ПОСЛЕ сброса
+// planFactState (planCalib=1), чтобы модельный план считался без калибровки.
+function syncBoardPlan(data) {
+  planFactState.planCalib = 1;
+  planFactState.boardPlan = null;
+  if (!data || !Array.isArray(data.channels) || !data.channels.length) return;
+  const t = data.totals || {};
+  const sum = f => data.channels.reduce((s, c) => s + (Number(c[f]) || 0), 0);
+  const plan = Number(t.plan_revenue) > 0 ? Number(t.plan_revenue) : sum('plan_revenue');
+  const toDate = Number(t.plan_to_date) > 0 ? Number(t.plan_to_date) : sum('plan_to_date');
+  if (!(plan > 0)) return;
+  planFactState.boardPlan = {
+    plan,
+    toDate,
+    manual: (t.plan_manual_any !== undefined) ? !!t.plan_manual_any : data.channels.some(c => c.plan_source === 'manual'),
+    periodDays: Number(data.period_days) || 1,
+    elapsedDays: Number(data.elapsed_days) || 0
+  };
+  const model = planFromRows([...planBaselineData], planFactState.days || 1);
+  if (toDate > 0 && model.revenue > 0) planFactState.planCalib = toDate / model.revenue;
+}
+
+// Ручной план изменён/сброшен в «Планировании» — перечитываем план борда,
+// пересчитываем калибровку и перерисовываем все план/факт-бары дашборда,
+// чтобы введённый вручную план сразу тянулся во все вкладки.
+async function refreshDashboardPlanSync() {
+  try {
+    const from = document.getElementById('dateFrom')?.value || '';
+    const to = document.getElementById('dateTo')?.value || '';
+    if (!from || !to) return;
+    const data = await fetchJsonSafe(buildApiUrl({ action: 'channels_overview', start_date: from, end_date: to }));
+    syncBoardPlan((data && data.status === 'success') ? data : null);
+    renderUI(); renderTables(); refreshChart();
+    renderEPCAnalytics(); renderMatrixAnalytics(); renderArMatrix(); renderCompareTab();
+  } catch (e) { console.debug('refreshDashboardPlanSync failed', e); }
+}
+
 function planFactBar(fact, plan, fmt = v => Math.round(v).toLocaleString('ru-RU')) {
   if (!plan || plan <= 0) return '<div class="pf-bars pf-empty text-slate-500 text-[11px]">Плановый показатель не задан</div>';
   const factPct = Math.min(100, Math.max(0, fact / plan * 100));
+  const donePct = fact / plan * 100;
   const ok = fact >= plan;
   const t = (planFactState && planFactState.traffic) || null;
   const k = t ? t.coef : 1;
@@ -3001,8 +3053,14 @@ function planFactBar(fact, plan, fmt = v => Math.round(v).toLocaleString('ru-RU'
         : '.')
     : ' Данных Я.Метрики для коэффициента объёма трафика нет — план без корректировки.';
   const coefLabel = t && Math.abs(k - 1) >= 0.005 ? ` ×${k.toFixed(2)}` : '';
-  return `<div class="pf-bars" title="План — по план-факторной модели: Плановый трафик × Плановая конверсия × Плановый средний чек. Плановый трафик = среднесуточный трафик за предыдущие 90 дней (3 месяца) × число дней с фактическими данными × коэффициент трафика (применяется к трафику, а не напрямую к выручке прошлых периодов). Конверсия и средний чек — средние за те же 3 месяца.${coefTxt} План не зависит от выбранного диапазона отчёта (пустые/будущие дни его не раздувают). Плановые клики и ставки EPC/CR считаются от кликов с поправкой −20% (зарегистрированные клики завышены). Это не введённый вручную месячный план, а расчётный плановый ориентир.">
-    <div class="flex justify-between text-[10px] text-slate-500 mb-1"><span>План (90д${coefLabel}) ${fmt(plan)}</span><span>Факт ${fmt(fact)}</span></div>
+  const bp = (planFactState && planFactState.boardPlan) || null;
+  const calib = (planFactState && Number(planFactState.planCalib) > 0) ? Number(planFactState.planCalib) : 1;
+  const boardTxt = bp
+    ? ` План синхронизирован с разделом «Планирование»: план периода ${Math.round(bp.plan).toLocaleString('ru-RU')} ₽ (${bp.manual ? 'задан вручную' : 'авто-расчёт по каналам'}), план на текущий день (прожито ${bp.elapsedDays} из ${bp.periodDays} дн.) — ${Math.round(bp.toDate).toLocaleString('ru-RU')} ₽; объёмные плановые показатели откалиброваны к нему (×${calib.toFixed(2)} к трафику модели). Процент — выполнение плана на текущий день.`
+    : '';
+  const planLabel = bp ? 'План (борд, на сегодня)' : `План (90д${coefLabel})`;
+  return `<div class="pf-bars" title="План — по план-факторной модели: Плановый трафик × Плановая конверсия × Плановый средний чек. Плановый трафик = среднесуточный трафик за предыдущие 90 дней (3 месяца) × число дней с фактическими данными × коэффициент трафика (применяется к трафику, а не напрямую к выручке прошлых периодов). Конверсия и средний чек — средние за те же 3 месяца.${coefTxt}${boardTxt} План не зависит от выбранного диапазона отчёта (пустые/будущие дни его не раздувают). Плановые клики и ставки EPC/CR считаются от кликов с поправкой −20% (зарегистрированные клики завышены).">
+    <div class="flex justify-between text-[10px] text-slate-500 mb-1"><span>${planLabel} ${fmt(plan)}</span><span>Факт ${fmt(fact)} · ${donePct.toFixed(0)}%</span></div>
     <div class="pf-bar pf-plan mb-1"><div class="pf-fill" style="width:100%"></div></div>
     <div class="pf-bar pf-fact ${ok ? 'ok' : 'bad'}"><div class="pf-fill" style="width:${factPct.toFixed(1)}%"></div></div>
   </div>`;
@@ -3831,23 +3889,35 @@ async function applyGlobalFilters() {
   const baselineFrom = isoShift(dFrom, -90);
   // days — число дней с фактическими данными в периоде (а не длина выбранного
   // диапазона): план масштабируется только по реально прожитым дням.
-  planFactState = { from: dFrom, to: dTo, baselineFrom, baselineTo, days: factDaysCount(globalRawData), trafficCoef: 1, traffic: null };
+  planFactState = { from: dFrom, to: dTo, baselineFrom, baselineTo, days: factDaysCount(globalRawData), trafficCoef: 1, traffic: null, planCalib: 1, boardPlan: null };
   // Трафик Я.Метрики за последние ~6 месяцев (полгода закономерностей до
   // начала периода + сам период) — для коэффициента объёма трафика в плане.
   const trafficFrom = isoShift(dFrom, -180);
+  let boardPlanData = null;
   await Promise.all([
     fetchBannerStats(dFrom, dTo),
     fetchBouncesStats(dFrom, dTo),
     fetchStatsRange(baselineFrom, baselineTo).then(rows => { planBaselineData = rows; }),
     fetchJsonSafe(buildApiUrl({ action: 'get_banner_stats', start_date: trafficFrom, end_date: dTo }))
       .then(data => { planTrafficData = (data && data.status === 'success' && Array.isArray(data.data)) ? data.data : []; })
-      .catch(e => { planTrafficData = []; console.warn(e); })
+      .catch(e => { planTrafficData = []; console.warn(e); }),
+    // План по борду из раздела «Планирование» (channels_overview): единый
+    // источник плана выручки — ручной план (channel_plan) приоритетнее авто.
+    fetchJsonSafe(buildApiUrl({ action: 'channels_overview', start_date: dFrom, end_date: dTo }))
+      .then(data => { boardPlanData = (data && data.status === 'success') ? data : null; })
+      .catch(e => { boardPlanData = null; console.warn(e); })
   ]);
   // Коэффициент объёма трафика: план за 3 месяца масштабируется по реальному
   // объёму показов баннера из Я.Метрики; при спаде — по закономерности за полгода.
   const trafficInfo = computePlanTrafficCoef();
   planFactState.traffic = trafficInfo;
   planFactState.trafficCoef = trafficInfo ? trafficInfo.coef : 1;
+  // Синхронизация плана дашборда с разделом «Планирование»: калибруем
+  // план-факторную модель так, чтобы плановый доход совпадал с планом борда,
+  // пересчитанным на текущий день (план на месяц — константа, а темп
+  // выполнения оцениваем к прожитым дням). Калибровка входит в planFromRows
+  // через planFactState.planCalib и потому действует во всех вкладках.
+  syncBoardPlan(boardPlanData);
   renderBannerKPI(); renderBannerChart();
 
   const sources = buildSourceOptions(globalRawData);
@@ -5025,9 +5095,13 @@ function buildPlanSeries(metricType, labels, grouping, factGrouped, baseline, im
   const volumeBasis = (totalImp > 0 && observedCtr > 0) ? 'impressions' : 'baseline';
   const trafficCoef = (planFactState && Number(planFactState.trafficCoef) > 0)
     ? Number(planFactState.trafficCoef) : 1;
-  const expectedClicks = labels.map((_, i) => volumeBasis === 'impressions'
+  // Калибровка к плану борда «Планирование» — та же, что в planFromRows:
+  // применяется к плановому объёму, чтобы план в динамике сходился с бордом.
+  const planCalib = (planFactState && Number(planFactState.planCalib) > 0)
+    ? Number(planFactState.planCalib) : 1;
+  const expectedClicks = labels.map((_, i) => (volumeBasis === 'impressions'
     ? (Number(imp[i]) || 0) * observedCtr * PLAN_CLICKS_ADJUST
-    : baseClicksAvg * trafficCoef);
+    : baseClicksAvg * trafficCoef) * planCalib);
 
   // Коэффициент объёма теперь отражает показы баннера (если они есть).
   const periodCoefs = expectedClicks.map(c => baseClicksAvg > 0 ? c / baseClicksAvg : 0);
@@ -9489,6 +9563,11 @@ async function loadAndRenderChannels() {
   const rows = (data.channels || []).map(r => {
     const pct = r.plan_completion;
     const pctTxt = (pct === null || pct === undefined) ? '—' : `${Number(pct).toFixed(1)}%`;
+    const pctToDate = r.plan_completion_to_date;
+    const pctToDateTxt = (pctToDate === null || pctToDate === undefined) ? '—' : `${Number(pctToDate).toFixed(1)}%`;
+    const planToDate = Number(r.plan_to_date || 0);
+    const elapsed = Number(data.elapsed_days || 0);
+    const periodD = Number(data.period_days || 0);
     const epc = r.epc;
     const epcTxt = (epc === null || epc === undefined) ? '—' : `${Number(epc).toFixed(2)}`;
     const gp = Number(r.gross_profit || 0);
@@ -9524,6 +9603,7 @@ async function loadAndRenderChannels() {
       </td>
       <td class="px-2 py-2 text-right">${Math.round(r.fact_revenue || 0).toLocaleString('ru-RU')}</td>
       <td class="px-2 py-2 text-right ${planStatusClass(pct)}" title="План ${planTxt} ₽ (${planSource === 'auto' ? 'авто' : 'ручной'}), факт ${Math.round(r.fact_revenue || 0).toLocaleString('ru-RU')} ₽">${pctTxt}</td>
+      <td class="px-2 py-2 text-right ${planStatusClass(pctToDate)}" title="План на текущий день = план периода × прожитые дни ÷ дни периода: ${Math.round(planToDate).toLocaleString('ru-RU')} ₽ (прожито ${elapsed} из ${periodD} дн.), факт ${Math.round(r.fact_revenue || 0).toLocaleString('ru-RU')} ₽. ≥100% — идём в плане.">${pctToDateTxt}</td>
       <td class="px-2 py-2 text-right">${Math.round(r.costs || 0).toLocaleString('ru-RU')}</td>
       <td class="px-2 py-2 text-right ${gpCls}" title="Валовая прибыль = выручка − расходы">${Math.round(gp).toLocaleString('ru-RU')}</td>
       <td class="px-2 py-2 text-right" title="${escapeHtml(epcTip)}">${epcTxt}</td>
@@ -9534,7 +9614,7 @@ async function loadAndRenderChannels() {
   if (hint) {
     hint.textContent = data.stub
       ? 'Пока нет данных за выбранный период. Загрузите трафик из Leads.su (вкладка «Дашборд») и Я.Метрики (вкладка «Баннер»), затем введите расходы по каналам кнопкой «+ Расход по каналу».'
-      : 'План считается автоматически: EPC канала за предыдущие 30 дней × ожидаемый трафик, скорректированный на тренд объёма баннера (показы и клики из Я.Метрики) — при спаде баннера план ниже. Клик по ячейке «Выручка ПЛАН» — ручная правка; кнопка ↻ возвращает в авто-режим.';
+      : 'План считается автоматически: EPC канала за предыдущие 30 дней × ожидаемый трафик, скорректированный на тренд объёма баннера (показы и клики из Я.Метрики) — при спаде баннера план ниже. Клик по ячейке «Выручка ПЛАН» — ручная правка; кнопка ↻ возвращает в авто-режим. «Темп на сегодня» — выполнение плана к прожитым дням периода (план × прожитые дни ÷ дни периода). Итоговый план борда синхронизирован с план/факт-барами дашборда и остальных вкладок.';
   }
   renderChannelsBarChart(data.channels || []);
   // Параллельно подгружаем журнал расходов под таблицей.
@@ -9570,6 +9650,7 @@ function beginEditChannelPlan(td) {
       if (j.status !== 'success') throw new Error(j.error || 'save failed');
       rejectMonState.cache.channels = null;
       await loadAndRenderChannels();
+      refreshDashboardPlanSync();
     } catch (e) {
       alert('Не удалось сохранить план: ' + e);
       td.innerHTML = original;
@@ -9605,6 +9686,7 @@ async function resetChannelPlan(ev, channel) {
     if (j.status !== 'success') throw new Error(j.error || 'reset failed');
     rejectMonState.cache.channels = null;
     await loadAndRenderChannels();
+    refreshDashboardPlanSync();
   } catch (e) { alert('Не удалось сбросить план: ' + e); }
 }
 
@@ -9726,6 +9808,7 @@ async function saveChannelPlan() {
     closeChannelPlanModal();
     rejectMonState.cache.channels = null;
     await loadAndRenderChannels();
+    refreshDashboardPlanSync();
   } catch (e) { showErr('Сетевая ошибка: ' + e); }
 }
 
