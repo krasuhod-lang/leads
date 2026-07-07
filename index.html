@@ -1405,6 +1405,7 @@
           <option value="clicks">Трафик (клики)</option><option value="revenue">Выручка (₽)</option><option value="conversions">Лиды</option><option value="epc">EPC</option>
         </select>
       </div>
+      <div id="matrixPlanFact" class="mb-3 max-w-md"></div>
       <div class="overflow-auto"><table class="w-full text-sm" id="matrixSourceTable"><thead><tr id="matrixSourceHeader"></tr></thead><tbody id="matrixSourceBody"></tbody></table></div>
     </div>
     <div class="card"><h2 class="text-white font-bold mb-4">Доли площадок по месяцам (% от общего трафика)</h2><div class="chart-wrap" style="height:400px"><canvas id="matrixShareChart"></canvas></div></div>
@@ -1428,6 +1429,7 @@
           <input type="number" id="arMatrixTopN" value="20" min="1" class="bg-slate-900 border border-slate-700 rounded px-2 py-1 w-20 text-sm" oninput="renderArMatrix()">
         </div>
       </div>
+      <div id="arMatrixPlanFact" class="mb-3 max-w-md"></div>
       <div id="arMatrixWrap" class="overflow-auto" style="max-height:680px"></div>
     </div>
   </div>
@@ -3692,17 +3694,43 @@ async function fetchBannerStats(start, end) {
   } catch(e) { console.warn(e); }
 }
 
+// Плановые объёмы баннера (показы и клики) — по той же план-факторной модели,
+// что и KPI дашборда: среднесуточный объём за baseline (предыдущие 90 дней,
+// planTrafficData из Я.Метрики) × число дней с фактическими данными баннера ×
+// коэффициент объёма трафика (computePlanTrafficCoef). Возвращает
+// { impressions, clicks } либо null, когда baseline-данных Метрики нет.
+function planBannerVolumes() {
+  const st = planFactState || {};
+  const rows = planTrafficData || [];
+  if (!rows.length || !st.baselineFrom || !st.baselineTo) return null;
+  const base = rows.filter(r => {
+    const d = String(r.date || '').slice(0, 10);
+    return d >= st.baselineFrom && d <= st.baselineTo
+      && ((Number(r.impressions) || 0) > 0 || (Number(r.clicks) || 0) > 0);
+  });
+  if (!base.length) return null;
+  const baseDays = Math.max(1, new Set(base.map(r => String(r.date).slice(0, 10))).size);
+  const factDays = Math.max(1, new Set((bannerData || []).filter(d => d.date).map(d => String(d.date).slice(0, 10))).size);
+  const k = Number(st.trafficCoef) > 0 ? Number(st.trafficCoef) : 1;
+  return {
+    impressions: base.reduce((s, r) => s + (Number(r.impressions) || 0), 0) / baseDays * factDays * k,
+    clicks: base.reduce((s, r) => s + (Number(r.clicks) || 0), 0) / baseDays * factDays * k
+  };
+}
+
 function renderBannerKPI() {
   const totalImpressions = bannerData.reduce((s,d) => s + d.impressions, 0);
   const totalClicks = bannerData.reduce((s,d) => s + d.clicks, 0);
   const overallConv = totalImpressions ? (totalClicks / totalImpressions * 100) : 0;
   const avgConv = bannerData.length ? (bannerData.reduce((s,d) => s + d.conversion_rate, 0) / bannerData.length) : 0;
+  const plan = planBannerVolumes();
+  const fmtInt = v => Math.round(v).toLocaleString('ru-RU');
   const c = document.getElementById('bannerKpiCards');
   if (c) c.innerHTML = `
-    <div class="card"><div class="text-slate-400 text-xs uppercase">Показы (хосты)${infoTip('Сумма показов баннера за период по уникальным хостам (Яндекс.Метрика, цель показа). База для расчёта CTR и RPM.')}</div><div class="text-3xl font-black mt-2">${totalImpressions.toLocaleString('ru-RU')}</div></div>
-    <div class="card"><div class="text-slate-400 text-xs uppercase">Уникальные посетители${infoTip('Уникальные посетители, кликнувшие по баннеру (Яндекс.Метрика, цель клика). Используется как переход с баннера в Leads.su.')}</div><div class="text-3xl font-black mt-2">${totalClicks.toLocaleString('ru-RU')}</div></div>
-    <div class="card"><div class="text-slate-400 text-xs uppercase">Общая конверсия${infoTip('Клики ÷ Показы × 100% по сумме за весь период (взвешенная CTR баннера). Менее чувствительна к выбросам отдельных дней.')}</div><div class="text-3xl font-black mt-2">${overallConv.toFixed(2)}%</div></div>
-    <div class="card"><div class="text-slate-400 text-xs uppercase">Средняя конверсия${infoTip('Простое арифметическое среднее CTR по дням периода — каждый день учитывается с равным весом. Полезно для сравнения «типичного дня» с «общей конверсией».')}</div><div class="text-3xl font-black mt-2">${avgConv.toFixed(2)}%</div></div>`;
+    <div class="card"><div class="text-slate-400 text-xs uppercase">Показы (хосты)${infoTip('Сумма показов баннера за период по уникальным хостам (Яндекс.Метрика, цель показа). База для расчёта CTR и RPM.')}</div><div class="kpi-value"><div class="text-3xl font-black mt-2">${totalImpressions.toLocaleString('ru-RU')}</div></div><div class="kpi-pf mt-3">${planFactBar(totalImpressions, plan ? plan.impressions : 0, fmtInt)}</div></div>
+    <div class="card"><div class="text-slate-400 text-xs uppercase">Уникальные посетители${infoTip('Уникальные посетители, кликнувшие по баннеру (Яндекс.Метрика, цель клика). Используется как переход с баннера в Leads.su.')}</div><div class="kpi-value"><div class="text-3xl font-black mt-2">${totalClicks.toLocaleString('ru-RU')}</div></div><div class="kpi-pf mt-3">${planFactBar(totalClicks, plan ? plan.clicks : 0, fmtInt)}</div></div>
+    <div class="card"><div class="text-slate-400 text-xs uppercase">Общая конверсия${infoTip('Клики ÷ Показы × 100% по сумме за весь период (взвешенная CTR баннера). Менее чувствительна к выбросам отдельных дней.')}</div><div class="kpi-value"><div class="text-3xl font-black mt-2">${overallConv.toFixed(2)}%</div></div></div>
+    <div class="card"><div class="text-slate-400 text-xs uppercase">Средняя конверсия${infoTip('Простое арифметическое среднее CTR по дням периода — каждый день учитывается с равным весом. Полезно для сравнения «типичного дня» с «общей конверсией».')}</div><div class="kpi-value"><div class="text-3xl font-black mt-2">${avgConv.toFixed(2)}%</div></div></div>`;
 }
 
 function aggregateBannerByPeriod(grouping) {
@@ -4972,26 +5000,34 @@ function buildPlanSeries(metricType, labels, grouping, factGrouped, baseline, im
     a.clicks += g.clicks; a.conv += g.conv; a.app += g.app; a.rev += g.rev; return a;
   }, { clicks: 0, conv: 0, app: 0, rev: 0 });
   const periods = baselineKeys.length;
-  const baseEpc = bt.clicks ? bt.rev / bt.clicks : 0;
-  const baseCr  = bt.clicks ? bt.conv / bt.clicks * 100 : 0;
+  // План-факторная модель (как в planFromRows): плановые клики и ставки
+  // считаются от кликов с поправкой −20% (зарегистрированные клики завышены).
+  const btAdjClicks = bt.clicks * PLAN_CLICKS_ADJUST;
+  const baseEpc = btAdjClicks ? bt.rev / btAdjClicks : 0;
+  const baseCr  = btAdjClicks ? bt.conv / btAdjClicks * 100 : 0;
   const baseAr  = bt.conv  ? bt.app / bt.conv * 100 : 0;
-  const baseClicksAvg = bt.clicks / periods;
+  const baseClicksAvg = btAdjClicks / periods;
   const baseConvAvg   = bt.conv / periods;
   const baseRevAvg    = bt.rev / periods;
 
   const factClicks = labels.map(l => (factGrouped[l] || {}).clicks || 0);
 
   // Объёмный драйвер плана. Приоритет — показы баннера: ожидаемые клики =
-  // показы × наблюдаемый CTR текущего периода. Это даёт прямую зависимость
-  // плана от количества показов баннера. Без показов — берём фактические клики.
+  // показы × наблюдаемый CTR текущего периода (с поправкой −20%). Это даёт
+  // прямую зависимость плана от количества показов баннера. Без показов —
+  // среднесуточный трафик за baseline (3 мес.) × коэффициент объёма трафика
+  // (computePlanTrafficCoef, planFactState.trafficCoef) — та же план-факторная
+  // модель, что и в KPI-барах дашборда; коэффициент применяется к трафику.
   const imp = Array.isArray(impressions) ? impressions : labels.map(() => 0);
   const totalImp = imp.reduce((s, v) => s + (Number(v) || 0), 0);
   const totalFactClicks = factClicks.reduce((s, v) => s + v, 0);
   const observedCtr = totalImp > 0 ? totalFactClicks / totalImp : 0;
-  const volumeBasis = (totalImp > 0 && observedCtr > 0) ? 'impressions' : 'clicks';
+  const volumeBasis = (totalImp > 0 && observedCtr > 0) ? 'impressions' : 'baseline';
+  const trafficCoef = (planFactState && Number(planFactState.trafficCoef) > 0)
+    ? Number(planFactState.trafficCoef) : 1;
   const expectedClicks = labels.map((_, i) => volumeBasis === 'impressions'
-    ? (Number(imp[i]) || 0) * observedCtr
-    : factClicks[i]);
+    ? (Number(imp[i]) || 0) * observedCtr * PLAN_CLICKS_ADJUST
+    : baseClicksAvg * trafficCoef);
 
   // Коэффициент объёма теперь отражает показы баннера (если они есть).
   const periodCoefs = expectedClicks.map(c => baseClicksAvg > 0 ? c / baseClicksAvg : 0);
@@ -5377,7 +5413,7 @@ function refreshChart() {
     const volByImpressions = planSeries && planSeries.volumeBasis === 'impressions';
     const planLabel = planSeries
       ? (metricType === 'absolute' || metricType === 'traffic'
-        ? (volByImpressions ? 'Плановый показатель (по показам баннера)' : 'Плановый показатель (по объёму трафика)')
+        ? (volByImpressions ? 'Плановый показатель (по показам баннера)' : 'Плановый показатель (средний трафик за 3 мес. × коэф. трафика)')
         : 'Плановый показатель (плановая ставка)')
       : (baseline.length ? 'Плановый показатель' : 'Норматив (среднее)');
 
@@ -5447,7 +5483,7 @@ function refreshChart() {
       : 'среднее за период';
     const planHintBase = volByImpressions
       ? 'план привязан к показам баннера'
-      : (planSeries && (metricType === 'absolute' || metricType === 'traffic') ? 'план по объёму трафика' : 'плановая ставка');
+      : (planSeries && (metricType === 'absolute' || metricType === 'traffic') ? 'план: средний трафик за 3 мес. × коэф. трафика' : 'плановая ставка');
     insightCards.push(
       {
         label: 'План',
@@ -5871,11 +5907,21 @@ function renderEPCAnalytics() {
   const valid=epcValues.filter(v=>v>0);
   const avgEpc=valid.length?valid.reduce((a,b)=>a+b,0)/valid.length:0;
 
+  // Плановый EPC по план-факторной модели (те же baseline 90 дней и поправка
+  // кликов −20%, что и в KPI дашборда), с учётом фильтров площадки/оффера.
+  let epcBaseline=[...planBaselineData];
+  if(offerF!=='all')epcBaseline=epcBaseline.filter(r=>r.offer===offerF);
+  if(sourceF!=='all')epcBaseline=epcBaseline.filter(r=>sourceMatches(r,sourceF));
+  const epcPlan=planFromRows(epcBaseline,planFactState.days||1);
+  const factTotals=sumLeadRows(data);
+  const factEpcTotal=factTotals.clicks>0?factTotals.revenue/factTotals.clicks:0;
+
   if(epcLineChart)epcLineChart.destroy();
   epcLineChart=new Chart(document.getElementById('epcLineChart').getContext('2d'),{
     type:'line',data:{labels:labels.map(l=>grouping==='day'?l.slice(5):l),datasets:[
       {label:'EPC (₽)',data:epcValues,borderColor:CHART_PALETTE.epc.stroke,backgroundColor:CHART_PALETTE.epc.fill,fill:true,tension:0.3,pointRadius:3,pointBackgroundColor:epcValues.map(v=>v<avgEpc*0.7?'#FF453A':CHART_PALETTE.epc.stroke)},
-      {label:'Среднее',data:labels.map(()=>avgEpc),borderColor:CHART_PALETTE.forecast.stroke,borderDash:[8,4],pointRadius:0,fill:false}
+      {label:'Среднее',data:labels.map(()=>avgEpc),borderColor:CHART_PALETTE.forecast.stroke,borderDash:[8,4],pointRadius:0,fill:false},
+      ...(epcPlan.epc>0?[{label:'Плановый EPC',data:labels.map(()=>epcPlan.epc),borderColor:'#facc15',borderDash:[10,4],pointRadius:0,fill:false}]:[])
     ]},options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
       plugins:{tooltip:{...sharedTooltipConfig,callbacks:{label:ctx=>` ${ctx.dataset.label}: ${Number(ctx.raw).toFixed(2)} ₽`}}},
       scales:{y:{ticks:{color:'#94a3b8'},grid:{color:'#1e293b'}},x:{ticks:{color:'#94a3b8',maxRotation:45},grid:{display:false}}}}
@@ -5975,8 +6021,9 @@ function renderEPCAnalytics() {
   drops.sort((a,b)=>{let va=a[ds.field],vb=b[ds.field];if(typeof va==='string')return ds.desc?vb.localeCompare(va):va.localeCompare(vb);return ds.desc?vb-va:va-vb;});
   const minE=valid.length?Math.min(...valid):0;const maxE=epcValues.length?Math.max(...epcValues):0;
   document.getElementById('epcStats').innerHTML=`
-    <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+    <div class="grid grid-cols-1 md:grid-cols-5 gap-4">
       <div class="card"><div class="text-slate-400 text-xs uppercase">Средний EPC</div><div class="text-2xl font-black mt-1 text-emerald-400">${avgEpc.toFixed(2)} ₽</div></div>
+      <div class="card"><div class="text-slate-400 text-xs uppercase">Плановый EPC${infoTip('Плановая ставка EPC по план-факторной модели: доход за baseline (предыдущие 90 дней) ÷ клики baseline с поправкой −20%. Учитывает выбранные фильтры площадки и оффера.')}</div><div class="text-2xl font-black mt-1 text-yellow-400">${epcPlan.epc>0?epcPlan.epc.toFixed(2)+' ₽':'—'}</div><div class="kpi-pf mt-2">${planFactBar(factEpcTotal, epcPlan.epc, v=>v.toFixed(2)+' ₽')}</div></div>
       <div class="card"><div class="text-slate-400 text-xs uppercase">Мин EPC</div><div class="text-2xl font-black mt-1 text-red-400">${minE.toFixed(2)} ₽</div></div>
       <div class="card"><div class="text-slate-400 text-xs uppercase">Макс EPC</div><div class="text-2xl font-black mt-1 text-blue-400">${maxE.toFixed(2)} ₽</div></div>
       <div class="card"><div class="text-slate-400 text-xs uppercase">Просадки (&lt; 70% от среднего)</div><div class="text-2xl font-black mt-1 text-rose-400">${drops.length}</div></div>
@@ -6098,6 +6145,16 @@ function renderMatrixAnalytics() {
   if(metric==='epc'){const tc=globalRawData.reduce((s,r)=>s+r.clicks,0);const tr=globalRawData.reduce((s,r)=>s+r.revenue,0);gt=tc>0?tr/tc:0;}
   else gt=globalRawData.reduce((s,r)=>s+r[metric],0);
   document.getElementById('matrixSourceBody').innerHTML=bodyRows.join('')+`<tr class="border-t-2 border-blue-500"><td class="font-bold text-blue-400">ИТОГО</td>${grandCells}<td class="text-right font-bold text-blue-400">${fmtVal(gt)}</td><td class="text-right font-bold text-emerald-400">${Math.round(totalRevAll).toLocaleString('ru-RU')} ₽</td><td class="text-right font-bold text-emerald-400">100%</td><td class="text-right text-slate-500">—</td></tr>`;
+
+  // План/факт по выбранной метрике — та же план-факторная модель, что и в
+  // KPI дашборда (baseline 90 дней × коэффициент объёма трафика).
+  const matrixPfEl=document.getElementById('matrixPlanFact');
+  if(matrixPfEl){
+    const plan=planFromRows([...planBaselineData],planFactState.days||1);
+    const planVal=metric==='revenue'?plan.revenue:metric==='conversions'?plan.conversions:metric==='epc'?plan.epc:plan.clicks;
+    const metricName=metric==='revenue'?'Выручка':metric==='conversions'?'Лиды':metric==='epc'?'EPC':'Трафик (клики)';
+    matrixPfEl.innerHTML=`<div class="text-xs text-slate-400 uppercase mb-1">План/Факт: ${metricName}</div>${planFactBar(gt, planVal, fmtVal)}`;
+  }
 
   renderMonthlyShareTable(sources,months);
   renderMatrixShareChart(sources,months);
@@ -8377,9 +8434,19 @@ function renderArMatrix() {
   if (!wrap) return;
   const minLeads = Math.max(0, parseInt(document.getElementById('arMatrixMinLeads').value || '10', 10));
   const topN = Math.max(1, parseInt(document.getElementById('arMatrixTopN').value || '20', 10));
+  const pfEl = document.getElementById('arMatrixPlanFact');
   if (!globalRawData.length) {
     wrap.innerHTML = '<div class="text-center text-slate-500 py-6">Нет данных за выбранный период.</div>';
+    if (pfEl) pfEl.innerHTML = '';
     return;
+  }
+  // План/факт по Approve % — плановая ставка из план-факторной модели
+  // (baseline 90 дней), как в KPI дашборда.
+  if (pfEl) {
+    const plan = planFromRows([...planBaselineData], planFactState.days || 1);
+    const factTotals = sumLeadRows(globalRawData);
+    const factAr = factTotals.conversions > 0 ? factTotals.approved / factTotals.conversions * 100 : 0;
+    pfEl.innerHTML = `<div class="text-xs text-slate-400 uppercase mb-1">План/Факт: Approve %</div>${planFactBar(factAr, plan.approveRate, v => v.toFixed(1) + '%')}`;
   }
   // Агрегируем
   const offers = new Map();   // offer → { rev: total, byPlatform: Map<platform,{leads,approved,revenue}>, leadsTotal, approvedTotal }
