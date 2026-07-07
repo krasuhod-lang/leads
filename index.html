@@ -2003,6 +2003,7 @@
             </ul>
           </li>
           <li><b>Поправка при спаде.</b> Если линия тренда факта идёт вниз, план «прижимается» к среднестатистическому ориентиру: <code>plan = min(plan, 0.5·plan + 0.5·norm)</code>. Это делает план достижимым.</li>
+          <li><b>KPI-карточки дашборда.</b> План в барах «план/факт» = среднесуточные значения за предыдущие 90 дней (3 месяца) × число дней с фактом × <b>коэффициент объёма трафика</b> из Я.Метрики (показы и клики баннера): <code>k = ср. суточный трафик периода / ср. суточный трафик базы</code>. Если трафик уменьшается (<code>k &lt; 1</code>), дополнительно считаются помесячные коэффициенты уменьшения за последние полгода (30-дневные корзины) и итог усредняется с их геометрическим средним — прогноз строится по устойчивой закономерности спада, а не по одному окну. Коридор коэффициента: [0.2 ; 3.0].</li>
           <li><b>Коридор ±10%.</b> Вокруг плана строится диапазон <code>[plan × 0.9 ; plan × 1.1]</code> — попадание факта в коридор считается выполнением плана.</li>
         </ol>
         <div class="gloss-formula">EPC_plan      = baseEPC                                 (ставка)
@@ -2192,6 +2193,11 @@ let globalRawData = [];
 let bouncesData = [];
 let bannerData = [];
 let planBaselineData = [];
+// Показы/клики баннера из Я.Метрики за последние ~6 месяцев до конца выбранного
+// периода. Используются ТОЛЬКО для расчёта коэффициента объёма трафика в плане
+// (computePlanTrafficCoef): план зависит не только от ретро-результатов за
+// 3 месяца, но и от реального объёма входящего трафика.
+let planTrafficData = [];
 // «Истинные» уникальные клики per (date, source_id) из daily_unique_clicks
 // (см. saveUniqueClicksRows на бэке). Используются для KPI первого блока
 // дашборда / EPC / CR — единственный аддитивный по площадкам/датам срез
@@ -2210,7 +2216,7 @@ let globalUniqueClicksByOffer = [];
 // площадки/sub1 = "all", чтобы цифры дашборда сходились с кабинетом 1-в-1.
 // Поля: {date, unique_clicks, raw_clicks, payout, pending_payout, conversions, approved}.
 let globalAccountTotals = [];
-let planFactState = { from: '', to: '', baselineFrom: '', baselineTo: '', days: 0 };
+let planFactState = { from: '', to: '', baselineFrom: '', baselineTo: '', days: 0, trafficCoef: 1, traffic: null };
 let offerMarketMap = {}; // offer_id → { name, market_epc, market_cr, market_ar, your_epc, your_cr }
 let offerMarketByName = {}; // offer_name → market data (для рядов без offer_id из старой БД)
 // platform_id → name из /webmaster/platforms (кэш на бэке). Используется как
@@ -2876,27 +2882,111 @@ function factDaysCount(rows) {
   return Math.max(1, new Set((rows || []).map(r => r.date)).size);
 }
 
-function planFromRows(rows, periodDays) {
+function planFromRows(rows, periodDays, trafficCoef) {
   const baselineDays = Math.max(1, new Set((rows || []).map(r => r.date)).size);
   const totals = sumLeadRows(rows || []);
   const adjClicks = totals.clicks * PLAN_CLICKS_ADJUST;
+  // Коэффициент объёма трафика (показы/клики баннера из Я.Метрики):
+  // масштабирует объёмные метрики плана. Ставки (EPC/CR/Approve) от объёма
+  // не зависят и остаются baseline-ставками за 3 месяца.
+  const k = (typeof trafficCoef === 'number' && isFinite(trafficCoef) && trafficCoef > 0)
+    ? trafficCoef
+    : ((planFactState && Number(planFactState.trafficCoef) > 0) ? Number(planFactState.trafficCoef) : 1);
   return {
-    clicks: adjClicks / baselineDays * periodDays,
-    conversions: totals.conversions / baselineDays * periodDays,
-    approved: totals.approved / baselineDays * periodDays,
-    revenue: totals.revenue / baselineDays * periodDays,
+    clicks: adjClicks / baselineDays * periodDays * k,
+    conversions: totals.conversions / baselineDays * periodDays * k,
+    approved: totals.approved / baselineDays * periodDays * k,
+    revenue: totals.revenue / baselineDays * periodDays * k,
     epc: adjClicks ? totals.revenue / adjClicks : 0,
     cr: adjClicks ? totals.conversions / adjClicks * 100 : 0,
-    approveRate: totals.conversions ? totals.approved / totals.conversions * 100 : 0
+    approveRate: totals.conversions ? totals.approved / totals.conversions * 100 : 0,
+    trafficCoef: k
   };
+}
+
+// Коэффициент объёма трафика для плана. Источник — показы и клики баннера
+// из Яндекс.Метрики (planTrafficData, последние ~6 месяцев).
+//
+// 1) Считаем среднесуточный объём в фактическом периоде и в baseline-периоде
+//    (предыдущие 90 дней = 3 месяца) и берём отношение (по показам и кликам,
+//    усреднённо) — прямая зависимость плана от текущего объёма трафика.
+// 2) Если трафик УМЕНЬШАЕТСЯ (отношение < 1) — смотрим закономерности за
+//    последние полгода: делим 6 месяцев до начала периода на 30-дневные
+//    корзины, считаем помесячные коэффициенты изменения объёма и их
+//    геометрическое среднее (устойчивый темп спада). Итоговый коэффициент —
+//    среднее текущего падения и полугодового тренда, т.е. прогноз строится
+//    на наблюдаемой закономерности, а не на одном «плохом» окне.
+// 3) Коридор [0.2, 3.0] — как в bannerVolumeTrendFactor на бэке, чтобы
+//    выбросы одного дня не ломали план.
+//
+// Возвращает { coef, ratioNow, trendMonthly, declining } либо null, когда
+// данных Метрики нет хотя бы в одном из окон (тогда план без корректировки).
+function computePlanTrafficCoef() {
+  const rows = planTrafficData || [];
+  const st = planFactState || {};
+  if (!rows.length || !st.from || !st.baselineFrom) return null;
+  const daily = (a, b) => {
+    const rs = rows.filter(r => {
+      const d = String(r.date || '').slice(0, 10);
+      return d >= a && d <= b && ((Number(r.impressions) || 0) > 0 || (Number(r.clicks) || 0) > 0);
+    });
+    if (!rs.length) return null;
+    const days = Math.max(1, new Set(rs.map(r => String(r.date).slice(0, 10))).size);
+    return {
+      imp: rs.reduce((s, r) => s + (Number(r.impressions) || 0), 0) / days,
+      clk: rs.reduce((s, r) => s + (Number(r.clicks) || 0), 0) / days
+    };
+  };
+  const cur = daily(st.from, st.to);
+  const base = daily(st.baselineFrom, st.baselineTo);
+  if (!cur || !base) return null;
+  const factors = [];
+  if (base.imp > 0) factors.push(cur.imp / base.imp);
+  if (base.clk > 0) factors.push(cur.clk / base.clk);
+  if (!factors.length) return null;
+  const ratioNow = factors.reduce((s, v) => s + v, 0) / factors.length;
+  let coef = ratioNow;
+  let trendMonthly = null;
+  const declining = ratioNow < 1;
+  if (declining) {
+    // Закономерности за последние 6 месяцев: 30-дневные корзины до начала периода.
+    const vols = [];
+    for (let i = 6; i >= 1; i--) {
+      const a = isoShift(st.from, -30 * i);
+      const b = isoShift(st.from, -30 * (i - 1) - 1);
+      const d = daily(a, b);
+      vols.push(d ? d.imp + d.clk : null);
+    }
+    const ratios = [];
+    for (let i = 1; i < vols.length; i++) {
+      if (vols[i - 1] > 0 && vols[i] > 0) ratios.push(vols[i] / vols[i - 1]);
+    }
+    if (ratios.length) {
+      trendMonthly = Math.pow(ratios.reduce((p, v) => p * v, 1), 1 / ratios.length);
+      // Тренд подмешиваем только как коэффициент УМЕНЬШЕНИЯ (≤1): при спаде
+      // прогноз опирается на устойчивую полугодовую закономерность.
+      coef = (ratioNow + Math.min(trendMonthly, 1)) / 2;
+    }
+  }
+  coef = Math.max(0.2, Math.min(3.0, coef));
+  return { coef, ratioNow, trendMonthly, declining };
 }
 
 function planFactBar(fact, plan, fmt = v => Math.round(v).toLocaleString('ru-RU')) {
   if (!plan || plan <= 0) return '<div class="pf-bars pf-empty text-slate-500 text-[11px]">Плановый показатель не задан</div>';
   const factPct = Math.min(100, Math.max(0, fact / plan * 100));
   const ok = fact >= plan;
-  return `<div class="pf-bars" title="Плановый показатель = среднесуточное за предыдущие 90 дней × число дней с фактическими данными в периоде. План не зависит от выбранного диапазона отчёта (пустые/будущие дни его не раздувают). Плановые клики и ставки EPC/CR считаются от кликов с поправкой −20% (зарегистрированные клики завышены). Это не введённый вручную месячный план, а расчётный плановый ориентир.">
-    <div class="flex justify-between text-[10px] text-slate-500 mb-1"><span>План (90д) ${fmt(plan)}</span><span>Факт ${fmt(fact)}</span></div>
+  const t = (planFactState && planFactState.traffic) || null;
+  const k = t ? t.coef : 1;
+  const coefTxt = t
+    ? ` Учтён объём трафика из Я.Метрики (показы и клики баннера): коэффициент объёма ×${k.toFixed(2)}` +
+      (t.declining
+        ? ` — трафик уменьшается (сейчас ×${t.ratioNow.toFixed(2)} к базе за 3 мес.${t.trendMonthly != null ? `, помесячный тренд за полгода ×${t.trendMonthly.toFixed(2)}` : ''}), объёмные планы снижены по этой закономерности.`
+        : '.')
+    : ' Данных Я.Метрики для коэффициента объёма трафика нет — план без корректировки.';
+  const coefLabel = t && Math.abs(k - 1) >= 0.005 ? ` ×${k.toFixed(2)}` : '';
+  return `<div class="pf-bars" title="Плановый показатель = среднесуточное за предыдущие 90 дней (3 месяца) × число дней с фактическими данными в периоде × коэффициент объёма трафика.${coefTxt} План не зависит от выбранного диапазона отчёта (пустые/будущие дни его не раздувают). Плановые клики и ставки EPC/CR считаются от кликов с поправкой −20% (зарегистрированные клики завышены). Это не введённый вручную месячный план, а расчётный плановый ориентир.">
+    <div class="flex justify-between text-[10px] text-slate-500 mb-1"><span>План (90д${coefLabel}) ${fmt(plan)}</span><span>Факт ${fmt(fact)}</span></div>
     <div class="pf-bar pf-plan mb-1"><div class="pf-fill" style="width:100%"></div></div>
     <div class="pf-bar pf-fact ${ok ? 'ok' : 'bad'}"><div class="pf-fill" style="width:${factPct.toFixed(1)}%"></div></div>
   </div>`;
@@ -3699,12 +3789,23 @@ async function applyGlobalFilters() {
   const baselineFrom = isoShift(dFrom, -90);
   // days — число дней с фактическими данными в периоде (а не длина выбранного
   // диапазона): план масштабируется только по реально прожитым дням.
-  planFactState = { from: dFrom, to: dTo, baselineFrom, baselineTo, days: factDaysCount(globalRawData) };
+  planFactState = { from: dFrom, to: dTo, baselineFrom, baselineTo, days: factDaysCount(globalRawData), trafficCoef: 1, traffic: null };
+  // Трафик Я.Метрики за последние ~6 месяцев (полгода закономерностей до
+  // начала периода + сам период) — для коэффициента объёма трафика в плане.
+  const trafficFrom = isoShift(dFrom, -180);
   await Promise.all([
     fetchBannerStats(dFrom, dTo),
     fetchBouncesStats(dFrom, dTo),
-    fetchStatsRange(baselineFrom, baselineTo).then(rows => { planBaselineData = rows; })
+    fetchStatsRange(baselineFrom, baselineTo).then(rows => { planBaselineData = rows; }),
+    fetchJsonSafe(buildApiUrl({ action: 'get_banner_stats', start_date: trafficFrom, end_date: dTo }))
+      .then(data => { planTrafficData = (data && data.status === 'success' && Array.isArray(data.data)) ? data.data : []; })
+      .catch(e => { planTrafficData = []; console.warn(e); })
   ]);
+  // Коэффициент объёма трафика: план за 3 месяца масштабируется по реальному
+  // объёму показов/кликов из Я.Метрики; при спаде — по закономерности за полгода.
+  const trafficInfo = computePlanTrafficCoef();
+  planFactState.traffic = trafficInfo;
+  planFactState.trafficCoef = trafficInfo ? trafficInfo.coef : 1;
   renderBannerKPI(); renderBannerChart();
 
   const sources = buildSourceOptions(globalRawData);
