@@ -1123,6 +1123,7 @@
     <button class="tab-btn" data-tab="compare" onclick="switchTab('compare')">Сравнение</button>
     <button class="tab-btn" data-tab="banner" onclick="switchTab('banner')">Баннер</button>
     <button class="tab-btn" data-tab="reject-mon" onclick="switchTab('reject-mon')">Планирование</button>
+    <button class="tab-btn" data-tab="finmodel" onclick="switchTab('finmodel')">Финмодель</button>
     <button class="tab-btn" data-tab="ai" onclick="switchTab('ai')">AI-аналитика<span id="aiKeyIndicator" class="tab-dot off" title="Статус AI-ключа неизвестен">●</span></button>
     <button class="tab-btn" data-tab="events" onclick="switchTab('events')">События<span id="eventsUnreadBadge" class="tab-badge hidden">0</span></button>
   </div>
@@ -1690,6 +1691,131 @@
     </div>
 
     <!-- SUB-TAB 3 (Unit Economics by CJM) removed by request -->
+  </div>
+
+  <!-- TAB: FINANCIAL MODEL (цель 100 млн ₽/мес) -->
+  <div id="tab-finmodel" class="tab-content space-y-6">
+    <div class="card">
+      <div class="flex flex-wrap items-center gap-3 justify-between">
+        <div>
+          <h2 class="text-white font-bold text-lg">Финансовая модель — цель 100 млн ₽/мес</h2>
+          <p class="text-xs text-slate-500 mt-1">Сценарная модель роста до целевой выручки с учётом ФОТ большого штата, маркетинговых вложений с поправкой на конкуренцию, прочих OPEX и стартовых инвестиций. Все допущения редактируются и сохраняются.</p>
+        </div>
+        <div class="flex flex-wrap gap-2">
+          <button class="btn" type="button" onclick="finModelSave()">Сохранить модель</button>
+          <button class="btn" type="button" style="background:#475569" onclick="finModelReset()">Сбросить к дефолтам</button>
+        </div>
+      </div>
+      <p id="finModelStatus" class="text-[11px] text-slate-500 mt-2"></p>
+    </div>
+
+    <!-- KPI сводка модели -->
+    <div id="finModelKpis" class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-4"><!-- renderFinModel() --></div>
+
+    <!-- Допущения -->
+    <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
+      <div class="card">
+        <h3 class="text-white font-semibold mb-3">Доход и рост
+          <i class="info-tip" tabindex="0" role="img" aria-label="Стартовая выручка берётся из факта (baseline 90 дней × 30 дней), но её можно переопределить. Рост — сложный процент по месяцам до достижения цели." title="Стартовая выручка берётся из факта (baseline 90 дней × 30 дней), но её можно переопределить. Рост — сложный процент по месяцам до достижения цели."></i>
+        </h3>
+        <div id="finModelRevenueForm" class="space-y-2"><!-- renderFinModel() --></div>
+      </div>
+      <div class="card">
+        <h3 class="text-white font-semibold mb-3">Маркетинг и конкуренция
+          <i class="info-tip" tabindex="0" role="img" aria-label="Бюджет маркетинга = необходимые клики (выручка ÷ EPC) × стоимость клика. Конкуренция удорожает клик: CPC растёт на заданный % в год." title="Бюджет маркетинга = необходимые клики (выручка ÷ EPC) × стоимость клика. Конкуренция удорожает клик: CPC растёт на заданный % в год."></i>
+        </h3>
+        <div id="finModelMarketingForm" class="space-y-2"><!-- renderFinModel() --></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+        <h3 class="text-white font-semibold">Штат и ФОТ
+          <i class="info-tip" tabindex="0" role="img" aria-label="ФОТ = численность × оклад × налоговый коэффициент (страховые взносы и НДФЛ-нагрузка работодателя). «Масштабируется» — численность роли растёт пропорционально выручке (мин. 30% штата на старте); иначе роль в полном составе с первого месяца." title="ФОТ = численность × оклад × налоговый коэффициент (страховые взносы и НДФЛ-нагрузка работодателя). «Масштабируется» — численность роли растёт пропорционально выручке (мин. 30% штата на старте); иначе роль в полном составе с первого месяца."></i>
+        </h3>
+        <button class="btn" type="button" onclick="finModelAddStaffRow()">+ Роль</button>
+      </div>
+      <div class="overflow-auto">
+        <table class="w-full text-sm" id="finModelStaffTable">
+          <thead>
+            <tr class="text-left text-slate-400">
+              <th class="px-2 py-2">Роль</th>
+              <th class="px-2 py-2 text-right">Человек</th>
+              <th class="px-2 py-2 text-right">Оклад, ₽/мес</th>
+              <th class="px-2 py-2 text-center">Масштабируется</th>
+              <th class="px-2 py-2 text-right">ФОТ на цели, ₽/мес</th>
+              <th class="px-2 py-2 text-right">Действие</th>
+            </tr>
+          </thead>
+          <tbody><!-- renderFinModel() --></tbody>
+        </table>
+      </div>
+      <div id="finModelStaffFooter" class="text-xs text-slate-400 mt-2"></div>
+    </div>
+
+    <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
+      <div class="card">
+        <h3 class="text-white font-semibold mb-3">Прочие операционные расходы</h3>
+        <div id="finModelOpexForm" class="space-y-2"><!-- renderFinModel() --></div>
+      </div>
+      <div class="card">
+        <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+          <h3 class="text-white font-semibold">Стартовые инвестиции (CAPEX)
+            <i class="info-tip" tabindex="0" role="img" aria-label="Разовые вложения (продукт, инфраструктура, выход на рынок при высокой конкуренции). Учитываются в денежном потоке в указанный месяц." title="Разовые вложения (продукт, инфраструктура, выход на рынок при высокой конкуренции). Учитываются в денежном потоке в указанный месяц."></i>
+          </h3>
+          <button class="btn" type="button" onclick="finModelAddCapexRow()">+ Вложение</button>
+        </div>
+        <div class="overflow-auto">
+          <table class="w-full text-sm" id="finModelCapexTable">
+            <thead>
+              <tr class="text-left text-slate-400">
+                <th class="px-2 py-2">Статья</th>
+                <th class="px-2 py-2 text-right">Сумма, ₽</th>
+                <th class="px-2 py-2 text-right">Месяц</th>
+                <th class="px-2 py-2 text-right">Действие</th>
+              </tr>
+            </thead>
+            <tbody><!-- renderFinModel() --></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Графики -->
+    <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
+      <div class="card">
+        <h3 class="text-white font-semibold mb-3">Выручка, расходы и EBITDA по месяцам</h3>
+        <div class="chart-wrap" style="height:320px"><canvas id="finModelPnlChart"></canvas></div>
+      </div>
+      <div class="card">
+        <h3 class="text-white font-semibold mb-3">Накопленный денежный поток (с учётом CAPEX)</h3>
+        <div class="chart-wrap" style="height:320px"><canvas id="finModelCashChart"></canvas></div>
+      </div>
+    </div>
+
+    <!-- P&L таблица -->
+    <div class="card">
+      <h3 class="text-white font-semibold mb-3">P&amp;L по месяцам</h3>
+      <div class="overflow-auto">
+        <table class="w-full text-sm" id="finModelPnlTable">
+          <thead>
+            <tr class="text-left text-slate-400">
+              <th class="px-2 py-2">Месяц</th>
+              <th class="px-2 py-2 text-right">Выручка, ₽</th>
+              <th class="px-2 py-2 text-right">Маркетинг, ₽</th>
+              <th class="px-2 py-2 text-right">ФОТ, ₽</th>
+              <th class="px-2 py-2 text-right">Прочие OPEX, ₽</th>
+              <th class="px-2 py-2 text-right">EBITDA, ₽</th>
+              <th class="px-2 py-2 text-right">Маржа</th>
+              <th class="px-2 py-2 text-right">CAPEX, ₽</th>
+              <th class="px-2 py-2 text-right">Накопл. CF, ₽</th>
+            </tr>
+          </thead>
+          <tbody><!-- renderFinModel() --></tbody>
+        </table>
+      </div>
+      <p class="text-[11px] text-slate-500 mt-2">EBITDA = Выручка − Маркетинг − ФОТ − Прочие OPEX. Накопленный CF дополнительно учитывает CAPEX. Модель — сценарная оценка, не бухгалтерский отчёт.</p>
+    </div>
   </div>
 
   <!-- TAB: AI ANALYTICS (issue 7) -->
@@ -2513,6 +2639,10 @@ function switchTab(tabName) {
   // при открытии вкладки (фильтры/период могли измениться).
   if (tabName === 'reject-mon') {
     try { rejectMonState.cache = { channels: null, funnel: null, dynamics: null }; renderRejectActiveSub(); } catch (_) {}
+  }
+  // Финмодель: пересчитываем при каждом открытии (факт run-rate мог обновиться).
+  if (tabName === 'finmodel') {
+    try { renderFinModel(); } catch (e) { console.debug('renderFinModel skipped:', e); }
   }
   setTimeout(() => window.dispatchEvent(new Event('resize')), 100);
 }
@@ -9450,6 +9580,8 @@ window.addEventListener('DOMContentLoaded', () => {
   autoLoadSavedStats();
   // Каркас «Монетизация отказников» — подвкладки, фильтр сегментов, первичный рендер.
   try { rejectMonInit(); } catch (e) { console.debug('rejectMonInit skipped:', e); }
+  // Финмодель: подгружаем сохранённые допущения (app_settings / localStorage).
+  try { finModelInit(); } catch (e) { console.debug('finModelInit skipped:', e); }
   // Восстанавливаем последнюю открытую вкладку (после инициализации контента).
   restoreLastTab();
 });
@@ -10077,6 +10209,381 @@ function renderConversionDynamicsChart(series, benchmark, dropThreshold) {
     }
   });
 });
+
+// ============================================================================
+// «Финмодель» — сценарная финансовая модель роста до цели 100 млн ₽/мес.
+// Доход растёт сложным процентом от фактического run-rate (baseline 90 дней),
+// расходы: маркетинг как доля выручки с удорожанием из-за конкуренции, ФОТ
+// большого штата (фиксированные и масштабируемые роли), прочие OPEX и разовые
+// CAPEX-вложения. Допущения сохраняются в app_settings (finmodel_json) и
+// дублируются в localStorage. Модель — сценарная оценка, не бухгалтерия.
+// ============================================================================
+const FIN_MODEL_SETTINGS_KEY = 'finmodel_json';
+const FIN_MODEL_LS_KEY = 'leadsFinModel';
+
+function finModelDefaults() {
+  return {
+    targetRevenue: 100000000,
+    horizonMonths: 24,
+    startRevenueOverride: null,      // null → авто из факта (baseline 90 дней × 30)
+    monthlyGrowthPct: 15,
+    marketingSharePct: 55,           // доля выручки на закупку/удержание трафика
+    competitionInflationPct: 20,     // % удорожания трафика в год из-за конкуренции
+    payrollTaxCoef: 1.302,           // страховые взносы + прочая нагрузка работодателя
+    staffScaleFloor: 30,             // % масштабируемого штата на старте
+    staff: [
+      { name: 'Руководство (CEO/COO/CFO)',        count: 3,  salary: 450000, scales: false },
+      { name: 'Разработка и продукт',             count: 12, salary: 280000, scales: false },
+      { name: 'Аналитика и data',                 count: 5,  salary: 220000, scales: false },
+      { name: 'Маркетинг / трафик-менеджеры',     count: 10, salary: 180000, scales: true },
+      { name: 'Партнёрские менеджеры (МФО/CPA)',  count: 6,  salary: 160000, scales: true },
+      { name: 'Колл-центр / операторы дожима',    count: 40, salary: 90000,  scales: true },
+      { name: 'Поддержка и бэк-офис',             count: 12, salary: 110000, scales: true },
+      { name: 'HR, юристы, финансы',              count: 6,  salary: 150000, scales: false },
+    ],
+    opex: { infra: 600000, office: 1200000, tools: 300000, otherPctOfRevenue: 3 },
+    capex: [
+      { name: 'Продукт и платформа (масштабирование)',        amount: 25000000, month: 1 },
+      { name: 'Выход на рынок / бренд (конкурентная среда)',  amount: 30000000, month: 1 },
+      { name: 'Инфраструктура, лицензии, безопасность',       amount: 8000000,  month: 2 },
+      { name: 'Резервный фонд (подушка ~3 мес. OPEX)',        amount: 20000000, month: 1 },
+    ],
+  };
+}
+
+let finModelState = { a: finModelDefaults(), charts: {}, dirty: false };
+
+const finFmt = v => (isFinite(v) ? Math.round(v).toLocaleString('ru-RU') : '—');
+const finNum = (v, fb = 0) => { const n = Number(v); return isFinite(n) ? n : fb; };
+
+// Фактический run-rate: выручка и EPC из baseline 90 дней (planBaselineData),
+// fallback — текущий срез globalRawData. Возвращает нули, если данных нет.
+function finModelFactBaseline() {
+  const rows = (planBaselineData && planBaselineData.length) ? planBaselineData : (globalRawData || []);
+  if (!rows.length) return { monthlyRevenue: 0, epc: 0, hasData: false };
+  const days = factDaysCount(rows);
+  const t = sumLeadRows(rows);
+  return {
+    monthlyRevenue: t.revenue / days * 30,
+    epc: t.clicks ? t.revenue / t.clicks : 0,
+    hasData: t.revenue > 0,
+  };
+}
+
+// Помесячный расчёт P&L и денежного потока на горизонте модели.
+function finModelCompute(a) {
+  const fact = finModelFactBaseline();
+  const startRevenue = (a.startRevenueOverride !== null && a.startRevenueOverride !== '' && finNum(a.startRevenueOverride) > 0)
+    ? finNum(a.startRevenueOverride)
+    : (fact.monthlyRevenue > 0 ? fact.monthlyRevenue : 5000000);
+  const g = finNum(a.monthlyGrowthPct) / 100;
+  const target = Math.max(1, finNum(a.targetRevenue, 100000000));
+  const horizon = Math.max(6, Math.min(60, Math.round(finNum(a.horizonMonths, 24))));
+  const taxCoef = Math.max(1, finNum(a.payrollTaxCoef, 1.302));
+  const floor = Math.min(1, Math.max(0, finNum(a.staffScaleFloor, 30) / 100));
+  const mktShare = Math.max(0, finNum(a.marketingSharePct, 55) / 100);
+  const infl = finNum(a.competitionInflationPct, 20) / 100;
+  const months = [];
+  let cum = 0, targetMonth = null, breakEvenMonth = null, minCum = 0;
+  for (let m = 1; m <= horizon; m++) {
+    const revenue = startRevenue * Math.pow(1 + g, m - 1);
+    if (targetMonth === null && revenue >= target) targetMonth = m;
+    // Конкуренция удорожает закупку трафика: доля маркетинга растёт на infl %/год,
+    // но не выше 95% выручки — иначе модель заведомо убыточна.
+    const share = Math.min(0.95, mktShare * Math.pow(1 + infl, (m - 1) / 12));
+    const marketing = revenue * share;
+    const staffShare = Math.min(1, Math.max(floor, revenue / target));
+    const payroll = (a.staff || []).reduce((s, r) => {
+      const base = finNum(r.count) * finNum(r.salary) * taxCoef;
+      return s + (r.scales ? base * staffShare : base);
+    }, 0);
+    const otherOpex = finNum(a.opex.infra) + finNum(a.opex.office) + finNum(a.opex.tools)
+      + revenue * finNum(a.opex.otherPctOfRevenue) / 100;
+    const ebitda = revenue - marketing - payroll - otherOpex;
+    if (breakEvenMonth === null && ebitda >= 0) breakEvenMonth = m;
+    const capex = (a.capex || []).reduce((s, c) => s + (Math.round(finNum(c.month, 1)) === m ? finNum(c.amount) : 0), 0);
+    cum += ebitda - capex;
+    if (cum < minCum) minCum = cum;
+    months.push({ m, revenue, marketing, payroll, otherOpex, ebitda, capex, cum, marketingShare: share, staffShare });
+  }
+  return {
+    months, fact, startRevenue, target, targetMonth, breakEvenMonth,
+    requiredInvestment: Math.max(0, -minCum),
+  };
+}
+
+// ---------- Сеттеры (onchange → обновляем допущение и перерисовываем) ----------
+function finModelSet(field, value) {
+  const a = finModelState.a;
+  if (field === 'startRevenueOverride') a.startRevenueOverride = (value === '' ? null : finNum(value));
+  else if (field.startsWith('opex.')) a.opex[field.slice(5)] = finNum(value);
+  else a[field] = finNum(value);
+  finModelState.dirty = true;
+  renderFinModel();
+}
+function finModelStaffSet(i, field, el) {
+  const r = (finModelState.a.staff || [])[i];
+  if (!r) return;
+  if (field === 'name') r.name = String(el.value || '');
+  else if (field === 'scales') r.scales = !!el.checked;
+  else r[field] = finNum(el.value);
+  finModelState.dirty = true;
+  renderFinModel();
+}
+function finModelAddStaffRow() {
+  finModelState.a.staff.push({ name: 'Новая роль', count: 1, salary: 100000, scales: true });
+  finModelState.dirty = true;
+  renderFinModel();
+}
+function finModelDelStaffRow(i) {
+  finModelState.a.staff.splice(i, 1);
+  finModelState.dirty = true;
+  renderFinModel();
+}
+function finModelCapexSet(i, field, el) {
+  const r = (finModelState.a.capex || [])[i];
+  if (!r) return;
+  if (field === 'name') r.name = String(el.value || '');
+  else r[field] = finNum(el.value);
+  finModelState.dirty = true;
+  renderFinModel();
+}
+function finModelAddCapexRow() {
+  finModelState.a.capex.push({ name: 'Новое вложение', amount: 1000000, month: 1 });
+  finModelState.dirty = true;
+  renderFinModel();
+}
+function finModelDelCapexRow(i) {
+  finModelState.a.capex.splice(i, 1);
+  finModelState.dirty = true;
+  renderFinModel();
+}
+
+// ---------- Персистентность: app_settings (finmodel_json) + localStorage ----------
+function finModelSetStatus(txt) {
+  const el = document.getElementById('finModelStatus');
+  if (el) el.textContent = txt || '';
+}
+async function finModelSave() {
+  const json = JSON.stringify(finModelState.a);
+  try { localStorage.setItem(FIN_MODEL_LS_KEY, json); } catch (_) {}
+  try {
+    const res = await fetch(`${API_BASE}?action=save_settings`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ [FIN_MODEL_SETTINGS_KEY]: json }),
+    });
+    const j = await res.json();
+    if (j && j.status === 'success') { finModelState.dirty = false; finModelSetStatus('Модель сохранена (общая для всех пользователей дашборда).'); }
+    else finModelSetStatus('Не удалось сохранить на сервере — модель сохранена локально в браузере.');
+  } catch (_) {
+    finModelSetStatus('Сервер недоступен — модель сохранена локально в браузере.');
+  }
+}
+function finModelReset() {
+  finModelState.a = finModelDefaults();
+  finModelState.dirty = true;
+  finModelSetStatus('Допущения сброшены к дефолтам. Нажмите «Сохранить модель», чтобы применить для всех.');
+  renderFinModel();
+}
+async function finModelInit() {
+  let loaded = null;
+  try {
+    const ls = localStorage.getItem(FIN_MODEL_LS_KEY);
+    if (ls) loaded = JSON.parse(ls);
+  } catch (_) {}
+  try {
+    const res = await fetch(`${API_BASE}?action=get_settings`, { cache: 'no-store' });
+    const j = await res.json();
+    const raw = j && j.data ? j.data[FIN_MODEL_SETTINGS_KEY] : null;
+    if (raw) loaded = JSON.parse(raw);
+  } catch (_) {}
+  if (loaded && typeof loaded === 'object') {
+    finModelState.a = Object.assign(finModelDefaults(), loaded);
+    if (!Array.isArray(finModelState.a.staff)) finModelState.a.staff = finModelDefaults().staff;
+    if (!Array.isArray(finModelState.a.capex)) finModelState.a.capex = finModelDefaults().capex;
+    finModelState.a.opex = Object.assign(finModelDefaults().opex, loaded.opex || {});
+  }
+  if (document.getElementById('tab-finmodel')?.classList.contains('active')) {
+    try { renderFinModel(); } catch (_) {}
+  }
+}
+
+// ---------- Рендер ----------
+function finInputRow(label, field, value, opts = {}) {
+  const step = opts.step || 'any';
+  const suffix = opts.suffix ? `<span class="text-xs text-slate-500 ml-1">${opts.suffix}</span>` : '';
+  const tip = opts.tip ? infoTip(opts.tip) : '';
+  return `<div class="flex items-center justify-between gap-3">
+    <label class="text-sm text-slate-400">${escapeHtml(label)}${tip}</label>
+    <div class="flex items-center">
+      <input type="number" step="${step}" ${opts.min !== undefined ? `min="${opts.min}"` : ''} class="bg-slate-900 border border-slate-700 rounded px-2 py-1 w-36 text-sm text-right"
+        value="${value === null || value === undefined ? '' : value}" ${opts.placeholder ? `placeholder="${escapeHtml(opts.placeholder)}"` : ''}
+        onchange="finModelSet('${field}', this.value)">${suffix}
+    </div>
+  </div>`;
+}
+
+function renderFinModel() {
+  const a = finModelState.a;
+  const model = finModelCompute(a);
+  const { fact, months, target } = model;
+  const last = months[months.length - 1];
+  const gapX = model.startRevenue > 0 ? target / model.startRevenue : 0;
+
+  // KPI-сводка
+  const kpis = document.getElementById('finModelKpis');
+  if (kpis) {
+    const kpi = (label, value, sub) => `<div class="card"><div class="text-slate-400 text-xs uppercase">${label}</div><div class="text-2xl font-black mt-2">${value}</div>${sub ? `<div class="text-xs text-slate-500 mt-1">${sub}</div>` : ''}</div>`;
+    kpis.innerHTML = [
+      kpi('Текущий run-rate', `${finFmt(model.startRevenue)} ₽/мес`, fact.hasData && a.startRevenueOverride === null ? 'из факта (baseline 90 дней)' : 'задано вручную / нет факта'),
+      kpi('Цель', `${finFmt(target)} ₽/мес`, `разрыв ×${gapX ? gapX.toFixed(1) : '—'}`),
+      kpi('Месяц достижения цели', model.targetMonth ? `М${model.targetMonth}` : 'вне горизонта', model.targetMonth ? `при росте ${finNum(a.monthlyGrowthPct)}%/мес` : 'увеличьте рост или горизонт'),
+      kpi('Точка безубыточности', model.breakEvenMonth ? `М${model.breakEvenMonth}` : 'вне горизонта', 'первый месяц с EBITDA ≥ 0'),
+      kpi('Требуемые инвестиции', `${finFmt(model.requiredInvestment)} ₽`, 'макс. кассовый разрыв с учётом CAPEX'),
+      kpi('EBITDA на конец горизонта', `${finFmt(last ? last.ebitda : 0)} ₽/мес`, last && last.revenue ? `маржа ${(last.ebitda / last.revenue * 100).toFixed(1)}%` : ''),
+    ].join('');
+  }
+
+  // Форма «Доход и рост»
+  const revForm = document.getElementById('finModelRevenueForm');
+  if (revForm) {
+    revForm.innerHTML = [
+      finInputRow('Цель по выручке', 'targetRevenue', a.targetRevenue, { suffix: '₽/мес', min: 1 }),
+      finInputRow('Стартовая выручка (пусто = авто из факта)', 'startRevenueOverride', a.startRevenueOverride, { suffix: '₽/мес', min: 0, placeholder: finFmt(fact.monthlyRevenue), tip: 'Оставьте пустым, чтобы модель брала фактический run-rate из baseline 90 дней. Введите число, чтобы зафиксировать свой сценарий.' }),
+      finInputRow('Рост выручки', 'monthlyGrowthPct', a.monthlyGrowthPct, { suffix: '%/мес', tip: 'Сложный процент месяц к месяцу. Определяет, в каком месяце модель достигает цели.' }),
+      finInputRow('Горизонт модели', 'horizonMonths', a.horizonMonths, { suffix: 'мес', min: 6, step: 1 }),
+    ].join('');
+  }
+
+  // Форма «Маркетинг и конкуренция»
+  const mktForm = document.getElementById('finModelMarketingForm');
+  if (mktForm) {
+    const lastShare = last ? (last.marketingShare * 100).toFixed(1) : '—';
+    mktForm.innerHTML = [
+      finInputRow('Доля выручки на маркетинг/трафик', 'marketingSharePct', a.marketingSharePct, { suffix: '%', min: 0, tip: 'Закупка и удержание трафика в CPA-модели: сколько % выручки уходит на привлечение кликов.' }),
+      finInputRow('Удорожание трафика (конкуренция)', 'competitionInflationPct', a.competitionInflationPct, { suffix: '%/год', tip: 'Конкуренты выкупают аукцион: стоимость привлечения растёт на этот % в год — доля маркетинга увеличивается (потолок 95% выручки).' }),
+      `<p class="text-xs text-slate-500 mt-2">К концу горизонта доля маркетинга: <strong>${lastShare}%</strong> выручки. Фактический EPC (baseline): ${fact.epc ? fact.epc.toFixed(2) + ' ₽' : '—'}.</p>`,
+    ].join('');
+  }
+
+  // Штат
+  const staffBody = document.querySelector('#finModelStaffTable tbody');
+  if (staffBody) {
+    const taxCoef = Math.max(1, finNum(a.payrollTaxCoef, 1.302));
+    staffBody.innerHTML = (a.staff || []).map((r, i) => {
+      const rowCost = finNum(r.count) * finNum(r.salary) * taxCoef;
+      return `<tr class="hover:bg-slate-800">
+        <td class="px-2 py-1"><input type="text" class="bg-slate-900 border border-slate-700 rounded px-2 py-1 w-full text-sm" value="${escapeHtml(r.name)}" onchange="finModelStaffSet(${i},'name',this)"></td>
+        <td class="px-2 py-1 text-right"><input type="number" min="0" step="1" class="bg-slate-900 border border-slate-700 rounded px-2 py-1 w-20 text-sm text-right" value="${finNum(r.count)}" onchange="finModelStaffSet(${i},'count',this)"></td>
+        <td class="px-2 py-1 text-right"><input type="number" min="0" step="1000" class="bg-slate-900 border border-slate-700 rounded px-2 py-1 w-28 text-sm text-right" value="${finNum(r.salary)}" onchange="finModelStaffSet(${i},'salary',this)"></td>
+        <td class="px-2 py-1 text-center"><input type="checkbox" ${r.scales ? 'checked' : ''} onchange="finModelStaffSet(${i},'scales',this)"></td>
+        <td class="px-2 py-1 text-right">${finFmt(rowCost)}</td>
+        <td class="px-2 py-1 text-right"><button class="btn" style="background:#7f1d1d" onclick="finModelDelStaffRow(${i})">✕</button></td>
+      </tr>`;
+    }).join('');
+  }
+  const staffFooter = document.getElementById('finModelStaffFooter');
+  if (staffFooter) {
+    const taxCoef = Math.max(1, finNum(a.payrollTaxCoef, 1.302));
+    const heads = (a.staff || []).reduce((s, r) => s + finNum(r.count), 0);
+    const fullCost = (a.staff || []).reduce((s, r) => s + finNum(r.count) * finNum(r.salary) * taxCoef, 0);
+    staffFooter.innerHTML = `Итого на цели: <strong>${heads}</strong> чел., ФОТ <strong>${finFmt(fullCost)} ₽/мес</strong> (налоговый коэффициент ×${taxCoef}).
+      <span class="ml-3">Коэффициент налогов/взносов: <input type="number" step="0.001" min="1" class="bg-slate-900 border border-slate-700 rounded px-2 py-1 w-24 text-sm text-right" value="${taxCoef}" onchange="finModelSet('payrollTaxCoef', this.value)"></span>
+      <span class="ml-3">Штат на старте (масштабируемые роли): <input type="number" step="1" min="0" max="100" class="bg-slate-900 border border-slate-700 rounded px-2 py-1 w-20 text-sm text-right" value="${finNum(a.staffScaleFloor, 30)}" onchange="finModelSet('staffScaleFloor', this.value)"> %</span>`;
+  }
+
+  // Прочие OPEX
+  const opexForm = document.getElementById('finModelOpexForm');
+  if (opexForm) {
+    opexForm.innerHTML = [
+      finInputRow('Инфраструктура (серверы, SaaS, безопасность)', 'opex.infra', a.opex.infra, { suffix: '₽/мес', min: 0 }),
+      finInputRow('Офис и хозрасходы', 'opex.office', a.opex.office, { suffix: '₽/мес', min: 0 }),
+      finInputRow('Инструменты и лицензии', 'opex.tools', a.opex.tools, { suffix: '₽/мес', min: 0 }),
+      finInputRow('Прочее (юр., комиссии, резерв)', 'opex.otherPctOfRevenue', a.opex.otherPctOfRevenue, { suffix: '% выручки', min: 0 }),
+    ].join('');
+  }
+
+  // CAPEX
+  const capexBody = document.querySelector('#finModelCapexTable tbody');
+  if (capexBody) {
+    capexBody.innerHTML = (a.capex || []).map((c, i) => `<tr class="hover:bg-slate-800">
+      <td class="px-2 py-1"><input type="text" class="bg-slate-900 border border-slate-700 rounded px-2 py-1 w-full text-sm" value="${escapeHtml(c.name)}" onchange="finModelCapexSet(${i},'name',this)"></td>
+      <td class="px-2 py-1 text-right"><input type="number" min="0" step="100000" class="bg-slate-900 border border-slate-700 rounded px-2 py-1 w-32 text-sm text-right" value="${finNum(c.amount)}" onchange="finModelCapexSet(${i},'amount',this)"></td>
+      <td class="px-2 py-1 text-right"><input type="number" min="1" step="1" class="bg-slate-900 border border-slate-700 rounded px-2 py-1 w-16 text-sm text-right" value="${finNum(c.month, 1)}" onchange="finModelCapexSet(${i},'month',this)"></td>
+      <td class="px-2 py-1 text-right"><button class="btn" style="background:#7f1d1d" onclick="finModelDelCapexRow(${i})">✕</button></td>
+    </tr>`).join('') + `<tr><td class="px-2 py-2 text-slate-400" colspan="2">Итого CAPEX</td><td class="px-2 py-2 text-right font-semibold" colspan="2">${finFmt((a.capex || []).reduce((s, c) => s + finNum(c.amount), 0))} ₽</td></tr>`;
+  }
+
+  // P&L таблица
+  const pnlBody = document.querySelector('#finModelPnlTable tbody');
+  if (pnlBody) {
+    pnlBody.innerHTML = months.map(r => {
+      const margin = r.revenue ? (r.ebitda / r.revenue * 100) : 0;
+      const ebCls = r.ebitda >= 0 ? 'text-emerald-400' : 'text-red-400';
+      const cumCls = r.cum >= 0 ? 'text-emerald-400' : 'text-red-400';
+      const hit = model.targetMonth === r.m ? ' style="background:rgba(16,185,129,0.08)"' : '';
+      return `<tr class="hover:bg-slate-800"${hit}>
+        <td class="px-2 py-1">М${r.m}${model.targetMonth === r.m ? ' 🎯' : ''}</td>
+        <td class="px-2 py-1 text-right">${finFmt(r.revenue)}</td>
+        <td class="px-2 py-1 text-right">${finFmt(r.marketing)}</td>
+        <td class="px-2 py-1 text-right">${finFmt(r.payroll)}</td>
+        <td class="px-2 py-1 text-right">${finFmt(r.otherOpex)}</td>
+        <td class="px-2 py-1 text-right ${ebCls}">${finFmt(r.ebitda)}</td>
+        <td class="px-2 py-1 text-right ${ebCls}">${margin.toFixed(1)}%</td>
+        <td class="px-2 py-1 text-right">${r.capex ? finFmt(r.capex) : '—'}</td>
+        <td class="px-2 py-1 text-right ${cumCls}">${finFmt(r.cum)}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  finModelRenderCharts(model);
+}
+
+function finModelRenderCharts(model) {
+  if (typeof Chart === 'undefined') return;
+  const labels = model.months.map(r => 'М' + r.m);
+  const pnlCtx = document.getElementById('finModelPnlChart');
+  if (pnlCtx) {
+    if (finModelState.charts.pnl) finModelState.charts.pnl.destroy();
+    finModelState.charts.pnl = new Chart(pnlCtx, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [
+          { label: 'Выручка, ₽', data: model.months.map(r => r.revenue), borderColor: '#34d399', backgroundColor: 'rgba(52,211,153,0.10)', fill: true },
+          { label: 'Расходы всего, ₽', data: model.months.map(r => r.marketing + r.payroll + r.otherOpex), borderColor: '#f87171' },
+          { label: 'EBITDA, ₽', data: model.months.map(r => r.ebitda), borderColor: '#60a5fa' },
+          { label: 'Цель, ₽', data: model.months.map(() => model.target), borderColor: 'rgba(255,255,255,0.35)', borderDash: [6, 6], pointRadius: 0 },
+        ],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { tooltip: { ...sharedTooltipConfig, callbacks: { label: ctx => ` ${ctx.dataset.label}: ${finFmt(ctx.parsed.y)} ₽` } } },
+        scales: { y: { ticks: { callback: v => (v / 1000000).toFixed(0) + ' млн' } } },
+      },
+    });
+  }
+  const cashCtx = document.getElementById('finModelCashChart');
+  if (cashCtx) {
+    if (finModelState.charts.cash) finModelState.charts.cash.destroy();
+    finModelState.charts.cash = new Chart(cashCtx, {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [{
+          label: 'Накопленный CF, ₽',
+          data: model.months.map(r => r.cum),
+          backgroundColor: model.months.map(r => r.cum >= 0 ? 'rgba(52,211,153,0.7)' : 'rgba(248,113,113,0.7)'),
+        }],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { tooltip: { ...sharedTooltipConfig, callbacks: { label: ctx => ` ${ctx.dataset.label}: ${finFmt(ctx.parsed.y)} ₽` } } },
+        scales: { y: { ticks: { callback: v => (v / 1000000).toFixed(0) + ' млн' } } },
+      },
+    });
+  }
+}
 </script>
 </body>
 </html>
