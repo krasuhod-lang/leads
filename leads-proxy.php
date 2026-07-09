@@ -941,6 +941,10 @@ try {
     $addColumnIfMissing('hypotheses', 'cr_approve_expected', 'REAL NOT NULL DEFAULT 0');
     $addColumnIfMissing('hypotheses', 'revenue_base', 'REAL NOT NULL DEFAULT 0');
     $addColumnIfMissing('hypotheses', 'revenue_expected', 'REAL NOT NULL DEFAULT 0');
+    // Влияние на выручку: общая выручка «было → станет» (для расчёта выборки
+    // от требуемого прироста выручки).
+    $addColumnIfMissing('hypotheses', 'revenue_total_base', 'REAL NOT NULL DEFAULT 0');
+    $addColumnIfMissing('hypotheses', 'revenue_total_expected', 'REAL NOT NULL DEFAULT 0');
     $addColumnIfMissing('hypotheses', 'visits_volume', 'REAL NOT NULL DEFAULT 0');
     $addColumnIfMissing('hypotheses', 'manual_sample', 'REAL NOT NULL DEFAULT 0');
 
@@ -5775,7 +5779,7 @@ if ($action === 'hypothesis_save') {
         $stmt->bindValue(':end_date', $end, SQLITE3_TEXT);
         foreach (['base_cr','expected_cr','approve_rate','approve_value','sample_size','traffic_volume','leads_volume','approvals_volume','expected_value',
                   'cr_visit_base','cr_visit_expected','cr_lead_base','cr_lead_expected','cr_approve_base','cr_approve_expected',
-                  'revenue_base','revenue_expected','visits_volume','manual_sample'] as $k) {
+                  'revenue_base','revenue_expected','revenue_total_base','revenue_total_expected','visits_volume','manual_sample'] as $k) {
             $stmt->bindValue(':' . $k, (float)($input[$k] ?? 0), SQLITE3_FLOAT);
         }
         $stmt->bindValue(':levers', (string)($input['levers'] ?? ''), SQLITE3_TEXT);
@@ -5794,7 +5798,8 @@ if ($action === 'hypothesis_save') {
             leads_volume=:leads_volume,approvals_volume=:approvals_volume,expected_value=:expected_value,funnel_json=:funnel_json,
             impact_json=:impact_json,cr_visit_base=:cr_visit_base,cr_visit_expected=:cr_visit_expected,cr_lead_base=:cr_lead_base,
             cr_lead_expected=:cr_lead_expected,cr_approve_base=:cr_approve_base,cr_approve_expected=:cr_approve_expected,
-            revenue_base=:revenue_base,revenue_expected=:revenue_expected,visits_volume=:visits_volume,manual_sample=:manual_sample,
+            revenue_base=:revenue_base,revenue_expected=:revenue_expected,revenue_total_base=:revenue_total_base,
+            revenue_total_expected=:revenue_total_expected,visits_volume=:visits_volume,manual_sample=:manual_sample,
             updated_at=:updated_at WHERE id=:id');
         $bind($stmt);
         $stmt->bindValue(':id', $id, SQLITE3_INTEGER);
@@ -5803,11 +5808,11 @@ if ($action === 'hypothesis_save') {
         $stmt = $db->prepare('INSERT INTO hypotheses (month_key,title,description,goal,planned_result,start_date,end_date,base_cr,expected_cr,approve_rate,
             approve_value,levers,sample_size,traffic_volume,leads_volume,approvals_volume,expected_value,funnel_json,
             impact_json,cr_visit_base,cr_visit_expected,cr_lead_base,cr_lead_expected,cr_approve_base,cr_approve_expected,
-            revenue_base,revenue_expected,visits_volume,manual_sample,created_at,updated_at)
+            revenue_base,revenue_expected,revenue_total_base,revenue_total_expected,visits_volume,manual_sample,created_at,updated_at)
             VALUES (:m,:title,:description,:goal,:planned_result,:start_date,:end_date,:base_cr,:expected_cr,:approve_rate,
             :approve_value,:levers,:sample_size,:traffic_volume,:leads_volume,:approvals_volume,:expected_value,:funnel_json,
             :impact_json,:cr_visit_base,:cr_visit_expected,:cr_lead_base,:cr_lead_expected,:cr_approve_base,:cr_approve_expected,
-            :revenue_base,:revenue_expected,:visits_volume,:manual_sample,:created_at,:updated_at)');
+            :revenue_base,:revenue_expected,:revenue_total_base,:revenue_total_expected,:visits_volume,:manual_sample,:created_at,:updated_at)');
         $bind($stmt);
         $stmt->bindValue(':created_at', $now, SQLITE3_INTEGER);
         $stmt->execute();
