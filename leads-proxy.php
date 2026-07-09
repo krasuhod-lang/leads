@@ -929,6 +929,20 @@ try {
     )');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_hypotheses_month ON hypotheses(month_key)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_hypotheses_period ON hypotheses(start_date, end_date)');
+    // Разделы влияния гипотезы (визит/заявка/апрув/выручка) и ручные конверсии
+    // воронки Выборка → Визит → Заявка → Апрув. Старые колонки base_cr /
+    // expected_cr / approve_rate остаются для обратной совместимости.
+    $addColumnIfMissing('hypotheses', 'impact_json', 'TEXT');
+    $addColumnIfMissing('hypotheses', 'cr_visit_base', 'REAL NOT NULL DEFAULT 0');
+    $addColumnIfMissing('hypotheses', 'cr_visit_expected', 'REAL NOT NULL DEFAULT 0');
+    $addColumnIfMissing('hypotheses', 'cr_lead_base', 'REAL NOT NULL DEFAULT 0');
+    $addColumnIfMissing('hypotheses', 'cr_lead_expected', 'REAL NOT NULL DEFAULT 0');
+    $addColumnIfMissing('hypotheses', 'cr_approve_base', 'REAL NOT NULL DEFAULT 0');
+    $addColumnIfMissing('hypotheses', 'cr_approve_expected', 'REAL NOT NULL DEFAULT 0');
+    $addColumnIfMissing('hypotheses', 'revenue_base', 'REAL NOT NULL DEFAULT 0');
+    $addColumnIfMissing('hypotheses', 'revenue_expected', 'REAL NOT NULL DEFAULT 0');
+    $addColumnIfMissing('hypotheses', 'visits_volume', 'REAL NOT NULL DEFAULT 0');
+    $addColumnIfMissing('hypotheses', 'manual_sample', 'REAL NOT NULL DEFAULT 0');
 
     // Кэш результатов глубокого AI-анализа. Ключ — диапазон дат `from|to`,
     // чтобы при перезагрузке страницы пользователь видел тот же отчёт без
@@ -5732,6 +5746,8 @@ if ($action === 'hypotheses_list') {
         while ($r = $res->fetchArray(SQLITE3_ASSOC)) {
             $r['funnel'] = json_decode((string)($r['funnel_json'] ?? ''), true) ?: [];
             unset($r['funnel_json']);
+            $r['impacts'] = json_decode((string)($r['impact_json'] ?? ''), true) ?: [];
+            unset($r['impact_json']);
             $rows[] = $r;
         }
     }
@@ -5757,11 +5773,18 @@ if ($action === 'hypothesis_save') {
         $stmt->bindValue(':planned_result', (string)($input['planned_result'] ?? ''), SQLITE3_TEXT);
         $stmt->bindValue(':start_date', $start, SQLITE3_TEXT);
         $stmt->bindValue(':end_date', $end, SQLITE3_TEXT);
-        foreach (['base_cr','expected_cr','approve_rate','approve_value','sample_size','traffic_volume','leads_volume','approvals_volume','expected_value'] as $k) {
+        foreach (['base_cr','expected_cr','approve_rate','approve_value','sample_size','traffic_volume','leads_volume','approvals_volume','expected_value',
+                  'cr_visit_base','cr_visit_expected','cr_lead_base','cr_lead_expected','cr_approve_base','cr_approve_expected',
+                  'revenue_base','revenue_expected','visits_volume','manual_sample'] as $k) {
             $stmt->bindValue(':' . $k, (float)($input[$k] ?? 0), SQLITE3_FLOAT);
         }
         $stmt->bindValue(':levers', (string)($input['levers'] ?? ''), SQLITE3_TEXT);
         $stmt->bindValue(':funnel_json', json_encode($input['funnel'] ?? [], JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
+        $impacts = is_array($input['impacts'] ?? null) ? array_values(array_intersect(
+            array_map('strval', $input['impacts']),
+            ['visit', 'lead', 'approve', 'revenue']
+        )) : [];
+        $stmt->bindValue(':impact_json', json_encode($impacts, JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
         $stmt->bindValue(':updated_at', $now, SQLITE3_INTEGER);
     };
     if ($id > 0) {
@@ -5769,15 +5792,22 @@ if ($action === 'hypothesis_save') {
             start_date=:start_date,end_date=:end_date,base_cr=:base_cr,expected_cr=:expected_cr,approve_rate=:approve_rate,
             approve_value=:approve_value,levers=:levers,sample_size=:sample_size,traffic_volume=:traffic_volume,
             leads_volume=:leads_volume,approvals_volume=:approvals_volume,expected_value=:expected_value,funnel_json=:funnel_json,
+            impact_json=:impact_json,cr_visit_base=:cr_visit_base,cr_visit_expected=:cr_visit_expected,cr_lead_base=:cr_lead_base,
+            cr_lead_expected=:cr_lead_expected,cr_approve_base=:cr_approve_base,cr_approve_expected=:cr_approve_expected,
+            revenue_base=:revenue_base,revenue_expected=:revenue_expected,visits_volume=:visits_volume,manual_sample=:manual_sample,
             updated_at=:updated_at WHERE id=:id');
         $bind($stmt);
         $stmt->bindValue(':id', $id, SQLITE3_INTEGER);
         $stmt->execute();
     } else {
         $stmt = $db->prepare('INSERT INTO hypotheses (month_key,title,description,goal,planned_result,start_date,end_date,base_cr,expected_cr,approve_rate,
-            approve_value,levers,sample_size,traffic_volume,leads_volume,approvals_volume,expected_value,funnel_json,created_at,updated_at)
+            approve_value,levers,sample_size,traffic_volume,leads_volume,approvals_volume,expected_value,funnel_json,
+            impact_json,cr_visit_base,cr_visit_expected,cr_lead_base,cr_lead_expected,cr_approve_base,cr_approve_expected,
+            revenue_base,revenue_expected,visits_volume,manual_sample,created_at,updated_at)
             VALUES (:m,:title,:description,:goal,:planned_result,:start_date,:end_date,:base_cr,:expected_cr,:approve_rate,
-            :approve_value,:levers,:sample_size,:traffic_volume,:leads_volume,:approvals_volume,:expected_value,:funnel_json,:created_at,:updated_at)');
+            :approve_value,:levers,:sample_size,:traffic_volume,:leads_volume,:approvals_volume,:expected_value,:funnel_json,
+            :impact_json,:cr_visit_base,:cr_visit_expected,:cr_lead_base,:cr_lead_expected,:cr_approve_base,:cr_approve_expected,
+            :revenue_base,:revenue_expected,:visits_volume,:manual_sample,:created_at,:updated_at)');
         $bind($stmt);
         $stmt->bindValue(':created_at', $now, SQLITE3_INTEGER);
         $stmt->execute();
