@@ -1712,22 +1712,60 @@
         <input id="hypId" type="hidden">
         <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
           <label class="block"><span class="block text-xs text-slate-400 mb-1">Название</span><input id="hypTitle" required class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm"></label>
-          <label class="block"><span class="block text-xs text-slate-400 mb-1">Период гипотезы</span><div class="grid grid-cols-2 gap-2"><input id="hypStart" type="date" class="bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm"><input id="hypEnd" type="date" class="bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm"></div></label>
+          <label class="block"><span class="block text-xs text-slate-400 mb-1">Месяц сохранения</span><select id="hypMonth" class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm"></select></label>
+        </div>
+        <div class="rounded-xl border border-sky-800/60 bg-sky-950/20 p-3">
+          <div class="text-xs font-semibold text-sky-300 uppercase mb-2">Сроки гипотезы</div>
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
+            <label class="block"><span class="block text-xs text-slate-400 mb-1">🚀 Срок запуска</span><input id="hypStart" type="date" class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm" onchange="renderHypothesisCalc()"></label>
+            <label class="block"><span class="block text-xs text-slate-400 mb-1">🏁 Срок окончания</span><input id="hypEnd" type="date" class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm" onchange="renderHypothesisCalc()"></label>
+            <div id="hypDurationHint" class="text-sm text-slate-300 pb-2">—</div>
+          </div>
         </div>
         <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
           <label class="block"><span class="block text-xs text-slate-400 mb-1">Описание</span><textarea id="hypDescription" rows="3" class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm"></textarea></label>
           <label class="block"><span class="block text-xs text-slate-400 mb-1">Цель</span><textarea id="hypGoal" rows="3" class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm"></textarea></label>
           <label class="block"><span class="block text-xs text-slate-400 mb-1">Планируемый результат</span><textarea id="hypPlannedResult" rows="3" class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm"></textarea></label>
         </div>
-        <div class="grid grid-cols-2 md:grid-cols-5 gap-3">
-          <label><span class="block text-xs text-slate-400 mb-1">Базовая CR, %</span><input id="hypBaseCr" type="number" min="0" max="100" step="0.01" class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm" oninput="renderHypothesisCalc()"></label>
-          <label><span class="block text-xs text-slate-400 mb-1">Ожидаемая CR, %</span><input id="hypExpectedCr" type="number" min="0" max="100" step="0.01" class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm" oninput="renderHypothesisCalc()"></label>
-          <label><span class="block text-xs text-slate-400 mb-1">Approve rate, %</span><input id="hypApproveRate" type="number" min="0" max="100" step="0.01" class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm" oninput="renderHypothesisCalc()"></label>
-          <label><span class="block text-xs text-slate-400 mb-1">Ценность 1 approve, ₽</span><input id="hypApproveValue" type="number" min="0" step="100" class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm" oninput="renderHypothesisCalc()"></label>
-          <label><span class="block text-xs text-slate-400 mb-1">Месяц сохранения</span><select id="hypMonth" class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm"></select></label>
+        <div class="rounded-xl border border-slate-700 bg-slate-900/40 p-3">
+          <div class="text-xs font-semibold text-slate-300 uppercase mb-1">Базовая воронка (задается вручную)</div>
+          <p class="text-[11px] text-slate-500 mb-2">Конверсии Выборка → Визит → Заявка → Апрув. Подставляются из текущих данных, но их можно править руками.</p>
+          <div class="grid grid-cols-2 md:grid-cols-5 gap-3">
+            <label><span class="block text-xs text-slate-400 mb-1">Выборка → визит, %</span><input id="hypCrVisitBase" type="number" min="0" max="100" step="0.01" class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm" oninput="renderHypothesisCalc()"></label>
+            <label><span class="block text-xs text-slate-400 mb-1">Визит → заявка, %</span><input id="hypCrLeadBase" type="number" min="0" max="100" step="0.01" class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm" oninput="renderHypothesisCalc()"></label>
+            <label><span class="block text-xs text-slate-400 mb-1">Заявка → апрув, %</span><input id="hypCrApproveBase" type="number" min="0" max="100" step="0.01" class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm" oninput="renderHypothesisCalc()"></label>
+            <label><span class="block text-xs text-slate-400 mb-1">Ценность 1 апрува, ₽</span><input id="hypRevenueBase" type="number" min="0" step="100" class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm" oninput="renderHypothesisCalc()"></label>
+            <label><span class="block text-xs text-slate-400 mb-1">Выборка вручную, шт</span><input id="hypManualSample" type="number" min="0" step="1" placeholder="авто" class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm" oninput="renderHypothesisCalc()"></label>
+          </div>
+        </div>
+        <div class="rounded-xl border border-slate-700 bg-slate-900/40 p-3">
+          <div class="text-xs font-semibold text-slate-300 uppercase mb-1">Разделы влияния гипотезы</div>
+          <p class="text-[11px] text-slate-500 mb-2">Отметьте, на что влияет гипотеза. Для выбранных разделов задайте ожидаемое значение — оно попадет в прогнозируемую выборку для тестирования.</p>
+          <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+            <div class="rounded-lg border border-slate-700 bg-slate-800/50 p-3">
+              <label class="flex items-center gap-2 text-sm text-white mb-2"><input id="hypImpactVisit" type="checkbox" onchange="toggleHypImpact()"> Влияние на конверсию в визит</label>
+              <label><span class="block text-xs text-slate-400 mb-1">Ожидаемая выборка → визит, %</span><input id="hypCrVisitExpected" type="number" min="0" max="100" step="0.01" disabled class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm disabled:opacity-40" oninput="renderHypothesisCalc()"></label>
+            </div>
+            <div class="rounded-lg border border-slate-700 bg-slate-800/50 p-3">
+              <label class="flex items-center gap-2 text-sm text-white mb-2"><input id="hypImpactLead" type="checkbox" onchange="toggleHypImpact()"> Влияние на конверсию в заявку</label>
+              <label><span class="block text-xs text-slate-400 mb-1">Ожидаемая визит → заявка, %</span><input id="hypCrLeadExpected" type="number" min="0" max="100" step="0.01" disabled class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm disabled:opacity-40" oninput="renderHypothesisCalc()"></label>
+            </div>
+            <div class="rounded-lg border border-slate-700 bg-slate-800/50 p-3">
+              <label class="flex items-center gap-2 text-sm text-white mb-2"><input id="hypImpactApprove" type="checkbox" onchange="toggleHypImpact()"> Влияние на конверсию в апрув</label>
+              <label><span class="block text-xs text-slate-400 mb-1">Ожидаемая заявка → апрув, %</span><input id="hypCrApproveExpected" type="number" min="0" max="100" step="0.01" disabled class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm disabled:opacity-40" oninput="renderHypothesisCalc()"></label>
+            </div>
+            <div class="rounded-lg border border-slate-700 bg-slate-800/50 p-3">
+              <label class="flex items-center gap-2 text-sm text-white mb-2"><input id="hypImpactRevenue" type="checkbox" onchange="toggleHypImpact()"> Влияние на выручку</label>
+              <label><span class="block text-xs text-slate-400 mb-1">Ожидаемая ценность 1 апрува, ₽</span><input id="hypRevenueExpected" type="number" min="0" step="100" disabled class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm disabled:opacity-40" oninput="renderHypothesisCalc()"></label>
+            </div>
+          </div>
         </div>
         <label class="block"><span class="block text-xs text-slate-400 mb-1">Рычаги управления результатом</span><textarea id="hypLevers" rows="2" placeholder="Что меняем: оффер, баннер, размещение, сегмент, SMS, канал..." class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm"></textarea></label>
-        <div id="hypCalcBox" class="grid grid-cols-2 md:grid-cols-5 gap-3"></div>
+        <div>
+          <div class="text-xs font-semibold text-slate-300 uppercase mb-2">Прогноз для тестирования</div>
+          <div id="hypCalcBox" class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3"></div>
+          <div id="hypCalcHint" class="text-[11px] text-slate-500 mt-2"></div>
+        </div>
         <div class="flex flex-wrap gap-2 justify-end"><button class="btn" type="button" style="background:#475569" onclick="resetHypothesisForm()">Очистить</button><button class="btn" type="submit">Сохранить гипотезу</button></div>
         <div id="hypMessage" class="text-sm hidden"></div>
       </form>
@@ -8897,31 +8935,95 @@ function hypothesisFunnelSnapshot() {
   const bounces = (bouncesData || []).reduce((s, d) => s + (Number(d.bounces) || 0), 0);
   return { impressions, bounces, banner_clicks: bannerClicks, traffic: leadsClicks, leads: t.conversions, approvals: t.approved };
 }
-function calcHypothesisNumbers() {
-  const p1 = Math.max(0, Number(document.getElementById('hypBaseCr')?.value || 0) / 100);
-  const p2 = Math.max(0, Number(document.getElementById('hypExpectedCr')?.value || 0) / 100);
-  const ar = Math.max(0, Number(document.getElementById('hypApproveRate')?.value || 0) / 100);
-  const approveValue = Math.max(0, Number(document.getElementById('hypApproveValue')?.value || 0));
+function hypNum(id) { return Math.max(0, Number(document.getElementById(id)?.value || 0)); }
+function hypPct(id) { return hypNum(id) / 100; }
+function hypSelectedImpacts() {
+  const map = { visit: 'hypImpactVisit', lead: 'hypImpactLead', approve: 'hypImpactApprove', revenue: 'hypImpactRevenue' };
+  return Object.keys(map).filter(k => document.getElementById(map[k])?.checked);
+}
+function toggleHypImpact() {
+  const pairs = [
+    ['hypImpactVisit', 'hypCrVisitExpected', 'hypCrVisitBase'],
+    ['hypImpactLead', 'hypCrLeadExpected', 'hypCrLeadBase'],
+    ['hypImpactApprove', 'hypCrApproveExpected', 'hypCrApproveBase'],
+    ['hypImpactRevenue', 'hypRevenueExpected', 'hypRevenueBase'],
+  ];
+  for (const [cb, exp, base] of pairs) {
+    const on = document.getElementById(cb)?.checked;
+    const el = document.getElementById(exp); if (!el) continue;
+    el.disabled = !on;
+    if (on && !el.value) el.value = document.getElementById(base)?.value || '';
+  }
+  renderHypothesisCalc();
+}
+function hypSampleForStage(p1, p2) {
+  // Размер выборки для сравнения двух долей (α=0.05, мощность 80%).
   const diff = Math.abs(p2 - p1);
   const pbar = (p1 + p2) / 2;
   const z = 1.96 + 0.84;
-  const sample = (diff > 0 && pbar > 0 && pbar < 1) ? (2 * pbar * (1 - pbar) * z * z) / (diff * diff) : 0;
-  const traffic = sample;
-  const leads = traffic * p2;
-  const approvals = leads * ar;
-  const expectedValue = approvals * approveValue;
-  return { base_cr: p1, expected_cr: p2, approve_rate: ar, approve_value: approveValue, sample_size: sample, traffic_volume: traffic, leads_volume: leads, approvals_volume: approvals, expected_value: expectedValue, funnel: hypothesisFunnelSnapshot() };
+  return (diff > 0 && pbar > 0 && pbar < 1) ? (2 * pbar * (1 - pbar) * z * z) / (diff * diff) : 0;
+}
+function calcHypothesisNumbers() {
+  const impacts = hypSelectedImpacts();
+  const crVisitBase = hypPct('hypCrVisitBase');
+  const crLeadBase = hypPct('hypCrLeadBase');
+  const crApproveBase = hypPct('hypCrApproveBase');
+  const revenueBase = hypNum('hypRevenueBase');
+  const crVisit = impacts.includes('visit') ? hypPct('hypCrVisitExpected') : crVisitBase;
+  const crLead = impacts.includes('lead') ? hypPct('hypCrLeadExpected') : crLeadBase;
+  const crApprove = impacts.includes('approve') ? hypPct('hypCrApproveExpected') : crApproveBase;
+  const revenueValue = impacts.includes('revenue') ? hypNum('hypRevenueExpected') : revenueBase;
+  // Выборка: max по всем затронутым конверсиям, пересчитанная в единицы выборки.
+  let sample = 0;
+  if (impacts.includes('visit')) sample = Math.max(sample, hypSampleForStage(crVisitBase, crVisit));
+  if (impacts.includes('lead') && crVisitBase > 0) sample = Math.max(sample, hypSampleForStage(crLeadBase, crLead) / crVisitBase);
+  if (impacts.includes('approve') && crVisitBase > 0 && crLeadBase > 0) sample = Math.max(sample, hypSampleForStage(crApproveBase, crApprove) / (crVisitBase * crLeadBase));
+  const manualSample = hypNum('hypManualSample');
+  if (manualSample > 0) sample = manualSample;
+  const visits = sample * crVisit;
+  const leads = visits * crLead;
+  const approvals = leads * crApprove;
+  const expectedValue = approvals * revenueValue;
+  return {
+    impacts,
+    cr_visit_base: crVisitBase, cr_visit_expected: crVisit,
+    cr_lead_base: crLeadBase, cr_lead_expected: crLead,
+    cr_approve_base: crApproveBase, cr_approve_expected: crApprove,
+    revenue_base: revenueBase, revenue_expected: revenueValue,
+    manual_sample: manualSample,
+    // Легаси-поля для совместимости со старой схемой/карточками.
+    base_cr: crLeadBase, expected_cr: crLead, approve_rate: crApprove, approve_value: revenueValue,
+    sample_size: sample, traffic_volume: visits, visits_volume: visits,
+    leads_volume: leads, approvals_volume: approvals, expected_value: expectedValue,
+    funnel: hypothesisFunnelSnapshot(),
+  };
+}
+function hypDurationDays() {
+  const s = document.getElementById('hypStart')?.value; const e = document.getElementById('hypEnd')?.value;
+  if (!s || !e) return 0;
+  const d = Math.round((new Date(e) - new Date(s)) / 86400000) + 1;
+  return d > 0 ? d : 0;
 }
 function renderHypothesisCalc() {
   const box = document.getElementById('hypCalcBox');
   if (!box) return;
   const n = calcHypothesisNumbers();
+  const days = hypDurationDays();
+  const durEl = document.getElementById('hypDurationHint');
+  if (durEl) durEl.textContent = days > 0 ? `Длительность теста: ${days} дн.` : 'Укажите срок запуска и срок окончания';
   const card = (label, val, suffix = '') => `<div class="rounded-xl border border-slate-700 bg-slate-900/40 p-3"><div class="text-[11px] text-slate-400 uppercase">${label}</div><div class="text-lg font-bold text-white mt-1">${val}${suffix}</div></div>`;
   box.innerHTML = card('Выборка n', Math.ceil(n.sample_size).toLocaleString('ru-RU')) +
-    card('Объём трафика', Math.ceil(n.traffic_volume).toLocaleString('ru-RU')) +
+    card('Визиты', Math.ceil(n.visits_volume).toLocaleString('ru-RU')) +
     card('Заявки', Math.ceil(n.leads_volume).toLocaleString('ru-RU')) +
     card('Апрувы', Math.ceil(n.approvals_volume).toLocaleString('ru-RU')) +
-    card('Ценность', Math.round(n.expected_value).toLocaleString('ru-RU'), ' ₽');
+    card('Выручка', Math.round(n.expected_value).toLocaleString('ru-RU'), ' ₽') +
+    card('Визитов/день', days > 0 ? Math.ceil(n.visits_volume / days).toLocaleString('ru-RU') : '—');
+  const hint = document.getElementById('hypCalcHint');
+  if (hint) {
+    if (!n.impacts.length && !(n.manual_sample > 0)) hint.textContent = 'Отметьте раздел влияния или задайте выборку вручную, чтобы получить прогноз.';
+    else if (n.manual_sample > 0) hint.textContent = 'Выборка задана вручную.';
+    else hint.textContent = 'Выборка рассчитана по самой требовательной из выбранных конверсий (α=0.05, мощность 80%).';
+  }
 }
 function renderHypothesisKpis() {
   const box = document.getElementById('hypothesisKpis');
@@ -8931,9 +9033,9 @@ function renderHypothesisKpis() {
   const card = (label, val, sub = '') => `<div class="rounded-xl border border-slate-700 bg-slate-900/40 p-3"><div class="text-[11px] text-slate-400 uppercase">${label}</div><div class="text-lg font-bold text-white">${val}</div>${sub ? `<div class="text-[11px] text-slate-500">${sub}</div>` : ''}</div>`;
   box.innerHTML = card('Показы', Math.round(f.impressions).toLocaleString('ru-RU')) +
     card('Отказы', Math.round(f.bounces).toLocaleString('ru-RU'), 'отдельно от показов') +
-    card('Трафик', Math.round(f.traffic).toLocaleString('ru-RU'), `Показ → трафик: ${conv(f.impressions, f.traffic)}`) +
-    card('Заявки', Math.round(f.leads).toLocaleString('ru-RU'), `Трафик → заявка: ${conv(f.traffic, f.leads)}`) +
-    card('Апрувы', Math.round(f.approvals).toLocaleString('ru-RU'), `Заявка → approve: ${conv(f.leads, f.approvals)}`);
+    card('Визиты', Math.round(f.traffic).toLocaleString('ru-RU'), `Показ → визит: ${conv(f.impressions, f.traffic)}`) +
+    card('Заявки', Math.round(f.leads).toLocaleString('ru-RU'), `Визит → заявка: ${conv(f.traffic, f.leads)}`) +
+    card('Апрувы', Math.round(f.approvals).toLocaleString('ru-RU'), `Заявка → апрув: ${conv(f.leads, f.approvals)}`);
 }
 async function loadHypothesisMonths() {
   const j = await fetchJsonSafe(buildApiUrl({ action: 'hypothesis_months_list' }));
@@ -8960,19 +9062,36 @@ async function renderHypothesesTab() {
   const list = document.getElementById('hypList'); if (!list) return;
   if (!hypothesesState.items.length) { list.innerHTML = '<p class="text-sm text-slate-500">В этом месяце гипотез пока нет.</p>'; return; }
   const pct = v => (Number(v || 0) * 100).toFixed(2) + '%';
-  list.innerHTML = hypothesesState.items.map(h => `<article class="rounded-2xl border border-slate-700 bg-slate-900/30 p-4 space-y-3">
-    <div class="flex justify-between gap-3"><div><h4 class="text-white font-semibold">${escapeHtml(h.title)}</h4><div class="text-xs text-slate-500">${escapeHtml(h.start_date || '—')} → ${escapeHtml(h.end_date || '—')} · ${escapeHtml(h.month_key || '')}</div></div><button type="button" class="text-xs text-red-400" onclick="deleteHypothesis(${Number(h.id)})">Удалить</button></div>
+  const impactLabels = { visit: 'CR в визит', lead: 'CR в заявку', approve: 'CR в апрув', revenue: 'Выручка' };
+  list.innerHTML = hypothesesState.items.map(h => {
+    const impacts = Array.isArray(h.impacts) ? h.impacts : [];
+    const badges = impacts.map(k => `<span class="text-[11px] px-2 py-0.5 rounded-full border border-sky-700 bg-sky-900/40 text-sky-300">${escapeHtml(impactLabels[k] || k)}</span>`).join(' ');
+    const visits = Number(h.visits_volume || h.traffic_volume || 0);
+    const days = (h.start_date && h.end_date) ? Math.round((new Date(h.end_date) - new Date(h.start_date)) / 86400000) + 1 : 0;
+    const crLine = impacts.map(k => {
+      if (k === 'visit') return `Выборка→визит: ${pct(h.cr_visit_base)} → ${pct(h.cr_visit_expected)}`;
+      if (k === 'lead') return `Визит→заявка: ${pct(h.cr_lead_base ?? h.base_cr)} → ${pct(h.cr_lead_expected ?? h.expected_cr)}`;
+      if (k === 'approve') return `Заявка→апрув: ${pct(h.cr_approve_base ?? h.approve_rate)} → ${pct(h.cr_approve_expected)}`;
+      return `Ценность апрува: ${Math.round(Number(h.revenue_base || h.approve_value || 0)).toLocaleString('ru-RU')} → ${Math.round(Number(h.revenue_expected || 0)).toLocaleString('ru-RU')} ₽`;
+    }).join(' · ') || `CR: ${pct(h.base_cr)} → ${pct(h.expected_cr)} · AR: ${pct(h.approve_rate)} · 1 апрув: ${Math.round(Number(h.approve_value || 0)).toLocaleString('ru-RU')} ₽`;
+    return `<article class="rounded-2xl border border-slate-700 bg-slate-900/30 p-4 space-y-3">
+    <div class="flex justify-between gap-3"><div><h4 class="text-white font-semibold">${escapeHtml(h.title)}</h4>${badges ? `<div class="flex flex-wrap gap-1 mt-1">${badges}</div>` : ''}</div><div class="flex gap-3 shrink-0"><button type="button" class="text-xs text-sky-400" onclick="editHypothesis(${Number(h.id)})">Изменить</button><button type="button" class="text-xs text-red-400" onclick="deleteHypothesis(${Number(h.id)})">Удалить</button></div></div>
+    <div class="grid grid-cols-2 gap-2 text-xs">
+      <div class="rounded-lg border border-sky-800/60 bg-sky-950/20 p-2"><div class="text-[10px] text-sky-300 uppercase">🚀 Срок запуска</div><div class="text-white font-semibold">${escapeHtml(h.start_date || '—')}</div></div>
+      <div class="rounded-lg border border-sky-800/60 bg-sky-950/20 p-2"><div class="text-[10px] text-sky-300 uppercase">🏁 Срок окончания</div><div class="text-white font-semibold">${escapeHtml(h.end_date || '—')}${days > 0 ? ` <span class="text-slate-400 font-normal">(${days} дн.)</span>` : ''}</div></div>
+    </div>
     <p class="text-sm text-slate-300">${escapeHtml(h.description || '')}</p>
     <div class="grid grid-cols-2 md:grid-cols-5 gap-2 text-xs">
       <div class="relation-chip"><div class="label">Выборка</div><div class="value">${Math.ceil(Number(h.sample_size || 0)).toLocaleString('ru-RU')}</div></div>
-      <div class="relation-chip"><div class="label">Трафик</div><div class="value">${Math.ceil(Number(h.traffic_volume || 0)).toLocaleString('ru-RU')}</div></div>
+      <div class="relation-chip"><div class="label">Визиты</div><div class="value">${Math.ceil(visits).toLocaleString('ru-RU')}</div></div>
       <div class="relation-chip"><div class="label">Заявки</div><div class="value">${Math.ceil(Number(h.leads_volume || 0)).toLocaleString('ru-RU')}</div></div>
       <div class="relation-chip"><div class="label">Апрувы</div><div class="value">${Math.ceil(Number(h.approvals_volume || 0)).toLocaleString('ru-RU')}</div></div>
-      <div class="relation-chip"><div class="label">Ценность</div><div class="value">${Math.round(Number(h.expected_value || 0)).toLocaleString('ru-RU')} ₽</div></div>
+      <div class="relation-chip"><div class="label">Выручка</div><div class="value">${Math.round(Number(h.expected_value || 0)).toLocaleString('ru-RU')} ₽</div></div>
     </div>
-    <div class="text-xs text-slate-400">CR: ${pct(h.base_cr)} → ${pct(h.expected_cr)} · AR: ${pct(h.approve_rate)} · 1 approve: ${Math.round(Number(h.approve_value || 0)).toLocaleString('ru-RU')} ₽</div>
+    <div class="text-xs text-slate-400">${crLine}</div>
     ${h.levers ? `<div class="text-xs text-slate-300"><b>Рычаги:</b> ${escapeHtml(h.levers)}</div>` : ''}
-  </article>`).join('');
+  </article>`;
+  }).join('');
 }
 async function saveHypothesisMonth() {
   const month = document.getElementById('hypNewMonth')?.value || '';
@@ -8981,21 +9100,54 @@ async function saveHypothesisMonth() {
   await renderHypothesesTab();
 }
 function resetHypothesisForm() {
-  for (const id of ['hypId','hypTitle','hypDescription','hypGoal','hypPlannedResult','hypLevers']) { const el = document.getElementById(id); if (el) el.value = ''; }
+  for (const id of ['hypId','hypTitle','hypDescription','hypGoal','hypPlannedResult','hypLevers','hypManualSample',
+                    'hypCrVisitExpected','hypCrLeadExpected','hypCrApproveExpected','hypRevenueExpected']) {
+    const el = document.getElementById(id); if (el) el.value = '';
+  }
+  for (const id of ['hypImpactVisit','hypImpactLead','hypImpactApprove','hypImpactRevenue']) {
+    const el = document.getElementById(id); if (el) el.checked = false;
+  }
   const today = new Date().toISOString().slice(0,10);
   const start = document.getElementById('hypStart'); const end = document.getElementById('hypEnd');
   if (start && !start.value) start.value = today;
   if (end && !end.value) end.value = today;
   const f = hypothesisFunnelSnapshot();
-  const baseCr = f.traffic ? f.leads / f.traffic * 100 : 2;
-  const ar = f.leads ? f.approvals / f.leads * 100 : 30;
-  const avgValue = f.approvals ? (sumLeadRows(globalRawData || []).revenue / f.approvals) : 1000;
-  document.getElementById('hypBaseCr').value = baseCr.toFixed(2);
-  document.getElementById('hypExpectedCr').value = (baseCr * 1.2).toFixed(2);
-  document.getElementById('hypApproveRate').value = ar.toFixed(2);
-  document.getElementById('hypApproveValue').value = Math.round(avgValue || 0);
+  const t = sumLeadRows(globalRawData || []);
+  const crVisit = f.impressions ? f.traffic / f.impressions * 100 : 5;
+  const crLead = f.traffic ? f.leads / f.traffic * 100 : 2;
+  const crApprove = f.leads ? f.approvals / f.leads * 100 : 30;
+  const avgValue = f.approvals ? (t.revenue / f.approvals) : 1000;
+  document.getElementById('hypCrVisitBase').value = crVisit.toFixed(2);
+  document.getElementById('hypCrLeadBase').value = crLead.toFixed(2);
+  document.getElementById('hypCrApproveBase').value = crApprove.toFixed(2);
+  document.getElementById('hypRevenueBase').value = Math.round(avgValue || 0);
   const m = document.getElementById('hypMonth'); if (m) m.value = document.getElementById('hypMonthFilter')?.value || currentMonthKey();
-  renderHypothesisCalc();
+  toggleHypImpact();
+}
+function editHypothesis(id) {
+  const h = hypothesesState.items.find(x => Number(x.id) === Number(id));
+  if (!h) return;
+  const set = (elId, v) => { const el = document.getElementById(elId); if (el) el.value = v ?? ''; };
+  set('hypId', Number(h.id));
+  set('hypTitle', h.title); set('hypDescription', h.description); set('hypGoal', h.goal);
+  set('hypPlannedResult', h.planned_result); set('hypLevers', h.levers);
+  set('hypStart', h.start_date); set('hypEnd', h.end_date);
+  const m = document.getElementById('hypMonth'); if (m && h.month_key) m.value = h.month_key;
+  const p = v => (Number(v || 0) * 100).toFixed(2);
+  set('hypCrVisitBase', p(h.cr_visit_base));
+  set('hypCrLeadBase', p(h.cr_lead_base ?? h.base_cr));
+  set('hypCrApproveBase', p(h.cr_approve_base ?? h.approve_rate));
+  set('hypRevenueBase', Math.round(Number(h.revenue_base ?? h.approve_value ?? 0)));
+  set('hypManualSample', Number(h.manual_sample || 0) > 0 ? Math.round(Number(h.manual_sample)) : '');
+  const impacts = Array.isArray(h.impacts) ? h.impacts : [];
+  const cbMap = { visit: 'hypImpactVisit', lead: 'hypImpactLead', approve: 'hypImpactApprove', revenue: 'hypImpactRevenue' };
+  for (const k of Object.keys(cbMap)) { const el = document.getElementById(cbMap[k]); if (el) el.checked = impacts.includes(k); }
+  set('hypCrVisitExpected', impacts.includes('visit') ? p(h.cr_visit_expected) : '');
+  set('hypCrLeadExpected', impacts.includes('lead') ? p(h.cr_lead_expected ?? h.expected_cr) : '');
+  set('hypCrApproveExpected', impacts.includes('approve') ? p(h.cr_approve_expected) : '');
+  set('hypRevenueExpected', impacts.includes('revenue') ? Math.round(Number(h.revenue_expected || 0)) : '');
+  toggleHypImpact();
+  document.getElementById('hypothesisForm')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 async function saveHypothesis(ev) {
   if (ev) ev.preventDefault();
@@ -9012,6 +9164,8 @@ async function saveHypothesis(ev) {
     levers: document.getElementById('hypLevers')?.value || '',
   });
   if (!payload.title) return alert('Заполните название гипотезы');
+  if (!payload.start_date || !payload.end_date) return alert('Укажите срок запуска и срок окончания гипотезы');
+  if (payload.end_date < payload.start_date) return alert('Срок окончания не может быть раньше срока запуска');
   const j = await fetchJsonSafe(buildApiUrl({ action: 'hypothesis_save' }), { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
   if (j.status !== 'success') return alert('Ошибка сохранения: ' + (j.error || 'unknown'));
   const msg = document.getElementById('hypMessage'); if (msg) { msg.textContent = 'Гипотеза сохранена'; msg.className = 'text-sm text-emerald-400'; setTimeout(() => msg.classList.add('hidden'), 3000); }
