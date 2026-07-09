@@ -10,6 +10,18 @@ ini_set('display_errors', 0); // не показываем ошибки в JSON,
 ini_set('log_errors', 1);
 ini_set('error_log', __DIR__ . '/php_errors.log');
 
+// CLI mode for cron_update.php: allow `php leads-proxy.php "action=..."`
+// to run one proxy action in an isolated child process.
+if (PHP_SAPI === 'cli') {
+    $_SERVER['REQUEST_METHOD'] = $_SERVER['REQUEST_METHOD'] ?? 'GET';
+    if (isset($argv[1]) && is_string($argv[1]) && $argv[1] !== '') {
+        parse_str($argv[1], $cliParams);
+        if (is_array($cliParams)) {
+            $_GET = array_merge($_GET, $cliParams);
+        }
+    }
+}
+
 header('Content-Type: application/json; charset=utf-8');
 header('Access-Control-Allow-Origin: *');
 header('Access-Control-Allow-Methods: GET, POST, OPTIONS');
@@ -884,6 +896,39 @@ try {
         updated_at INTEGER NOT NULL DEFAULT 0
     )');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_channel_source_map_channel ON channel_source_map(channel)');
+
+    // Гипотезы роста: хранятся на сервере/хостинге вместе с расчетной
+    // оцифровкой, периодом и месяцем фильтрации.
+    $safeExec('CREATE TABLE IF NOT EXISTS hypothesis_months (
+        month_key TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        created_at INTEGER NOT NULL DEFAULT 0
+    )');
+    $safeExec('CREATE TABLE IF NOT EXISTS hypotheses (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        month_key TEXT NOT NULL,
+        title TEXT NOT NULL,
+        description TEXT,
+        goal TEXT,
+        planned_result TEXT,
+        start_date TEXT,
+        end_date TEXT,
+        base_cr REAL NOT NULL DEFAULT 0,
+        expected_cr REAL NOT NULL DEFAULT 0,
+        approve_rate REAL NOT NULL DEFAULT 0,
+        approve_value REAL NOT NULL DEFAULT 0,
+        levers TEXT,
+        sample_size REAL NOT NULL DEFAULT 0,
+        traffic_volume REAL NOT NULL DEFAULT 0,
+        leads_volume REAL NOT NULL DEFAULT 0,
+        approvals_volume REAL NOT NULL DEFAULT 0,
+        expected_value REAL NOT NULL DEFAULT 0,
+        funnel_json TEXT,
+        created_at INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL DEFAULT 0
+    )');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_hypotheses_month ON hypotheses(month_key)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_hypotheses_period ON hypotheses(start_date, end_date)');
 
     // Кэш результатов глубокого AI-анализа. Ключ — диапазон дат `from|to`,
     // чтобы при перезагрузке страницы пользователь видел тот же отчёт без
@@ -5635,6 +5680,124 @@ if ($action === 'save_settings') {
 }
 
 // ============================================================================
+// CRUD вкладки «Гипотезы».
+// ============================================================================
+
+if ($action === 'hypothesis_months_list') {
+    $months = [];
+    $res = @$db->query("SELECT month_key, title FROM hypothesis_months ORDER BY month_key DESC");
+    if ($res instanceof SQLite3Result) {
+        while ($r = $res->fetchArray(SQLITE3_ASSOC)) $months[$r['month_key']] = $r;
+    }
+    $res = @$db->query("SELECT DISTINCT month_key FROM hypotheses WHERE month_key != '' ORDER BY month_key DESC");
+    if ($res instanceof SQLite3Result) {
+        while ($r = $res->fetchArray(SQLITE3_ASSOC)) {
+            $mk = (string)$r['month_key'];
+            if ($mk !== '' && !isset($months[$mk])) $months[$mk] = ['month_key' => $mk, 'title' => $mk];
+        }
+    }
+    krsort($months);
+    echo json_encode(['status' => 'success', 'data' => array_values($months)], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+if ($action === 'hypothesis_month_save') {
+    $input = json_decode(file_get_contents('php://input'), true) ?: [];
+    $month = trim((string)($input['month_key'] ?? ''));
+    $title = trim((string)($input['title'] ?? ''));
+    if (!preg_match('/^\d{4}-\d{2}$/', $month)) { echo json_encode(['status'=>'error','error'=>'month_key required YYYY-MM']); exit; }
+    if ($title === '') $title = $month;
+    $stmt = $db->prepare('INSERT INTO hypothesis_months (month_key, title, created_at)
+        VALUES (:m, :t, :ts)
+        ON CONFLICT(month_key) DO UPDATE SET title = excluded.title');
+    $stmt->bindValue(':m', $month, SQLITE3_TEXT);
+    $stmt->bindValue(':t', $title, SQLITE3_TEXT);
+    $stmt->bindValue(':ts', time(), SQLITE3_INTEGER);
+    $stmt->execute();
+    echo json_encode(['status' => 'success']);
+    exit;
+}
+
+if ($action === 'hypotheses_list') {
+    $month = trim((string)($_GET['month_key'] ?? ''));
+    if ($month !== '') {
+        $stmt = $db->prepare('SELECT * FROM hypotheses WHERE month_key = :m ORDER BY start_date DESC, id DESC');
+        $stmt->bindValue(':m', $month, SQLITE3_TEXT);
+        $res = $stmt->execute();
+    } else {
+        $res = @$db->query('SELECT * FROM hypotheses ORDER BY start_date DESC, id DESC LIMIT 500');
+    }
+    $rows = [];
+    if ($res instanceof SQLite3Result) {
+        while ($r = $res->fetchArray(SQLITE3_ASSOC)) {
+            $r['funnel'] = json_decode((string)($r['funnel_json'] ?? ''), true) ?: [];
+            unset($r['funnel_json']);
+            $rows[] = $r;
+        }
+    }
+    echo json_encode(['status' => 'success', 'data' => $rows], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+if ($action === 'hypothesis_save') {
+    $input = json_decode(file_get_contents('php://input'), true) ?: [];
+    $id = (int)($input['id'] ?? 0);
+    $month = trim((string)($input['month_key'] ?? ''));
+    $title = trim((string)($input['title'] ?? ''));
+    if (!preg_match('/^\d{4}-\d{2}$/', $month)) { echo json_encode(['status'=>'error','error'=>'month_key required YYYY-MM']); exit; }
+    if ($title === '') { echo json_encode(['status'=>'error','error'=>'title required']); exit; }
+    $start = substr(trim((string)($input['start_date'] ?? '')), 0, 10);
+    $end   = substr(trim((string)($input['end_date'] ?? '')), 0, 10);
+    $now = time();
+    $bind = function($stmt) use ($input, $month, $title, $start, $end, $now) {
+        $stmt->bindValue(':m', $month, SQLITE3_TEXT);
+        $stmt->bindValue(':title', $title, SQLITE3_TEXT);
+        $stmt->bindValue(':description', (string)($input['description'] ?? ''), SQLITE3_TEXT);
+        $stmt->bindValue(':goal', (string)($input['goal'] ?? ''), SQLITE3_TEXT);
+        $stmt->bindValue(':planned_result', (string)($input['planned_result'] ?? ''), SQLITE3_TEXT);
+        $stmt->bindValue(':start_date', $start, SQLITE3_TEXT);
+        $stmt->bindValue(':end_date', $end, SQLITE3_TEXT);
+        foreach (['base_cr','expected_cr','approve_rate','approve_value','sample_size','traffic_volume','leads_volume','approvals_volume','expected_value'] as $k) {
+            $stmt->bindValue(':' . $k, (float)($input[$k] ?? 0), SQLITE3_FLOAT);
+        }
+        $stmt->bindValue(':levers', (string)($input['levers'] ?? ''), SQLITE3_TEXT);
+        $stmt->bindValue(':funnel_json', json_encode($input['funnel'] ?? [], JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
+        $stmt->bindValue(':updated_at', $now, SQLITE3_INTEGER);
+    };
+    if ($id > 0) {
+        $stmt = $db->prepare('UPDATE hypotheses SET month_key=:m,title=:title,description=:description,goal=:goal,planned_result=:planned_result,
+            start_date=:start_date,end_date=:end_date,base_cr=:base_cr,expected_cr=:expected_cr,approve_rate=:approve_rate,
+            approve_value=:approve_value,levers=:levers,sample_size=:sample_size,traffic_volume=:traffic_volume,
+            leads_volume=:leads_volume,approvals_volume=:approvals_volume,expected_value=:expected_value,funnel_json=:funnel_json,
+            updated_at=:updated_at WHERE id=:id');
+        $bind($stmt);
+        $stmt->bindValue(':id', $id, SQLITE3_INTEGER);
+        $stmt->execute();
+    } else {
+        $stmt = $db->prepare('INSERT INTO hypotheses (month_key,title,description,goal,planned_result,start_date,end_date,base_cr,expected_cr,approve_rate,
+            approve_value,levers,sample_size,traffic_volume,leads_volume,approvals_volume,expected_value,funnel_json,created_at,updated_at)
+            VALUES (:m,:title,:description,:goal,:planned_result,:start_date,:end_date,:base_cr,:expected_cr,:approve_rate,
+            :approve_value,:levers,:sample_size,:traffic_volume,:leads_volume,:approvals_volume,:expected_value,:funnel_json,:created_at,:updated_at)');
+        $bind($stmt);
+        $stmt->bindValue(':created_at', $now, SQLITE3_INTEGER);
+        $stmt->execute();
+        $id = (int)$db->lastInsertRowID();
+    }
+    echo json_encode(['status' => 'success', 'id' => $id], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+if ($action === 'hypothesis_delete') {
+    $id = (int)($_GET['id'] ?? 0);
+    if ($id <= 0) { echo json_encode(['status'=>'error','error'=>'id required']); exit; }
+    $stmt = $db->prepare('DELETE FROM hypotheses WHERE id = :id');
+    $stmt->bindValue(':id', $id, SQLITE3_INTEGER);
+    $stmt->execute();
+    echo json_encode(['status' => 'success', 'deleted' => $db->changes()]);
+    exit;
+}
+
+// ============================================================================
 // Дашборд монетизации отказного трафика — backend-stubs (PR 1 каркаса).
 // Все четыре эндпоинта возвращают корректно типизированный «пустой» каркас
 // данных + флаг stub:true и список pending_sources. Это позволяет FE рендерить
@@ -5665,14 +5828,15 @@ function cjmSegments() {
     ];
 }
 
-/** Канонические шаги воронки CJM (1..5) с зонами ответственности. */
+/** Канонические шаги воронки CJM (1..6) с зонами ответственности. */
 function rejectFunnelSteps() {
     return [
         ['step' => 1, 'label' => 'Показ баннера',                'zone' => 'internal', 'source' => 'ya_metrika',  'note' => 'Погрешность данных Яндекс.Метрики ~5%'],
-        ['step' => 2, 'label' => 'Клик по баннеру / витрина',    'zone' => 'internal', 'source' => 'ya_metrika',  'note' => ''],
-        ['step' => 3, 'label' => 'Клик по офферу партнёра',      'zone' => 'internal', 'source' => 'leads_su',    'note' => ''],
-        ['step' => 4, 'label' => 'Заявка на стороне МФО',        'zone' => 'external', 'source' => 'cpa_postback','note' => ''],
-        ['step' => 5, 'label' => 'Одобренная заявка (Approve)',  'zone' => 'external', 'source' => 'cpa_postback','note' => 'Точка монетизации'],
+        ['step' => 2, 'label' => 'Количество отказов',           'zone' => 'internal', 'source' => 'bounce_stats', 'note' => 'Отдельная метрика отказов; не равна показам баннера'],
+        ['step' => 3, 'label' => 'Клик по баннеру / витрина',    'zone' => 'internal', 'source' => 'ya_metrika',  'note' => ''],
+        ['step' => 4, 'label' => 'Клик по офферу партнёра',      'zone' => 'internal', 'source' => 'leads_su',    'note' => ''],
+        ['step' => 5, 'label' => 'Заявка на стороне МФО',        'zone' => 'external', 'source' => 'cpa_postback','note' => ''],
+        ['step' => 6, 'label' => 'Одобренная заявка (Approve)',  'zone' => 'external', 'source' => 'cpa_postback','note' => 'Точка монетизации'],
     ];
 }
 
@@ -5760,16 +5924,18 @@ function ymFetchAndCacheBannerData($db, $startDay, $endDay) {
 /**
  * Возвращает агрегаты воронки за период:
  *   [step => total, history => [date => [step => value]]]
- * Шаги 1-2 — banner_impressions_cache (Я.Метрика).
- * Шаги 3-5 — daily_stats (clicks / conversions / approved).
+ * Шаг 1 — banner_impressions_cache.impressions (Я.Метрика).
+ * Шаг 2 — bounce_stats.bounces (отдельные отказы).
+ * Шаг 3 — banner_impressions_cache.clicks (Я.Метрика).
+ * Шаги 4-6 — daily_stats (clicks / conversions / approved).
  */
 function buildFunnelAggregates($db, $startDate, $endDate) {
     $dFrom = substr($startDate, 0, 10);
     $dTo   = substr($endDate, 0, 10);
-    $totals = [1 => 0, 2 => 0, 3 => 0, 4 => 0, 5 => 0];
+    $totals = [1 => 0, 2 => 0, 3 => 0, 4 => 0, 5 => 0, 6 => 0];
     $history = [];
 
-    // --- Я.Метрика: показы (1) и клики (2)
+    // --- Я.Метрика: показы (1) и клики по баннеру (3)
     $stmt = $db->prepare("SELECT date,
             SUM(impressions) AS imp,
             SUM(clicks)      AS clk
@@ -5781,14 +5947,29 @@ function buildFunnelAggregates($db, $startDate, $endDate) {
     $res = $stmt->execute();
     while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
         $d = $row['date'];
-        $history[$d] = $history[$d] ?? [1 => 0, 2 => 0, 3 => 0, 4 => 0, 5 => 0];
+        $history[$d] = $history[$d] ?? [1 => 0, 2 => 0, 3 => 0, 4 => 0, 5 => 0, 6 => 0];
         $history[$d][1] += (int)$row['imp'];
-        $history[$d][2] += (int)$row['clk'];
+        $history[$d][3] += (int)$row['clk'];
         $totals[1] += (int)$row['imp'];
-        $totals[2] += (int)$row['clk'];
+        $totals[3] += (int)$row['clk'];
     }
 
-    // --- leads.su daily_stats: клики (3), конверсии (4), approve (5)
+    // --- Отказы (2): отдельная метрика, не равная показам баннера
+    $stmt = $db->prepare("SELECT date, SUM(bounces) AS bounces
+        FROM bounce_stats
+        WHERE date BETWEEN :a AND :b
+        GROUP BY date");
+    $stmt->bindValue(':a', $dFrom, SQLITE3_TEXT);
+    $stmt->bindValue(':b', $dTo,   SQLITE3_TEXT);
+    $res = $stmt->execute();
+    while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
+        $d = $row['date'];
+        $history[$d] = $history[$d] ?? [1 => 0, 2 => 0, 3 => 0, 4 => 0, 5 => 0, 6 => 0];
+        $history[$d][2] += (int)$row['bounces'];
+        $totals[2] += (int)$row['bounces'];
+    }
+
+    // --- leads.su daily_stats: клики (4), конверсии (5), approve (6)
     // Считаем по уникальным кликам (clicks) — единая база для EPC и воронки.
     $stmt = $db->prepare("SELECT date,
             SUM(clicks)      AS step3,
@@ -5802,13 +5983,13 @@ function buildFunnelAggregates($db, $startDate, $endDate) {
     $res = $stmt->execute();
     while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
         $d = $row['date'];
-        $history[$d] = $history[$d] ?? [1 => 0, 2 => 0, 3 => 0, 4 => 0, 5 => 0];
-        $history[$d][3] += (int)$row['step3'];
-        $history[$d][4] += (int)$row['step4'];
-        $history[$d][5] += (int)$row['step5'];
-        $totals[3] += (int)$row['step3'];
-        $totals[4] += (int)$row['step4'];
-        $totals[5] += (int)$row['step5'];
+        $history[$d] = $history[$d] ?? [1 => 0, 2 => 0, 3 => 0, 4 => 0, 5 => 0, 6 => 0];
+        $history[$d][4] += (int)$row['step3'];
+        $history[$d][5] += (int)$row['step4'];
+        $history[$d][6] += (int)$row['step5'];
+        $totals[4] += (int)$row['step3'];
+        $totals[5] += (int)$row['step4'];
+        $totals[6] += (int)$row['step5'];
     }
     ksort($history);
     return ['totals' => $totals, 'history' => $history];
@@ -6085,7 +6266,7 @@ if ($action === 'funnel_history') {
     $historyArr = [];
     foreach ($history as $date => $byStep) {
         $row = ['date' => $date];
-        for ($i = 1; $i <= 5; $i++) $row['step' . $i] = (int)($byStep[$i] ?? 0);
+        for ($i = 1; $i <= 6; $i++) $row['step' . $i] = (int)($byStep[$i] ?? 0);
         $historyArr[] = $row;
     }
 
@@ -6115,7 +6296,7 @@ if ($action === 'conversion_dynamics') {
     $series = [];
     foreach ($agg['history'] as $date => $byStep) {
         $imp = (int)($byStep[1] ?? 0);
-        $app = (int)($byStep[5] ?? 0);
+        $app = (int)($byStep[6] ?? 0);
         if ($imp <= 0) continue; // без показов конверсия не определена
         $conv = $app / $imp * 100;
         $anomaly = $conv < $benchmark * (1 - $dropThreshold);

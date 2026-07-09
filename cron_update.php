@@ -14,149 +14,83 @@ $proxyUrl = (php_sapi_name() === 'cli')
     ? 'http://localhost' . dirname($_SERVER['SCRIPT_NAME'] ?? '') . '/leads-proxy.php'
     : '';
 
-// При CLI-запуске вызываем leads-proxy.php напрямую через include
+// При CLI-запуске выполняем каждый action leads-proxy.php в отдельном PHP-процессе.
+// Важно: leads-proxy.php завершает обработчик через exit; include в одном процессе
+// останавливал cron после первого update_stats, и Яндекс/прочие шаги не доходили.
 if (php_sapi_name() === 'cli') {
-    // Глобальный lock: тот же файл, что и в leads-proxy.php (см.
-    // leadsApiAcquireLock / leadsApiLockFile). Если параллельный процесс
-    // (другой крон / тяжёлый refresh из UI) уже синхронизируется с leads.su —
-    // выходим, чтобы не дублировать запросы и не словить 429.
     $lockFp = @fopen(__DIR__ . '/leads_api_lock.txt', 'c');
     if (!$lockFp || !@flock($lockFp, LOCK_EX | LOCK_NB)) {
         if ($lockFp) fclose($lockFp);
-        file_put_contents(__DIR__ . '/cron.log',
-            date('Y-m-d H:i:s') . " [CLI] Process locked, exiting\n", FILE_APPEND);
+        file_put_contents(__DIR__ . '/cron.log', date('Y-m-d H:i:s') . " [CLI] Process locked, exiting\n", FILE_APPEND);
         echo "Process locked, exiting\n";
         exit(0);
     }
     @ftruncate($lockFp, 0);
     @fwrite($lockFp, (string)getmypid() . "\n" . date('c') . "\n");
     @fflush($lockFp);
-    // Помечаем глобально: leadsApiAcquireLock() в leads-proxy.php увидит флаг
-    // и не будет пытаться повторно взять flock на тот же файл из этого же
-    // процесса (иначе include вернёт {"status":"locked"} и крон ничего не
-    // сделает).
-    $GLOBALS['LEADS_API_LOCK_HELD'] = true;
-    // Lock снимется автоматически при выходе скрипта. Не закрываем $lockFp
-    // вручную, чтобы flock держал блокировку до конца cron-итерации.
 
-    // Окно: "вчера 00:00" → "сейчас 23:59:59" — последние 4 дня плюс текущий.
-    // ВАЖНО: end_date в API leads.su эксклюзивен по умолчанию. Если передать
-    // голый Y-m-d, текущий день обрезается. Поэтому формируем явное время:
-    // start = "Y-m-d 00:00:00", end = "Y-m-d 23:59:59".
     $endDay = date('Y-m-d');
     $startDay = date('Y-m-d', strtotime('-3 days'));
     $startDate = "{$startDay} 00:00:00";
     $endDate   = "{$endDay} 23:59:59";
 
-    // 1. Обновление статистики Leads.su
-    $_GET['action'] = 'update_stats';
-    $_GET['start_date'] = $startDate;
-    $_GET['end_date'] = $endDate;
-    $_GET['method'] = 'reports/summary';
-    $_GET['grouping'] = 'day';
-    $_GET['field'] = 'offer_id,source,aff_sub1';
-    $_SERVER['REQUEST_METHOD'] = 'GET';
+    $runProxyAction = function (array $params, string $label, int $timeout = 900) {
+        $query = http_build_query($params, '', '&', PHP_QUERY_RFC3986);
+        $cmd = escapeshellcmd(PHP_BINARY) . ' ' . escapeshellarg(__DIR__ . '/leads-proxy.php') . ' ' . escapeshellarg($query);
+        $descriptors = [
+            1 => ['pipe', 'w'],
+            2 => ['pipe', 'w'],
+        ];
+        $proc = @proc_open($cmd, $descriptors, $pipes, __DIR__);
+        if (!is_resource($proc)) {
+            $line = date('Y-m-d H:i:s') . " [CLI] {$label}: failed to start\n";
+            file_put_contents(__DIR__ . '/cron.log', $line, FILE_APPEND);
+            echo $line;
+            return false;
+        }
+        foreach ($pipes as $pipe) stream_set_blocking($pipe, false);
+        $out = '';
+        $err = '';
+        $started = time();
+        while (true) {
+            $status = proc_get_status($proc);
+            $out .= stream_get_contents($pipes[1]);
+            $err .= stream_get_contents($pipes[2]);
+            if (!$status['running']) break;
+            if ((time() - $started) > $timeout) {
+                proc_terminate($proc);
+                $err .= "\nTIMEOUT after {$timeout}s";
+                break;
+            }
+            usleep(200000);
+        }
+        $out .= stream_get_contents($pipes[1]);
+        $err .= stream_get_contents($pipes[2]);
+        foreach ($pipes as $pipe) fclose($pipe);
+        $code = proc_close($proc);
+        $line = date('Y-m-d H:i:s') . " [CLI] {$label}: exit={$code}; " . trim($out ?: $err) . "\n";
+        if ($err && $out) $line .= date('Y-m-d H:i:s') . " [CLI] {$label} stderr: " . trim($err) . "\n";
+        file_put_contents(__DIR__ . '/cron.log', $line, FILE_APPEND);
+        echo $line;
+        return $code === 0;
+    };
 
-    ob_start();
-    include __DIR__ . '/leads-proxy.php';
-    $response = ob_get_clean();
+    $runProxyAction([
+        'action' => 'update_stats',
+        'start_date' => $startDate,
+        'end_date' => $endDate,
+        'method' => 'reports/summary',
+        'grouping' => 'day',
+        'field' => 'offer_id,source,aff_sub1',
+    ], "Leads.su {$startDate} → {$endDate}");
 
-    $logMessage = date('Y-m-d H:i:s') . " [CLI] Leads.su {$startDate} → {$endDate}: {$response}\n";
-    file_put_contents(__DIR__ . '/cron.log', $logMessage, FILE_APPEND);
-    echo $logMessage;
-
-    // 2. Обновление данных Яндекс.Метрики (баннерная статистика).
-    // YM ждёт даты вида YYYY-MM-DD без времени и обе границы инклюзивны,
-    // поэтому передаём только даты.
-    $_GET['action'] = 'ym_fetch_banner';
-    $_GET['start_date'] = $startDay;
-    $_GET['end_date'] = $endDay;
-    unset($_GET['token'], $_GET['method'], $_GET['grouping'], $_GET['field']);
-
-    ob_start();
-    include __DIR__ . '/leads-proxy.php';
-    $ymResponse = ob_get_clean();
-
-    $ymLogMessage = date('Y-m-d H:i:s') . " [CLI] YM Banner {$startDay} → {$endDay}: {$ymResponse}\n";
-    file_put_contents(__DIR__ . '/cron.log', $ymLogMessage, FILE_APPEND);
-    echo $ymLogMessage;
-
-    // 2b. Кэш Я.Метрики для воронки CJM (banner_impressions_cache).
-    // Используется dashboard-эндпоинтами funnel_history / conversion_dynamics —
-    // отдельный кэш, чтобы скорость отрисовки воронки не зависела от живого API.
-    $_GET = [];
-    $_GET['action'] = 'ym_cache_banner';
-    $_GET['start_date'] = $startDay;
-    $_GET['end_date']   = $endDay;
-
-    ob_start();
-    include __DIR__ . '/leads-proxy.php';
-    $ymCacheResponse = ob_get_clean();
-    file_put_contents(__DIR__ . '/cron.log',
-        date('Y-m-d H:i:s') . " [CLI] YM Cache {$startDay} → {$endDay}: {$ymCacheResponse}\n", FILE_APPEND);
-    echo "YM Cache: {$ymCacheResponse}\n";
-
-    // 2c. Ретроспективный пересчёт когорт CJM (dormant/24m).
-    $_GET = [];
-    $_GET['action'] = 'client_journey_recompute';
-
-    ob_start();
-    include __DIR__ . '/leads-proxy.php';
-    $cjmResponse = ob_get_clean();
-    file_put_contents(__DIR__ . '/cron.log',
-        date('Y-m-d H:i:s') . " [CLI] CJM recompute: {$cjmResponse}\n", FILE_APPEND);
-    echo "CJM recompute: {$cjmResponse}\n";
-
-    // 3. Обновление кэша офферов с рыночными показателями (раз в час достаточно).
-    $_GET = [];
-    $_GET['action'] = 'fetch_offers_market';
-
-    ob_start();
-    include __DIR__ . '/leads-proxy.php';
-    $offersResponse = ob_get_clean();
-
-    $offersLogMessage = date('Y-m-d H:i:s') . " [CLI] Offers market: {$offersResponse}\n";
-    file_put_contents(__DIR__ . '/cron.log', $offersLogMessage, FILE_APPEND);
-    echo $offersLogMessage;
-
-    // 4. Подтянуть журнал событий (новые офферы, остановки, изменение выплат).
-    $_GET = [];
-    $_GET['action'] = 'fetch_notifications';
-
-    ob_start();
-    include __DIR__ . '/leads-proxy.php';
-    $notifResponse = ob_get_clean();
-
-    file_put_contents(__DIR__ . '/cron.log',
-        date('Y-m-d H:i:s') . " [CLI] Notifications: {$notifResponse}\n", FILE_APPEND);
-    echo "Notifications: {$notifResponse}\n";
-
-    // 5. Проверить пороги для Telegram-уведомлений.
-    $_GET = [];
-    $_GET['action'] = 'tg_check_alerts';
-
-    ob_start();
-    include __DIR__ . '/leads-proxy.php';
-    $alertsResponse = ob_get_clean();
-
-    file_put_contents(__DIR__ . '/cron.log',
-        date('Y-m-d H:i:s') . " [CLI] TG alerts: {$alertsResponse}\n", FILE_APPEND);
-    echo "TG alerts: {$alertsResponse}\n";
-
-    // 6. Бэктест точности AI-прогнозов. Идемпотентен — для каждой пары
-    // (baseline_date, horizon) считается ровно один раз. Безопасно
-    // запускать каждый час: если горизонт ещё не истёк, строка не
-    // создаётся; после истечения мы получаем MAPE по revenue/clicks/EPC.
-    $_GET = [];
-    $_GET['action'] = 'ai_backtest_run';
-
-    ob_start();
-    include __DIR__ . '/leads-proxy.php';
-    $backtestResponse = ob_get_clean();
-
-    file_put_contents(__DIR__ . '/cron.log',
-        date('Y-m-d H:i:s') . " [CLI] AI backtest: {$backtestResponse}\n", FILE_APPEND);
-    echo "AI backtest: {$backtestResponse}\n";
+    $runProxyAction(['action' => 'ym_fetch_banner', 'start_date' => $startDay, 'end_date' => $endDay], "YM Banner {$startDay} → {$endDay}");
+    $runProxyAction(['action' => 'ym_cache_banner', 'start_date' => $startDay, 'end_date' => $endDay], "YM Cache {$startDay} → {$endDay}");
+    $runProxyAction(['action' => 'client_journey_recompute'], 'CJM recompute');
+    $runProxyAction(['action' => 'fetch_offers_market'], 'Offers market');
+    $runProxyAction(['action' => 'fetch_notifications'], 'Notifications');
+    $runProxyAction(['action' => 'tg_check_alerts'], 'TG alerts');
+    $runProxyAction(['action' => 'ai_backtest_run'], 'AI backtest');
 
     exit;
 }

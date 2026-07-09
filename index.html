@@ -1123,6 +1123,7 @@
     <button class="tab-btn" data-tab="compare" onclick="switchTab('compare')">Сравнение</button>
     <button class="tab-btn" data-tab="banner" onclick="switchTab('banner')">Баннер</button>
     <button class="tab-btn" data-tab="reject-mon" onclick="switchTab('reject-mon')">Планирование</button>
+    <button class="tab-btn" data-tab="hypotheses" onclick="switchTab('hypotheses')">Гипотезы</button>
     <button class="tab-btn" data-tab="ai" onclick="switchTab('ai')">AI-аналитика<span id="aiKeyIndicator" class="tab-dot off" title="Статус AI-ключа неизвестен">●</span></button>
     <button class="tab-btn" data-tab="events" onclick="switchTab('events')">События<span id="eventsUnreadBadge" class="tab-badge hidden">0</span></button>
   </div>
@@ -1690,6 +1691,51 @@
     </div>
 
     <!-- SUB-TAB 3 (Unit Economics by CJM) removed by request -->
+  </div>
+
+  <!-- TAB: HYPOTHESES -->
+  <div id="tab-hypotheses" class="tab-content space-y-6">
+    <div class="card">
+      <div class="flex flex-wrap gap-3 justify-between items-start mb-4">
+        <div>
+          <h2 class="text-white font-bold text-lg">Гипотезы роста</h2>
+          <p class="text-sm text-slate-400 mt-1">Сохраняются на хостинге. Оцифровка строится по текущей воронке и формуле размера выборки.</p>
+        </div>
+        <div class="flex flex-wrap gap-2 items-end">
+          <label class="block"><span class="block text-xs text-slate-400 mb-1">Месяц</span><select id="hypMonthFilter" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm" onchange="renderHypothesesTab()"></select></label>
+          <label class="block"><span class="block text-xs text-slate-400 mb-1">Добавить месяц</span><input id="hypNewMonth" type="month" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm"></label>
+          <button class="btn" type="button" onclick="saveHypothesisMonth()">+ Месяц</button>
+        </div>
+      </div>
+      <div id="hypothesisKpis" class="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4"></div>
+      <form id="hypothesisForm" class="space-y-4" onsubmit="saveHypothesis(event)">
+        <input id="hypId" type="hidden">
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <label class="block"><span class="block text-xs text-slate-400 mb-1">Название</span><input id="hypTitle" required class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm"></label>
+          <label class="block"><span class="block text-xs text-slate-400 mb-1">Период гипотезы</span><div class="grid grid-cols-2 gap-2"><input id="hypStart" type="date" class="bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm"><input id="hypEnd" type="date" class="bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm"></div></label>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <label class="block"><span class="block text-xs text-slate-400 mb-1">Описание</span><textarea id="hypDescription" rows="3" class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm"></textarea></label>
+          <label class="block"><span class="block text-xs text-slate-400 mb-1">Цель</span><textarea id="hypGoal" rows="3" class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm"></textarea></label>
+          <label class="block"><span class="block text-xs text-slate-400 mb-1">Планируемый результат</span><textarea id="hypPlannedResult" rows="3" class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm"></textarea></label>
+        </div>
+        <div class="grid grid-cols-2 md:grid-cols-5 gap-3">
+          <label><span class="block text-xs text-slate-400 mb-1">Базовая CR, %</span><input id="hypBaseCr" type="number" min="0" max="100" step="0.01" class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm" oninput="renderHypothesisCalc()"></label>
+          <label><span class="block text-xs text-slate-400 mb-1">Ожидаемая CR, %</span><input id="hypExpectedCr" type="number" min="0" max="100" step="0.01" class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm" oninput="renderHypothesisCalc()"></label>
+          <label><span class="block text-xs text-slate-400 mb-1">Approve rate, %</span><input id="hypApproveRate" type="number" min="0" max="100" step="0.01" class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm" oninput="renderHypothesisCalc()"></label>
+          <label><span class="block text-xs text-slate-400 mb-1">Ценность 1 approve, ₽</span><input id="hypApproveValue" type="number" min="0" step="100" class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm" oninput="renderHypothesisCalc()"></label>
+          <label><span class="block text-xs text-slate-400 mb-1">Месяц сохранения</span><select id="hypMonth" class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm"></select></label>
+        </div>
+        <label class="block"><span class="block text-xs text-slate-400 mb-1">Рычаги управления результатом</span><textarea id="hypLevers" rows="2" placeholder="Что меняем: оффер, баннер, размещение, сегмент, SMS, канал..." class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm"></textarea></label>
+        <div id="hypCalcBox" class="grid grid-cols-2 md:grid-cols-5 gap-3"></div>
+        <div class="flex flex-wrap gap-2 justify-end"><button class="btn" type="button" style="background:#475569" onclick="resetHypothesisForm()">Очистить</button><button class="btn" type="submit">Сохранить гипотезу</button></div>
+        <div id="hypMessage" class="text-sm hidden"></div>
+      </form>
+    </div>
+    <div class="card">
+      <div class="flex flex-wrap gap-3 justify-between items-center mb-4"><h3 class="text-white font-semibold">Список гипотез</h3><span id="hypCount" class="text-xs text-slate-400"></span></div>
+      <div id="hypList" class="grid grid-cols-1 xl:grid-cols-2 gap-4"></div>
+    </div>
   </div>
 
   <!-- TAB: AI ANALYTICS (issue 7) -->
@@ -2513,6 +2559,9 @@ function switchTab(tabName) {
   // при открытии вкладки (фильтры/период могли измениться).
   if (tabName === 'reject-mon') {
     try { rejectMonState.cache = { channels: null, funnel: null, dynamics: null }; renderRejectActiveSub(); } catch (_) {}
+  }
+  if (tabName === 'hypotheses') {
+    try { renderHypothesesTab(); } catch (_) {}
   }
   setTimeout(() => window.dispatchEvent(new Event('resize')), 100);
 }
@@ -3424,16 +3473,19 @@ async function runAutoRefresh(force = false) {
   catch(e) { console.warn('[Auto-refresh] Notifications error:', e); }
   try { await fetchJsonSafe(buildApiUrl({ action: 'tg_check_alerts' })); }
   catch(e) { console.warn('[Auto-refresh] TG alerts error:', e); }
-  localStorage.setItem(LAST_REFRESH_KEY, String(Date.now()));
-  // Если loadFromAPI не сработал (сетевая ошибка/таймаут) — fallback:
-  // подтянуть как минимум сохранённый снапшот из БД и обновить дашборд.
-  if (!leadsOk) {
-    try { await autoLoadSavedStats(); } catch(e) { console.warn('[Auto-refresh] autoLoadSavedStats error:', e); }
+  try {
+    localStorage.setItem(LAST_REFRESH_KEY, String(Date.now()));
+    // Если loadFromAPI не сработал (сетевая ошибка/таймаут) — fallback:
+    // подтянуть как минимум сохранённый снапшот из БД и обновить дашборд.
+    if (!leadsOk) {
+      try { await autoLoadSavedStats(); } catch(e) { console.warn('[Auto-refresh] autoLoadSavedStats error:', e); }
+    }
+    updateNextRefreshTime();
+    updateHealthBadge();
+    console.log('[Auto-refresh] Готово.');
+  } finally {
+    autoRefreshInFlight = false;
   }
-  updateNextRefreshTime();
-  updateHealthBadge();
-  autoRefreshInFlight = false;
-  console.log('[Auto-refresh] Готово.');
 }
 
 function startAutoRefresh() {
@@ -3952,6 +4004,7 @@ async function applyGlobalFilters() {
   renderMarketTable();
   renderArMatrix();
   renderCompareTab();
+  renderHypothesesTab();
   renderAIInsights();
   // Тихо восстанавливаем сохранённый ранее AI-отчёт для текущего диапазона.
   // Не ждём результат — UI не должен блокироваться вспомогательным запросом.
@@ -4113,8 +4166,10 @@ function renderFunnel(data, sourceFilter = 'all') {
   const leadsClicks = (trueClicks !== null) ? trueClicks : t.clicks;
   const bannerImpressions = bannerData.reduce((s, d) => s + (Number(d.impressions) || 0), 0);
   const bannerClicks = bannerData.reduce((s, d) => s + (Number(d.clicks) || 0), 0);
+  const totalBounces = bouncesData.reduce((s, d) => s + (Number(d.bounces) || 0), 0);
   const stages = [
     { label: 'Показ баннера', value: bannerImpressions, hint: 'Яндекс.Метрика: целевые посетители цели показа' },
+    { label: 'Количество отказов', value: totalBounces, hint: 'Отдельная метрика отказов; не равна показам баннера и может быть больше' },
     { label: 'Клик по баннеру', value: bannerClicks, hint: 'Яндекс.Метрика: целевые посетители цели клика' },
     { label: 'Клик по Leads.su', value: leadsClicks },
     { label: 'Заявка в Leads.su', value: t.conversions },
@@ -8830,6 +8885,146 @@ function isoShift(iso, days) {
   return d.toISOString().slice(0, 10);
 }
 
+
+// ========================== ГИПОТЕЗЫ ==========================
+let hypothesesState = { months: [], items: [] };
+function currentMonthKey() { return new Date().toISOString().slice(0, 7); }
+function hypothesisFunnelSnapshot() {
+  const t = sumLeadRows(globalRawData || []);
+  const leadsClicks = trueUniqueClicksFor(globalRawData || []) ?? t.clicks;
+  const impressions = (bannerData || []).reduce((s, d) => s + (Number(d.impressions) || 0), 0);
+  const bannerClicks = (bannerData || []).reduce((s, d) => s + (Number(d.clicks) || 0), 0);
+  const bounces = (bouncesData || []).reduce((s, d) => s + (Number(d.bounces) || 0), 0);
+  return { impressions, bounces, banner_clicks: bannerClicks, traffic: leadsClicks, leads: t.conversions, approvals: t.approved };
+}
+function calcHypothesisNumbers() {
+  const p1 = Math.max(0, Number(document.getElementById('hypBaseCr')?.value || 0) / 100);
+  const p2 = Math.max(0, Number(document.getElementById('hypExpectedCr')?.value || 0) / 100);
+  const ar = Math.max(0, Number(document.getElementById('hypApproveRate')?.value || 0) / 100);
+  const approveValue = Math.max(0, Number(document.getElementById('hypApproveValue')?.value || 0));
+  const diff = Math.abs(p2 - p1);
+  const pbar = (p1 + p2) / 2;
+  const z = 1.96 + 0.84;
+  const sample = (diff > 0 && pbar > 0 && pbar < 1) ? (2 * pbar * (1 - pbar) * z * z) / (diff * diff) : 0;
+  const traffic = sample;
+  const leads = traffic * p2;
+  const approvals = leads * ar;
+  const expectedValue = approvals * approveValue;
+  return { base_cr: p1, expected_cr: p2, approve_rate: ar, approve_value: approveValue, sample_size: sample, traffic_volume: traffic, leads_volume: leads, approvals_volume: approvals, expected_value: expectedValue, funnel: hypothesisFunnelSnapshot() };
+}
+function renderHypothesisCalc() {
+  const box = document.getElementById('hypCalcBox');
+  if (!box) return;
+  const n = calcHypothesisNumbers();
+  const card = (label, val, suffix = '') => `<div class="rounded-xl border border-slate-700 bg-slate-900/40 p-3"><div class="text-[11px] text-slate-400 uppercase">${label}</div><div class="text-lg font-bold text-white mt-1">${val}${suffix}</div></div>`;
+  box.innerHTML = card('Выборка n', Math.ceil(n.sample_size).toLocaleString('ru-RU')) +
+    card('Объём трафика', Math.ceil(n.traffic_volume).toLocaleString('ru-RU')) +
+    card('Заявки', Math.ceil(n.leads_volume).toLocaleString('ru-RU')) +
+    card('Апрувы', Math.ceil(n.approvals_volume).toLocaleString('ru-RU')) +
+    card('Ценность', Math.round(n.expected_value).toLocaleString('ru-RU'), ' ₽');
+}
+function renderHypothesisKpis() {
+  const box = document.getElementById('hypothesisKpis');
+  if (!box) return;
+  const f = hypothesisFunnelSnapshot();
+  const conv = (a, b) => a > 0 ? (b / a * 100).toFixed(2) + '%' : '—';
+  const card = (label, val, sub = '') => `<div class="rounded-xl border border-slate-700 bg-slate-900/40 p-3"><div class="text-[11px] text-slate-400 uppercase">${label}</div><div class="text-lg font-bold text-white">${val}</div>${sub ? `<div class="text-[11px] text-slate-500">${sub}</div>` : ''}</div>`;
+  box.innerHTML = card('Показы', Math.round(f.impressions).toLocaleString('ru-RU')) +
+    card('Отказы', Math.round(f.bounces).toLocaleString('ru-RU'), 'отдельно от показов') +
+    card('Трафик', Math.round(f.traffic).toLocaleString('ru-RU'), `Показ → трафик: ${conv(f.impressions, f.traffic)}`) +
+    card('Заявки', Math.round(f.leads).toLocaleString('ru-RU'), `Трафик → заявка: ${conv(f.traffic, f.leads)}`) +
+    card('Апрувы', Math.round(f.approvals).toLocaleString('ru-RU'), `Заявка → approve: ${conv(f.leads, f.approvals)}`);
+}
+async function loadHypothesisMonths() {
+  const j = await fetchJsonSafe(buildApiUrl({ action: 'hypothesis_months_list' }));
+  let months = (j.status === 'success' && Array.isArray(j.data)) ? j.data : [];
+  const cur = currentMonthKey();
+  if (!months.some(m => m.month_key === cur)) months.unshift({ month_key: cur, title: cur });
+  hypothesesState.months = months;
+  for (const id of ['hypMonthFilter', 'hypMonth']) {
+    const sel = document.getElementById(id); if (!sel) continue;
+    const old = sel.value || cur;
+    sel.innerHTML = months.map(m => `<option value="${escapeHtml(m.month_key)}">${escapeHtml(m.title || m.month_key)}</option>`).join('');
+    sel.value = months.some(m => m.month_key === old) ? old : cur;
+  }
+}
+async function renderHypothesesTab() {
+  if (!document.getElementById('tab-hypotheses')) return;
+  renderHypothesisKpis();
+  await loadHypothesisMonths();
+  renderHypothesisCalc();
+  const month = document.getElementById('hypMonthFilter')?.value || currentMonthKey();
+  const j = await fetchJsonSafe(buildApiUrl({ action: 'hypotheses_list', month_key: month }));
+  hypothesesState.items = (j.status === 'success' && Array.isArray(j.data)) ? j.data : [];
+  const cnt = document.getElementById('hypCount'); if (cnt) cnt.textContent = `${hypothesesState.items.length} шт.`;
+  const list = document.getElementById('hypList'); if (!list) return;
+  if (!hypothesesState.items.length) { list.innerHTML = '<p class="text-sm text-slate-500">В этом месяце гипотез пока нет.</p>'; return; }
+  const pct = v => (Number(v || 0) * 100).toFixed(2) + '%';
+  list.innerHTML = hypothesesState.items.map(h => `<article class="rounded-2xl border border-slate-700 bg-slate-900/30 p-4 space-y-3">
+    <div class="flex justify-between gap-3"><div><h4 class="text-white font-semibold">${escapeHtml(h.title)}</h4><div class="text-xs text-slate-500">${escapeHtml(h.start_date || '—')} → ${escapeHtml(h.end_date || '—')} · ${escapeHtml(h.month_key || '')}</div></div><button type="button" class="text-xs text-red-400" onclick="deleteHypothesis(${Number(h.id)})">Удалить</button></div>
+    <p class="text-sm text-slate-300">${escapeHtml(h.description || '')}</p>
+    <div class="grid grid-cols-2 md:grid-cols-5 gap-2 text-xs">
+      <div class="relation-chip"><div class="label">Выборка</div><div class="value">${Math.ceil(Number(h.sample_size || 0)).toLocaleString('ru-RU')}</div></div>
+      <div class="relation-chip"><div class="label">Трафик</div><div class="value">${Math.ceil(Number(h.traffic_volume || 0)).toLocaleString('ru-RU')}</div></div>
+      <div class="relation-chip"><div class="label">Заявки</div><div class="value">${Math.ceil(Number(h.leads_volume || 0)).toLocaleString('ru-RU')}</div></div>
+      <div class="relation-chip"><div class="label">Апрувы</div><div class="value">${Math.ceil(Number(h.approvals_volume || 0)).toLocaleString('ru-RU')}</div></div>
+      <div class="relation-chip"><div class="label">Ценность</div><div class="value">${Math.round(Number(h.expected_value || 0)).toLocaleString('ru-RU')} ₽</div></div>
+    </div>
+    <div class="text-xs text-slate-400">CR: ${pct(h.base_cr)} → ${pct(h.expected_cr)} · AR: ${pct(h.approve_rate)} · 1 approve: ${Math.round(Number(h.approve_value || 0)).toLocaleString('ru-RU')} ₽</div>
+    ${h.levers ? `<div class="text-xs text-slate-300"><b>Рычаги:</b> ${escapeHtml(h.levers)}</div>` : ''}
+  </article>`).join('');
+}
+async function saveHypothesisMonth() {
+  const month = document.getElementById('hypNewMonth')?.value || '';
+  if (!month) return alert('Выберите месяц');
+  await fetchJsonSafe(buildApiUrl({ action: 'hypothesis_month_save' }), { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ month_key: month, title: month }) });
+  await renderHypothesesTab();
+}
+function resetHypothesisForm() {
+  for (const id of ['hypId','hypTitle','hypDescription','hypGoal','hypPlannedResult','hypLevers']) { const el = document.getElementById(id); if (el) el.value = ''; }
+  const today = new Date().toISOString().slice(0,10);
+  const start = document.getElementById('hypStart'); const end = document.getElementById('hypEnd');
+  if (start && !start.value) start.value = today;
+  if (end && !end.value) end.value = today;
+  const f = hypothesisFunnelSnapshot();
+  const baseCr = f.traffic ? f.leads / f.traffic * 100 : 2;
+  const ar = f.leads ? f.approvals / f.leads * 100 : 30;
+  const avgValue = f.approvals ? (sumLeadRows(globalRawData || []).revenue / f.approvals) : 1000;
+  document.getElementById('hypBaseCr').value = baseCr.toFixed(2);
+  document.getElementById('hypExpectedCr').value = (baseCr * 1.2).toFixed(2);
+  document.getElementById('hypApproveRate').value = ar.toFixed(2);
+  document.getElementById('hypApproveValue').value = Math.round(avgValue || 0);
+  const m = document.getElementById('hypMonth'); if (m) m.value = document.getElementById('hypMonthFilter')?.value || currentMonthKey();
+  renderHypothesisCalc();
+}
+async function saveHypothesis(ev) {
+  if (ev) ev.preventDefault();
+  const n = calcHypothesisNumbers();
+  const payload = Object.assign(n, {
+    id: Number(document.getElementById('hypId')?.value || 0),
+    month_key: document.getElementById('hypMonth')?.value || currentMonthKey(),
+    title: document.getElementById('hypTitle')?.value.trim() || '',
+    description: document.getElementById('hypDescription')?.value || '',
+    goal: document.getElementById('hypGoal')?.value || '',
+    planned_result: document.getElementById('hypPlannedResult')?.value || '',
+    start_date: document.getElementById('hypStart')?.value || '',
+    end_date: document.getElementById('hypEnd')?.value || '',
+    levers: document.getElementById('hypLevers')?.value || '',
+  });
+  if (!payload.title) return alert('Заполните название гипотезы');
+  const j = await fetchJsonSafe(buildApiUrl({ action: 'hypothesis_save' }), { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+  if (j.status !== 'success') return alert('Ошибка сохранения: ' + (j.error || 'unknown'));
+  const msg = document.getElementById('hypMessage'); if (msg) { msg.textContent = 'Гипотеза сохранена'; msg.className = 'text-sm text-emerald-400'; setTimeout(() => msg.classList.add('hidden'), 3000); }
+  document.getElementById('hypMonthFilter').value = payload.month_key;
+  resetHypothesisForm();
+  await renderHypothesesTab();
+}
+async function deleteHypothesis(id) {
+  if (!id || !confirm('Удалить гипотезу?')) return;
+  await fetchJsonSafe(buildApiUrl({ action: 'hypothesis_delete', id }));
+  await renderHypothesesTab();
+}
+
 // ========================== ЖУРНАЛ СОБЫТИЙ ==========================
 async function loadEventsLog() {
   try {
@@ -9434,6 +9629,7 @@ window.addEventListener('DOMContentLoaded', () => {
   checkYMConnection();
   loadTgSettings();
   loadEventsLog();
+  try { resetHypothesisForm(); } catch (e) {}
   updateAiKeyIndicator();
   updateHealthBadge();
   // «Обновлено N минут назад» — обновляем метку раз в минуту.
