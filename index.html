@@ -1756,7 +1756,11 @@
             </div>
             <div class="rounded-lg border border-slate-700 bg-slate-800/50 p-3">
               <label class="flex items-center gap-2 text-sm text-white mb-2"><input id="hypImpactRevenue" type="checkbox" onchange="toggleHypImpact()"> Влияние на выручку</label>
-              <label><span class="block text-xs text-slate-400 mb-1">Ожидаемая ценность 1 апрува, ₽</span><input id="hypRevenueExpected" type="number" min="0" step="100" disabled class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm disabled:opacity-40" oninput="renderHypothesisCalc()"></label>
+              <div class="grid grid-cols-2 gap-2">
+                <label><span class="block text-xs text-slate-400 mb-1">Выручка сейчас, ₽</span><input id="hypRevenueTotalBase" type="number" min="0" step="100" class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm" oninput="renderHypothesisCalc()"></label>
+                <label><span class="block text-xs text-slate-400 mb-1">Целевая выручка, ₽</span><input id="hypRevenueTotalExpected" type="number" min="0" step="100" disabled class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm disabled:opacity-40" oninput="renderHypothesisCalc()"></label>
+              </div>
+              <p class="text-[10px] text-slate-500 mt-1">Общая выручка: было → станет. Выборка считается от требуемого прироста.</p>
             </div>
           </div>
         </div>
@@ -8946,7 +8950,7 @@ function toggleHypImpact() {
     ['hypImpactVisit', 'hypCrVisitExpected', 'hypCrVisitBase'],
     ['hypImpactLead', 'hypCrLeadExpected', 'hypCrLeadBase'],
     ['hypImpactApprove', 'hypCrApproveExpected', 'hypCrApproveBase'],
-    ['hypImpactRevenue', 'hypRevenueExpected', 'hypRevenueBase'],
+    ['hypImpactRevenue', 'hypRevenueTotalExpected', 'hypRevenueTotalBase'],
   ];
   for (const [cb, exp, base] of pairs) {
     const on = document.getElementById(cb)?.checked;
@@ -8972,12 +8976,21 @@ function calcHypothesisNumbers() {
   const crVisit = impacts.includes('visit') ? hypPct('hypCrVisitExpected') : crVisitBase;
   const crLead = impacts.includes('lead') ? hypPct('hypCrLeadExpected') : crLeadBase;
   const crApprove = impacts.includes('approve') ? hypPct('hypCrApproveExpected') : crApproveBase;
-  const revenueValue = impacts.includes('revenue') ? hypNum('hypRevenueExpected') : revenueBase;
+  const revenueValue = revenueBase;
+  // Влияние на выручку: общая выручка «было → станет». Выборка считается от
+  // требуемого прироста через ожидаемую воронку и ценность 1 апрува.
+  const revenueTotalBase = hypNum('hypRevenueTotalBase');
+  const revenueTotalExpected = impacts.includes('revenue') ? hypNum('hypRevenueTotalExpected') : revenueTotalBase;
   // Выборка: max по всем затронутым конверсиям, пересчитанная в единицы выборки.
   let sample = 0;
   if (impacts.includes('visit')) sample = Math.max(sample, hypSampleForStage(crVisitBase, crVisit));
   if (impacts.includes('lead') && crVisitBase > 0) sample = Math.max(sample, hypSampleForStage(crLeadBase, crLead) / crVisitBase);
   if (impacts.includes('approve') && crVisitBase > 0 && crLeadBase > 0) sample = Math.max(sample, hypSampleForStage(crApproveBase, crApprove) / (crVisitBase * crLeadBase));
+  if (impacts.includes('revenue')) {
+    const deltaRevenue = Math.max(0, revenueTotalExpected - revenueTotalBase);
+    const perSampleRevenue = crVisit * crLead * crApprove * revenueValue; // выручка с 1 единицы выборки
+    if (deltaRevenue > 0 && perSampleRevenue > 0) sample = Math.max(sample, deltaRevenue / perSampleRevenue);
+  }
   const manualSample = hypNum('hypManualSample');
   if (manualSample > 0) sample = manualSample;
   const visits = sample * crVisit;
@@ -8990,6 +9003,7 @@ function calcHypothesisNumbers() {
     cr_lead_base: crLeadBase, cr_lead_expected: crLead,
     cr_approve_base: crApproveBase, cr_approve_expected: crApprove,
     revenue_base: revenueBase, revenue_expected: revenueValue,
+    revenue_total_base: revenueTotalBase, revenue_total_expected: revenueTotalExpected,
     manual_sample: manualSample,
     // Легаси-поля для совместимости со старой схемой/карточками.
     base_cr: crLeadBase, expected_cr: crLead, approve_rate: crApprove, approve_value: revenueValue,
@@ -9012,17 +9026,20 @@ function renderHypothesisCalc() {
   const durEl = document.getElementById('hypDurationHint');
   if (durEl) durEl.textContent = days > 0 ? `Длительность теста: ${days} дн.` : 'Укажите срок запуска и срок окончания';
   const card = (label, val, suffix = '') => `<div class="rounded-xl border border-slate-700 bg-slate-900/40 p-3"><div class="text-[11px] text-slate-400 uppercase">${label}</div><div class="text-lg font-bold text-white mt-1">${val}${suffix}</div></div>`;
+  const revCard = (n.impacts.includes('revenue') && n.revenue_total_expected > 0)
+    ? card('Выручка', `${Math.round(n.revenue_total_base).toLocaleString('ru-RU')} → ${Math.round(n.revenue_total_expected).toLocaleString('ru-RU')}`, ' ₽')
+    : card('Выручка', Math.round(n.expected_value).toLocaleString('ru-RU'), ' ₽');
   box.innerHTML = card('Выборка n', Math.ceil(n.sample_size).toLocaleString('ru-RU')) +
     card('Визиты', Math.ceil(n.visits_volume).toLocaleString('ru-RU')) +
     card('Заявки', Math.ceil(n.leads_volume).toLocaleString('ru-RU')) +
     card('Апрувы', Math.ceil(n.approvals_volume).toLocaleString('ru-RU')) +
-    card('Выручка', Math.round(n.expected_value).toLocaleString('ru-RU'), ' ₽') +
+    revCard +
     card('Визитов/день', days > 0 ? Math.ceil(n.visits_volume / days).toLocaleString('ru-RU') : '—');
   const hint = document.getElementById('hypCalcHint');
   if (hint) {
     if (!n.impacts.length && !(n.manual_sample > 0)) hint.textContent = 'Отметьте раздел влияния или задайте выборку вручную, чтобы получить прогноз.';
     else if (n.manual_sample > 0) hint.textContent = 'Выборка задана вручную.';
-    else hint.textContent = 'Выборка рассчитана по самой требовательной из выбранных конверсий (α=0.05, мощность 80%).';
+    else hint.textContent = 'Выборка рассчитана по самой требовательной из выбранных конверсий (α=0.05, мощность 80%) и требуемому приросту выручки.';
   }
 }
 function renderHypothesisKpis() {
@@ -9072,6 +9089,8 @@ async function renderHypothesesTab() {
       if (k === 'visit') return `Выборка→визит: ${pct(h.cr_visit_base)} → ${pct(h.cr_visit_expected)}`;
       if (k === 'lead') return `Визит→заявка: ${pct(h.cr_lead_base ?? h.base_cr)} → ${pct(h.cr_lead_expected ?? h.expected_cr)}`;
       if (k === 'approve') return `Заявка→апрув: ${pct(h.cr_approve_base ?? h.approve_rate)} → ${pct(h.cr_approve_expected)}`;
+      if (Number(h.revenue_total_expected || 0) > 0 || Number(h.revenue_total_base || 0) > 0)
+        return `Выручка: ${Math.round(Number(h.revenue_total_base || 0)).toLocaleString('ru-RU')} → ${Math.round(Number(h.revenue_total_expected || 0)).toLocaleString('ru-RU')} ₽`;
       return `Ценность апрува: ${Math.round(Number(h.revenue_base || h.approve_value || 0)).toLocaleString('ru-RU')} → ${Math.round(Number(h.revenue_expected || 0)).toLocaleString('ru-RU')} ₽`;
     }).join(' · ') || `CR: ${pct(h.base_cr)} → ${pct(h.expected_cr)} · AR: ${pct(h.approve_rate)} · 1 апрув: ${Math.round(Number(h.approve_value || 0)).toLocaleString('ru-RU')} ₽`;
     return `<article class="rounded-2xl border border-slate-700 bg-slate-900/30 p-4 space-y-3">
@@ -9101,7 +9120,7 @@ async function saveHypothesisMonth() {
 }
 function resetHypothesisForm() {
   for (const id of ['hypId','hypTitle','hypDescription','hypGoal','hypPlannedResult','hypLevers','hypManualSample',
-                    'hypCrVisitExpected','hypCrLeadExpected','hypCrApproveExpected','hypRevenueExpected']) {
+                    'hypCrVisitExpected','hypCrLeadExpected','hypCrApproveExpected','hypRevenueTotalExpected']) {
     const el = document.getElementById(id); if (el) el.value = '';
   }
   for (const id of ['hypImpactVisit','hypImpactLead','hypImpactApprove','hypImpactRevenue']) {
@@ -9121,6 +9140,7 @@ function resetHypothesisForm() {
   document.getElementById('hypCrLeadBase').value = crLead.toFixed(2);
   document.getElementById('hypCrApproveBase').value = crApprove.toFixed(2);
   document.getElementById('hypRevenueBase').value = Math.round(avgValue || 0);
+  document.getElementById('hypRevenueTotalBase').value = Math.round(t.revenue || 0);
   const m = document.getElementById('hypMonth'); if (m) m.value = document.getElementById('hypMonthFilter')?.value || currentMonthKey();
   toggleHypImpact();
 }
@@ -9138,6 +9158,7 @@ function editHypothesis(id) {
   set('hypCrLeadBase', p(h.cr_lead_base ?? h.base_cr));
   set('hypCrApproveBase', p(h.cr_approve_base ?? h.approve_rate));
   set('hypRevenueBase', Math.round(Number(h.revenue_base ?? h.approve_value ?? 0)));
+  set('hypRevenueTotalBase', Math.round(Number(h.revenue_total_base || 0)));
   set('hypManualSample', Number(h.manual_sample || 0) > 0 ? Math.round(Number(h.manual_sample)) : '');
   const impacts = Array.isArray(h.impacts) ? h.impacts : [];
   const cbMap = { visit: 'hypImpactVisit', lead: 'hypImpactLead', approve: 'hypImpactApprove', revenue: 'hypImpactRevenue' };
@@ -9145,7 +9166,7 @@ function editHypothesis(id) {
   set('hypCrVisitExpected', impacts.includes('visit') ? p(h.cr_visit_expected) : '');
   set('hypCrLeadExpected', impacts.includes('lead') ? p(h.cr_lead_expected ?? h.expected_cr) : '');
   set('hypCrApproveExpected', impacts.includes('approve') ? p(h.cr_approve_expected) : '');
-  set('hypRevenueExpected', impacts.includes('revenue') ? Math.round(Number(h.revenue_expected || 0)) : '');
+  set('hypRevenueTotalExpected', impacts.includes('revenue') ? Math.round(Number(h.revenue_total_expected || 0)) : '');
   toggleHypImpact();
   document.getElementById('hypothesisForm')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
