@@ -1063,8 +1063,16 @@
 
     /* ==================== ГИПОТЕЗЫ: трекер экспериментов ==================== */
     /* Широкое модальное окно */
+    #hypModal.modal-backdrop {
+      padding: 16px;
+      overflow-y: auto;
+    }
     .hyp-modal-box {
-      max-width: 820px; width: calc(100% - 32px); max-height: 92vh;
+      width: 100%;
+      max-width: 1120px;
+      max-height: calc(100vh - 32px);
+      box-sizing: border-box;
+      margin: auto;
       background: var(--surface-solid);
       border: 1px solid var(--border-strong);
       border-radius: var(--r-card);
