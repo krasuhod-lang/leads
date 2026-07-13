@@ -1057,6 +1057,88 @@
     }
     .series-toggle.off { opacity: .45; text-decoration: line-through; }
     .series-toggle.off .swatch { background: transparent !important; box-shadow: inset 0 0 0 1px currentColor; }
+
+    /* ==================== ГИПОТЕЗЫ: трекер экспериментов ==================== */
+    /* Широкое модальное окно */
+    .hyp-modal-box {
+      max-width: 820px; width: calc(100% - 32px); max-height: 92vh;
+      background: var(--surface-solid);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--r-card);
+      box-shadow: var(--shadow-pop);
+      display: flex; flex-direction: column;
+    }
+    /* Плавающая кнопка добавления */
+    #hypFab {
+      position: fixed; bottom: 28px; right: 28px; z-index: 900;
+      width: 52px; height: 52px; border-radius: 50%;
+      background: var(--accent);
+      color: #fff; font-size: 26px; font-weight: 300; line-height: 1;
+      border: none; cursor: pointer;
+      display: none; align-items: center; justify-content: center;
+      box-shadow: 0 4px 20px rgba(0,113,227,.45);
+      transition: background var(--t-fast) var(--ease-apple), transform var(--t-fast) var(--ease-apple);
+    }
+    #hypFab:hover { background: var(--accent-strong); transform: scale(1.07); }
+    .hyp-fab-visible { display: flex !important; }
+
+    /* Статусные бейджи */
+    .hyp-status {
+      display: inline-flex; align-items: center; gap: 5px;
+      padding: 3px 9px; border-radius: 980px; font-size: 11px; font-weight: 600;
+    }
+    .hyp-status-planning  { background: rgba(100,116,139,.18); color: #94a3b8; }
+    .hyp-status-in_progress { background: rgba(59,130,246,.16); color: #60a5fa; }
+    .hyp-status-success   { background: rgba(34,197,94,.14); color: #4ade80; }
+    .hyp-status-failed    { background: rgba(239,68,68,.14); color: #f87171; }
+    .hyp-status-paused    { background: rgba(234,179,8,.14); color: #facc15; }
+
+    /* Карточка гипотезы */
+    .hyp-card {
+      background: var(--surface-thin);
+      border: 1px solid var(--border);
+      border-radius: var(--r-card);
+      padding: 16px;
+      display: flex; flex-direction: column; gap: 10px;
+      transition: border-color var(--t-fast) var(--ease-apple);
+    }
+    .hyp-card:hover { border-color: var(--border-strong); }
+    .hyp-card.is-key {
+      border-left: 3px solid #22c55e;
+    }
+    /* Метрика внутри карточки */
+    .hyp-metric {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px; padding: 8px 10px;
+    }
+    .hyp-metric .label { font-size: 10px; color: var(--text-faint); text-transform: uppercase; letter-spacing: .05em; font-weight: 600; }
+    .hyp-metric .value { font-size: 14px; font-weight: 700; color: var(--text); margin-top: 2px; }
+    /* Фильтр-бар */
+    .hyp-filter-bar {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+    }
+    .hyp-filter-chip {
+      padding: 5px 13px; border-radius: 980px; font-size: 12px; font-weight: 500;
+      border: 1px solid var(--border); background: var(--surface-thin); color: var(--text-dim);
+      cursor: pointer; transition: border-color var(--t-fast), color var(--t-fast), background var(--t-fast);
+      white-space: nowrap;
+    }
+    .hyp-filter-chip:hover { border-color: var(--border-strong); color: var(--text); }
+    .hyp-filter-chip.active { background: var(--accent); color: #fff; border-color: transparent; }
+    /* Блок ROI в модалке */
+    .roi-display {
+      background: rgba(0,113,227,.08); border: 1px solid rgba(0,113,227,.25);
+      border-radius: 10px; padding: 10px 14px;
+      display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    }
+    .roi-display .roi-item { text-align: center; }
+    .roi-display .roi-label { font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: var(--text-dim); }
+    .roi-display .roi-val { font-size: 22px; font-weight: 700; color: var(--text); }
+    /* Лог заметок */
+    .hyp-note-entry { border-left: 2px solid var(--border-strong); padding-left: 10px; margin-bottom: 8px; }
+    .hyp-note-date  { font-size: 10px; color: var(--text-faint); }
+    .hyp-note-text  { font-size: 13px; color: var(--text); }
   </style>
 </head>
 <body>
@@ -1695,87 +1777,40 @@
 
   <!-- TAB: HYPOTHESES -->
   <div id="tab-hypotheses" class="tab-content space-y-6">
+    <!-- Заголовок вкладки -->
     <div class="card">
-      <div class="flex flex-wrap gap-3 justify-between items-start mb-4">
+      <div class="flex flex-wrap gap-3 justify-between items-center mb-4">
         <div>
           <h2 class="text-white font-bold text-lg">Гипотезы роста</h2>
-          <p class="text-sm text-slate-400 mt-1">Сохраняются на хостинге. Оцифровка строится по текущей воронке и формуле размера выборки.</p>
+          <p class="text-sm text-slate-400 mt-1">Трекер экспериментов: воронка, ROI, статусы, лог изменений.</p>
         </div>
         <div class="flex flex-wrap gap-2 items-end">
           <label class="block"><span class="block text-xs text-slate-400 mb-1">Месяц</span><select id="hypMonthFilter" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm" onchange="renderHypothesesTab()"></select></label>
           <label class="block"><span class="block text-xs text-slate-400 mb-1">Добавить месяц</span><input id="hypNewMonth" type="month" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm"></label>
           <button class="btn" type="button" onclick="saveHypothesisMonth()">+ Месяц</button>
+          <button class="btn" type="button" onclick="openHypModal()">+ Новая гипотеза</button>
         </div>
       </div>
+      <!-- KPI снимок воронки -->
       <div id="hypothesisKpis" class="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4"></div>
-      <form id="hypothesisForm" class="space-y-4" onsubmit="saveHypothesis(event)">
-        <input id="hypId" type="hidden">
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-          <label class="block"><span class="block text-xs text-slate-400 mb-1">Название</span><input id="hypTitle" required class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm"></label>
-          <label class="block"><span class="block text-xs text-slate-400 mb-1">Месяц сохранения</span><select id="hypMonth" class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm"></select></label>
-        </div>
-        <div class="rounded-xl border border-sky-800/60 bg-sky-950/20 p-3">
-          <div class="text-xs font-semibold text-sky-300 uppercase mb-2">Сроки гипотезы</div>
-          <div class="grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
-            <label class="block"><span class="block text-xs text-slate-400 mb-1">🚀 Срок запуска</span><input id="hypStart" type="date" class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm" onchange="renderHypothesisCalc()"></label>
-            <label class="block"><span class="block text-xs text-slate-400 mb-1">🏁 Срок окончания</span><input id="hypEnd" type="date" class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm" onchange="renderHypothesisCalc()"></label>
-            <div id="hypDurationHint" class="text-sm text-slate-300 pb-2">—</div>
-          </div>
-        </div>
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
-          <label class="block"><span class="block text-xs text-slate-400 mb-1">Описание</span><textarea id="hypDescription" rows="3" class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm"></textarea></label>
-          <label class="block"><span class="block text-xs text-slate-400 mb-1">Цель</span><textarea id="hypGoal" rows="3" class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm"></textarea></label>
-          <label class="block"><span class="block text-xs text-slate-400 mb-1">Планируемый результат</span><textarea id="hypPlannedResult" rows="3" class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm"></textarea></label>
-        </div>
-        <div class="rounded-xl border border-slate-700 bg-slate-900/40 p-3">
-          <div class="text-xs font-semibold text-slate-300 uppercase mb-1">Базовая воронка (задается вручную)</div>
-          <p class="text-[11px] text-slate-500 mb-2">Конверсии Выборка → Визит → Заявка → Апрув. Подставляются из текущих данных, но их можно править руками.</p>
-          <div class="grid grid-cols-2 md:grid-cols-5 gap-3">
-            <label><span class="block text-xs text-slate-400 mb-1">Выборка → визит, %</span><input id="hypCrVisitBase" type="number" min="0" max="100" step="0.01" class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm" oninput="renderHypothesisCalc()"></label>
-            <label><span class="block text-xs text-slate-400 mb-1">Визит → заявка, %</span><input id="hypCrLeadBase" type="number" min="0" max="100" step="0.01" class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm" oninput="renderHypothesisCalc()"></label>
-            <label><span class="block text-xs text-slate-400 mb-1">Заявка → апрув, %</span><input id="hypCrApproveBase" type="number" min="0" max="100" step="0.01" class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm" oninput="renderHypothesisCalc()"></label>
-            <label><span class="block text-xs text-slate-400 mb-1">Ценность 1 апрува, ₽</span><input id="hypRevenueBase" type="number" min="0" step="100" class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm" oninput="renderHypothesisCalc()"></label>
-            <label><span class="block text-xs text-slate-400 mb-1">Выборка вручную, шт</span><input id="hypManualSample" type="number" min="0" step="1" placeholder="авто" class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm" oninput="renderHypothesisCalc()"></label>
-          </div>
-        </div>
-        <div class="rounded-xl border border-slate-700 bg-slate-900/40 p-3">
-          <div class="text-xs font-semibold text-slate-300 uppercase mb-1">Разделы влияния гипотезы</div>
-          <p class="text-[11px] text-slate-500 mb-2">Отметьте, на что влияет гипотеза. Для выбранных разделов задайте ожидаемое значение — оно попадет в прогнозируемую выборку для тестирования.</p>
-          <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
-            <div class="rounded-lg border border-slate-700 bg-slate-800/50 p-3">
-              <label class="flex items-center gap-2 text-sm text-white mb-2"><input id="hypImpactVisit" type="checkbox" onchange="toggleHypImpact()"> Влияние на конверсию в визит</label>
-              <label><span class="block text-xs text-slate-400 mb-1">Ожидаемая выборка → визит, %</span><input id="hypCrVisitExpected" type="number" min="0" max="100" step="0.01" disabled class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm disabled:opacity-40" oninput="renderHypothesisCalc()"></label>
-            </div>
-            <div class="rounded-lg border border-slate-700 bg-slate-800/50 p-3">
-              <label class="flex items-center gap-2 text-sm text-white mb-2"><input id="hypImpactLead" type="checkbox" onchange="toggleHypImpact()"> Влияние на конверсию в заявку</label>
-              <label><span class="block text-xs text-slate-400 mb-1">Ожидаемая визит → заявка, %</span><input id="hypCrLeadExpected" type="number" min="0" max="100" step="0.01" disabled class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm disabled:opacity-40" oninput="renderHypothesisCalc()"></label>
-            </div>
-            <div class="rounded-lg border border-slate-700 bg-slate-800/50 p-3">
-              <label class="flex items-center gap-2 text-sm text-white mb-2"><input id="hypImpactApprove" type="checkbox" onchange="toggleHypImpact()"> Влияние на конверсию в апрув</label>
-              <label><span class="block text-xs text-slate-400 mb-1">Ожидаемая заявка → апрув, %</span><input id="hypCrApproveExpected" type="number" min="0" max="100" step="0.01" disabled class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm disabled:opacity-40" oninput="renderHypothesisCalc()"></label>
-            </div>
-            <div class="rounded-lg border border-slate-700 bg-slate-800/50 p-3">
-              <label class="flex items-center gap-2 text-sm text-white mb-2"><input id="hypImpactRevenue" type="checkbox" onchange="toggleHypImpact()"> Влияние на выручку</label>
-              <div class="grid grid-cols-2 gap-2">
-                <label><span class="block text-xs text-slate-400 mb-1">Выручка сейчас, ₽</span><input id="hypRevenueTotalBase" type="number" min="0" step="100" class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm" oninput="renderHypothesisCalc()"></label>
-                <label><span class="block text-xs text-slate-400 mb-1">Целевая выручка, ₽</span><input id="hypRevenueTotalExpected" type="number" min="0" step="100" disabled class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm disabled:opacity-40" oninput="renderHypothesisCalc()"></label>
-              </div>
-              <p class="text-[10px] text-slate-500 mt-1">Общая выручка: было → станет. Выборка считается от требуемого прироста.</p>
-            </div>
-          </div>
-        </div>
-        <label class="block"><span class="block text-xs text-slate-400 mb-1">Рычаги управления результатом</span><textarea id="hypLevers" rows="2" placeholder="Что меняем: оффер, баннер, размещение, сегмент, SMS, канал..." class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm"></textarea></label>
-        <div>
-          <div class="text-xs font-semibold text-slate-300 uppercase mb-2">Прогноз для тестирования</div>
-          <div id="hypCalcBox" class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3"></div>
-          <div id="hypCalcHint" class="text-[11px] text-slate-500 mt-2"></div>
-        </div>
-        <div class="flex flex-wrap gap-2 justify-end"><button class="btn" type="button" style="background:#475569" onclick="resetHypothesisForm()">Очистить</button><button class="btn" type="submit">Сохранить гипотезу</button></div>
-        <div id="hypMessage" class="text-sm hidden"></div>
-      </form>
+      <!-- Фильтр-бар -->
+      <div class="hyp-filter-bar mb-3" id="hypFilterBar">
+        <span class="text-xs text-slate-400 mr-1">Статус:</span>
+        <button class="hyp-filter-chip active" data-filter-status="" onclick="hypSetFilter('status','',this)">Все</button>
+        <button class="hyp-filter-chip" data-filter-status="planning" onclick="hypSetFilter('status','planning',this)">🕐 Планируется</button>
+        <button class="hyp-filter-chip" data-filter-status="in_progress" onclick="hypSetFilter('status','in_progress',this)">🔵 В работе</button>
+        <button class="hyp-filter-chip" data-filter-status="success" onclick="hypSetFilter('status','success',this)">✅ Успех</button>
+        <button class="hyp-filter-chip" data-filter-status="failed" onclick="hypSetFilter('status','failed',this)">❌ Провал</button>
+        <button class="hyp-filter-chip" data-filter-status="paused" onclick="hypSetFilter('status','paused',this)">⏸ Отложено</button>
+        <button class="hyp-filter-chip ml-3" id="hypKeyFilter" onclick="hypToggleKeyFilter(this)">🚀 Только ключевые</button>
+      </div>
     </div>
+    <!-- Список карточек -->
     <div class="card">
-      <div class="flex flex-wrap gap-3 justify-between items-center mb-4"><h3 class="text-white font-semibold">Список гипотез</h3><span id="hypCount" class="text-xs text-slate-400"></span></div>
+      <div class="flex justify-between items-center mb-4">
+        <h3 class="text-white font-semibold">Список гипотез</h3>
+        <span id="hypCount" class="text-xs text-slate-400"></span>
+      </div>
       <div id="hypList" class="grid grid-cols-1 xl:grid-cols-2 gap-4"></div>
     </div>
   </div>
@@ -2239,6 +2274,174 @@ CR_plan       = baseCR,   AR_plan = baseAR
   </div>
 </div>
 
+<!-- ==================== МОДАЛЬНОЕ ОКНО: ГИПОТЕЗА ==================== -->
+<div id="hypModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="hypModalTitle" onclick="hypModalBackdropClick(event)">
+  <div class="hyp-modal-box">
+    <header style="padding:14px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;flex-shrink:0;">
+      <div class="flex items-center gap-3 flex-wrap min-w-0">
+        <h3 id="hypModalTitle" style="color:var(--text);font-weight:600;font-size:16px;margin:0;">Новая гипотеза</h3>
+        <label class="flex items-center gap-1.5 cursor-pointer select-none">
+          <input type="checkbox" id="hypIsKey" class="accent-green-500 w-4 h-4">
+          <span class="text-sm text-green-400 font-medium">🚀 Ключевая</span>
+        </label>
+      </div>
+      <button type="button" class="close-x" onclick="closeHypModal()" aria-label="Закрыть">×</button>
+    </header>
+    <div class="modal-body" style="overflow-y:auto;flex:1 1 0;padding:18px;">
+      <input id="hypId" type="hidden">
+      <!-- Строка 1: название + месяц + статус -->
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
+        <div class="form-field md:col-span-1">
+          <label for="hypTitle">Название <span class="text-red-400">*</span></label>
+          <input id="hypTitle" type="text" required placeholder="Кратко: что тестируем">
+        </div>
+        <div class="form-field">
+          <label for="hypMonth">Месяц</label>
+          <select id="hypMonth"></select>
+        </div>
+        <div class="form-field">
+          <label for="hypStatus">Статус</label>
+          <select id="hypStatus">
+            <option value="planning">🕐 Планируется</option>
+            <option value="in_progress">🔵 В работе</option>
+            <option value="success">✅ Успех</option>
+            <option value="failed">❌ Провал</option>
+            <option value="paused">⏸ Отложено</option>
+          </select>
+        </div>
+      </div>
+      <!-- Строка 2: даты -->
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
+        <div class="form-field">
+          <label for="hypStart">🚀 Срок запуска</label>
+          <input id="hypStart" type="date" onchange="renderHypothesisCalc()">
+        </div>
+        <div class="form-field">
+          <label for="hypEnd">🏁 Срок окончания</label>
+          <input id="hypEnd" type="date" onchange="renderHypothesisCalc()">
+        </div>
+        <div class="form-field">
+          <label>&nbsp;</label>
+          <div id="hypDurationHint" class="text-sm" style="color:var(--text-dim);padding-top:6px;">—</div>
+        </div>
+      </div>
+      <!-- 2-колоночный макет: воронка | финансы + описание -->
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <!-- === Левая колонка: воронка === -->
+        <div>
+          <div class="text-xs font-semibold uppercase mb-2" style="color:var(--text-dim);letter-spacing:.05em;">Базовая воронка</div>
+          <p class="text-[11px] mb-3" style="color:var(--text-faint);">Выборка → Визит → Заявка → Апрув. Подставляются из текущих данных.</p>
+          <div class="grid grid-cols-2 gap-2 mb-3">
+            <div class="form-field"><label>Выборка → визит, %</label><input id="hypCrVisitBase" type="number" min="0" max="100" step="0.01" oninput="renderHypothesisCalc()"></div>
+            <div class="form-field"><label>Визит → заявка, %</label><input id="hypCrLeadBase" type="number" min="0" max="100" step="0.01" oninput="renderHypothesisCalc()"></div>
+            <div class="form-field"><label>Заявка → апрув, %</label><input id="hypCrApproveBase" type="number" min="0" max="100" step="0.01" oninput="renderHypothesisCalc()"></div>
+            <div class="form-field"><label>Ценность 1 апрува, ₽</label><input id="hypRevenueBase" type="number" min="0" step="100" oninput="renderHypothesisCalc()"></div>
+            <div class="form-field"><label>Выборка вручную</label><input id="hypManualSample" type="number" min="0" step="1" placeholder="авто" oninput="renderHypothesisCalc()"></div>
+          </div>
+          <div class="text-xs font-semibold uppercase mb-2 mt-3" style="color:var(--text-dim);letter-spacing:.05em;">Разделы влияния</div>
+          <div class="space-y-2">
+            <div class="rounded-lg p-2" style="border:1px solid var(--border);background:var(--surface-thin);">
+              <label class="flex items-center gap-2 text-sm mb-1"><input id="hypImpactVisit" type="checkbox" onchange="toggleHypImpact()"> Влияние на визит</label>
+              <input id="hypCrVisitExpected" type="number" min="0" max="100" step="0.01" disabled placeholder="Ожидаемый %, выборка→визит" class="w-full text-sm disabled:opacity-40" style="background:var(--surface-thin);border:1px solid var(--border-strong);border-radius:var(--r-chip);padding:6px 8px;color:var(--text);" oninput="renderHypothesisCalc()">
+            </div>
+            <div class="rounded-lg p-2" style="border:1px solid var(--border);background:var(--surface-thin);">
+              <label class="flex items-center gap-2 text-sm mb-1"><input id="hypImpactLead" type="checkbox" onchange="toggleHypImpact()"> Влияние на заявку</label>
+              <input id="hypCrLeadExpected" type="number" min="0" max="100" step="0.01" disabled placeholder="Ожидаемый %, визит→заявка" class="w-full text-sm disabled:opacity-40" style="background:var(--surface-thin);border:1px solid var(--border-strong);border-radius:var(--r-chip);padding:6px 8px;color:var(--text);" oninput="renderHypothesisCalc()">
+            </div>
+            <div class="rounded-lg p-2" style="border:1px solid var(--border);background:var(--surface-thin);">
+              <label class="flex items-center gap-2 text-sm mb-1"><input id="hypImpactApprove" type="checkbox" onchange="toggleHypImpact()"> Влияние на апрув</label>
+              <input id="hypCrApproveExpected" type="number" min="0" max="100" step="0.01" disabled placeholder="Ожидаемый %, заявка→апрув" class="w-full text-sm disabled:opacity-40" style="background:var(--surface-thin);border:1px solid var(--border-strong);border-radius:var(--r-chip);padding:6px 8px;color:var(--text);" oninput="renderHypothesisCalc()">
+            </div>
+            <div class="rounded-lg p-2" style="border:1px solid var(--border);background:var(--surface-thin);">
+              <label class="flex items-center gap-2 text-sm mb-1"><input id="hypImpactRevenue" type="checkbox" onchange="toggleHypImpact()"> Влияние на выручку</label>
+              <div class="grid grid-cols-2 gap-2 mt-1">
+                <input id="hypRevenueTotalBase" type="number" min="0" step="100" placeholder="Выручка сейчас, ₽" class="text-sm" style="background:var(--surface-thin);border:1px solid var(--border-strong);border-radius:var(--r-chip);padding:6px 8px;color:var(--text);" oninput="renderHypothesisCalc()">
+                <input id="hypRevenueTotalExpected" type="number" min="0" step="100" disabled placeholder="Целевая выручка, ₽" class="text-sm disabled:opacity-40" style="background:var(--surface-thin);border:1px solid var(--border-strong);border-radius:var(--r-chip);padding:6px 8px;color:var(--text);" oninput="renderHypothesisCalc()">
+              </div>
+            </div>
+          </div>
+          <!-- Прогноз -->
+          <div class="mt-4">
+            <div class="text-xs font-semibold uppercase mb-2" style="color:var(--text-dim);letter-spacing:.05em;">Прогноз</div>
+            <div id="hypCalcBox" class="grid grid-cols-3 gap-2"></div>
+            <div id="hypCalcHint" class="text-[11px] mt-2" style="color:var(--text-faint);"></div>
+          </div>
+        </div>
+        <!-- === Правая колонка: финансы + описание + лог === -->
+        <div class="space-y-4">
+          <div>
+            <div class="text-xs font-semibold uppercase mb-2" style="color:var(--text-dim);letter-spacing:.05em;">Финансовый блок (ROI)</div>
+            <div class="grid grid-cols-2 gap-2 mb-3">
+              <div class="form-field"><label>Текущая выручка, ₽</label><input id="hypRevenueFinBase" type="number" min="0" step="100" oninput="renderHypRoi()"></div>
+              <div class="form-field"><label>Расходы источника, ₽</label><input id="hypExpensesBase" type="number" min="0" step="100" oninput="renderHypRoi()"></div>
+              <div class="form-field"><label>Бюджет на тест, ₽</label><input id="hypTestingCost" type="number" min="0" step="100" oninput="renderHypRoi()"></div>
+            </div>
+            <div id="hypRoiDisplay" class="roi-display hidden">
+              <div class="roi-item"><div class="roi-label">Текущий ROI</div><div class="roi-val" id="hypRoiBase">—</div></div>
+              <div class="text-2xl" style="color:var(--text-dim);">→</div>
+              <div class="roi-item"><div class="roi-label">Ожидаемый ROI</div><div class="roi-val" id="hypRoiExpected">—</div></div>
+            </div>
+          </div>
+          <div class="form-field">
+            <label>Описание / суть гипотезы</label>
+            <textarea id="hypDescription" rows="3" placeholder="Что именно и почему тестируем..."></textarea>
+          </div>
+          <div class="form-field">
+            <label>Цель</label>
+            <textarea id="hypGoal" rows="2" placeholder="Чего хотим достичь..."></textarea>
+          </div>
+          <div class="form-field">
+            <label>Планируемый результат</label>
+            <textarea id="hypPlannedResult" rows="2" placeholder="Метрика успеха..."></textarea>
+          </div>
+          <div class="form-field">
+            <label>Рычаги управления</label>
+            <textarea id="hypLevers" rows="2" placeholder="Оффер, баннер, сегмент, канал..."></textarea>
+          </div>
+          <!-- Дневник теста -->
+          <div>
+            <div class="text-xs font-semibold uppercase mb-2" style="color:var(--text-dim);letter-spacing:.05em;">📓 Дневник теста</div>
+            <div id="hypNotesLog" class="mb-2 space-y-1 max-h-32 overflow-y-auto"></div>
+            <div class="flex gap-2">
+              <input id="hypNewNoteText" type="text" placeholder="Добавить запись в лог..." class="flex-1 text-sm" style="background:var(--surface-thin);border:1px solid var(--border-strong);border-radius:var(--r-chip);padding:6px 10px;color:var(--text);">
+              <button type="button" class="btn" style="padding:6px 12px;font-size:12px;" onclick="hypAddNoteInline()">Добавить</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer" style="flex-shrink:0;">
+      <button type="button" class="btn" style="background:transparent;border:1px solid var(--border-strong);color:var(--text-dim);" onclick="closeHypModal()">Отмена</button>
+      <button type="button" class="btn" onclick="saveHypothesis()">Сохранить</button>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== МОДАЛЬНОЕ ОКНО: БЫСТРАЯ ЗАМЕТКА ==================== -->
+<div id="hypNoteModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="hypNoteModalTitle">
+  <div class="modal-box">
+    <header>
+      <h3 id="hypNoteModalTitle">Добавить запись в дневник</h3>
+      <button type="button" class="close-x" onclick="closeHypNoteModal()" aria-label="Закрыть">×</button>
+    </header>
+    <div class="modal-body">
+      <input id="hypNoteTargetId" type="hidden">
+      <div class="form-field">
+        <label for="hypNoteText">Текст записи</label>
+        <textarea id="hypNoteText" rows="3" placeholder="Что произошло? Промежуточные итоги, перенос сроков, изменения..."></textarea>
+      </div>
+      <p id="hypNoteError" class="text-xs mt-1 hidden" style="color:var(--bad);"></p>
+    </div>
+    <div class="modal-footer">
+      <button type="button" class="btn" style="background:transparent;border:1px solid var(--border-strong);color:var(--text-dim);" onclick="closeHypNoteModal()">Отмена</button>
+      <button type="button" class="btn" onclick="saveHypNote()">Добавить</button>
+    </div>
+  </div>
+</div>
+
+<!-- Плавающая кнопка «+ Новая гипотеза» -->
+<button id="hypFab" type="button" onclick="openHypModal()" title="Новая гипотеза">+</button>
+
 <script>
 // ========================== ТЕМА (Apple light/dark) ==========================
 const THEME_KEY = 'leadsTheme';
@@ -2605,6 +2808,9 @@ function switchTab(tabName) {
   if (tabName === 'hypotheses') {
     try { renderHypothesesTab(); } catch (_) {}
   }
+  // FAB видна только на вкладке гипотез
+  const fab = document.getElementById('hypFab');
+  if (fab) fab.classList.toggle('hyp-fab-visible', tabName === 'hypotheses');
   setTimeout(() => window.dispatchEvent(new Event('resize')), 100);
 }
 
@@ -8929,7 +9135,7 @@ function isoShift(iso, days) {
 
 
 // ========================== ГИПОТЕЗЫ ==========================
-let hypothesesState = { months: [], items: [] };
+let hypothesesState = { months: [], items: [], filterStatus: '', filterKey: false, pendingNotes: [] };
 function currentMonthKey() { return new Date().toISOString().slice(0, 7); }
 function hypothesisFunnelSnapshot() {
   const t = sumLeadRows(globalRawData || []);
@@ -8967,6 +9173,11 @@ function hypSampleForStage(p1, p2) {
   const z = 1.96 + 0.84;
   return (diff > 0 && pbar > 0 && pbar < 1) ? (2 * pbar * (1 - pbar) * z * z) / (diff * diff) : 0;
 }
+function calcRoi(revenue, expenses) {
+  // ROI = (выручка - расходы) / расходы × 100%. При расходах = 0 → null.
+  if (!expenses || expenses <= 0) return null;
+  return ((revenue - expenses) / expenses) * 100;
+}
 function calcHypothesisNumbers() {
   const impacts = hypSelectedImpacts();
   const crVisitBase = hypPct('hypCrVisitBase');
@@ -8977,18 +9188,15 @@ function calcHypothesisNumbers() {
   const crLead = impacts.includes('lead') ? hypPct('hypCrLeadExpected') : crLeadBase;
   const crApprove = impacts.includes('approve') ? hypPct('hypCrApproveExpected') : crApproveBase;
   const revenueValue = revenueBase;
-  // Влияние на выручку: общая выручка «было → станет». Выборка считается от
-  // требуемого прироста через ожидаемую воронку и ценность 1 апрува.
   const revenueTotalBase = hypNum('hypRevenueTotalBase');
   const revenueTotalExpected = impacts.includes('revenue') ? hypNum('hypRevenueTotalExpected') : revenueTotalBase;
-  // Выборка: max по всем затронутым конверсиям, пересчитанная в единицы выборки.
   let sample = 0;
   if (impacts.includes('visit')) sample = Math.max(sample, hypSampleForStage(crVisitBase, crVisit));
   if (impacts.includes('lead') && crVisitBase > 0) sample = Math.max(sample, hypSampleForStage(crLeadBase, crLead) / crVisitBase);
   if (impacts.includes('approve') && crVisitBase > 0 && crLeadBase > 0) sample = Math.max(sample, hypSampleForStage(crApproveBase, crApprove) / (crVisitBase * crLeadBase));
   if (impacts.includes('revenue')) {
     const deltaRevenue = Math.max(0, revenueTotalExpected - revenueTotalBase);
-    const perSampleRevenue = crVisit * crLead * crApprove * revenueValue; // выручка с 1 единицы выборки
+    const perSampleRevenue = crVisit * crLead * crApprove * revenueValue;
     if (deltaRevenue > 0 && perSampleRevenue > 0) sample = Math.max(sample, deltaRevenue / perSampleRevenue);
   }
   const manualSample = hypNum('hypManualSample');
@@ -8997,6 +9205,12 @@ function calcHypothesisNumbers() {
   const leads = visits * crLead;
   const approvals = leads * crApprove;
   const expectedValue = approvals * revenueValue;
+  // ROI из финансового блока
+  const expensesBase = hypNum('hypExpensesBase');
+  const testingCost = hypNum('hypTestingCost');
+  const revenueFinBase = hypNum('hypRevenueFinBase');
+  const roiBase = calcRoi(revenueFinBase, expensesBase);
+  const roiExpected = calcRoi(revenueTotalExpected || revenueFinBase, expensesBase + testingCost);
   return {
     impacts,
     cr_visit_base: crVisitBase, cr_visit_expected: crVisit,
@@ -9005,6 +9219,8 @@ function calcHypothesisNumbers() {
     revenue_base: revenueBase, revenue_expected: revenueValue,
     revenue_total_base: revenueTotalBase, revenue_total_expected: revenueTotalExpected,
     manual_sample: manualSample,
+    expenses_base: expensesBase, testing_cost: testingCost,
+    roi_base: roiBase ?? 0, roi_expected: roiExpected ?? 0,
     // Легаси-поля для совместимости со старой схемой/карточками.
     base_cr: crLeadBase, expected_cr: crLead, approve_rate: crApprove, approve_value: revenueValue,
     sample_size: sample, traffic_volume: visits, visits_volume: visits,
@@ -9024,10 +9240,10 @@ function renderHypothesisCalc() {
   const n = calcHypothesisNumbers();
   const days = hypDurationDays();
   const durEl = document.getElementById('hypDurationHint');
-  if (durEl) durEl.textContent = days > 0 ? `Длительность теста: ${days} дн.` : 'Укажите срок запуска и срок окончания';
-  const card = (label, val, suffix = '') => `<div class="rounded-xl border border-slate-700 bg-slate-900/40 p-3"><div class="text-[11px] text-slate-400 uppercase">${label}</div><div class="text-lg font-bold text-white mt-1">${val}${suffix}</div></div>`;
+  if (durEl) durEl.textContent = days > 0 ? `Длительность: ${days} дн.` : 'Укажите сроки';
+  const card = (label, val, suffix = '') => `<div class="hyp-metric"><div class="label">${label}</div><div class="value">${val}${suffix}</div></div>`;
   const revCard = (n.impacts.includes('revenue') && n.revenue_total_expected > 0)
-    ? card('Выручка', `${Math.round(n.revenue_total_base).toLocaleString('ru-RU')} → ${Math.round(n.revenue_total_expected).toLocaleString('ru-RU')}`, ' ₽')
+    ? card('Выручка', `${Math.round(n.revenue_total_base).toLocaleString('ru-RU')}→${Math.round(n.revenue_total_expected).toLocaleString('ru-RU')}`, ' ₽')
     : card('Выручка', Math.round(n.expected_value).toLocaleString('ru-RU'), ' ₽');
   box.innerHTML = card('Выборка n', Math.ceil(n.sample_size).toLocaleString('ru-RU')) +
     card('Визиты', Math.ceil(n.visits_volume).toLocaleString('ru-RU')) +
@@ -9037,10 +9253,26 @@ function renderHypothesisCalc() {
     card('Визитов/день', days > 0 ? Math.ceil(n.visits_volume / days).toLocaleString('ru-RU') : '—');
   const hint = document.getElementById('hypCalcHint');
   if (hint) {
-    if (!n.impacts.length && !(n.manual_sample > 0)) hint.textContent = 'Отметьте раздел влияния или задайте выборку вручную, чтобы получить прогноз.';
+    if (!n.impacts.length && !(n.manual_sample > 0)) hint.textContent = 'Отметьте раздел влияния или задайте выборку вручную.';
     else if (n.manual_sample > 0) hint.textContent = 'Выборка задана вручную.';
-    else hint.textContent = 'Выборка рассчитана по самой требовательной из выбранных конверсий (α=0.05, мощность 80%) и требуемому приросту выручки.';
+    else hint.textContent = 'α=0.05, мощность 80%. Берётся max по затронутым конверсиям.';
   }
+  renderHypRoi();
+}
+function renderHypRoi() {
+  const expensesBase = hypNum('hypExpensesBase');
+  const testingCost = hypNum('hypTestingCost');
+  const revenueFinBase = hypNum('hypRevenueFinBase');
+  const revTotalExpected = hypNum('hypRevenueTotalExpected') || hypNum('hypRevenueTotalBase') || revenueFinBase;
+  const display = document.getElementById('hypRoiDisplay');
+  const baseEl = document.getElementById('hypRoiBase');
+  const expEl = document.getElementById('hypRoiExpected');
+  if (!display || !baseEl || !expEl) return;
+  if (expensesBase <= 0 && testingCost <= 0) { display.classList.add('hidden'); return; }
+  display.classList.remove('hidden');
+  const fmtRoi = v => v === null ? 'N/A' : v.toFixed(1) + '%';
+  baseEl.textContent = fmtRoi(calcRoi(revenueFinBase, expensesBase));
+  expEl.textContent = fmtRoi(calcRoi(revTotalExpected, expensesBase + testingCost));
 }
 function renderHypothesisKpis() {
   const box = document.getElementById('hypothesisKpis');
@@ -9067,50 +9299,112 @@ async function loadHypothesisMonths() {
     sel.value = months.some(m => m.month_key === old) ? old : cur;
   }
 }
+
+// --- Фильтрация ---
+function hypSetFilter(type, value, btn) {
+  if (type === 'status') {
+    hypothesesState.filterStatus = value;
+    document.querySelectorAll('#hypFilterBar .hyp-filter-chip[data-filter-status]').forEach(b => b.classList.remove('active'));
+    if (btn) btn.classList.add('active');
+  }
+  renderHypList();
+}
+function hypToggleKeyFilter(btn) {
+  hypothesesState.filterKey = !hypothesesState.filterKey;
+  btn.classList.toggle('active', hypothesesState.filterKey);
+  renderHypList();
+}
+function hypFilteredItems() {
+  return (hypothesesState.items || []).filter(h => {
+    if (hypothesesState.filterStatus && (h.status || 'planning') !== hypothesesState.filterStatus) return false;
+    if (hypothesesState.filterKey && !h.is_key) return false;
+    return true;
+  });
+}
+
+// --- Рендер списка карточек ---
+function renderHypList() {
+  const list = document.getElementById('hypList'); if (!list) return;
+  const items = hypFilteredItems();
+  const cnt = document.getElementById('hypCount');
+  if (cnt) cnt.textContent = `${items.length} из ${(hypothesesState.items || []).length} шт.`;
+  if (!items.length) { list.innerHTML = '<p class="text-sm" style="color:var(--text-faint);">Нет гипотез по выбранным фильтрам.</p>'; return; }
+  const statusLabels = { planning:'🕐 Планируется', in_progress:'🔵 В работе', success:'✅ Успех', failed:'❌ Провал', paused:'⏸ Отложено' };
+  const pct = v => (Number(v || 0) * 100).toFixed(2) + '%';
+  const fmtRoi = v => v !== null && v !== undefined && v !== 0 ? Number(v).toFixed(1) + '%' : null;
+  const impactLabels = { visit: 'CR визит', lead: 'CR заявка', approve: 'CR апрув', revenue: 'Выручка' };
+  list.innerHTML = items.map(h => {
+    const impacts = Array.isArray(h.impacts) ? h.impacts : [];
+    const st = h.status || 'planning';
+    const isKey = h.is_key == 1 || h.is_key === true;
+    const days = (h.start_date && h.end_date) ? Math.round((new Date(h.end_date) - new Date(h.start_date)) / 86400000) + 1 : 0;
+    const visits = Number(h.visits_volume || h.traffic_volume || 0);
+    // Фокусная метрика конверсии
+    const focusMetric = (() => {
+      if (impacts.includes('lead')) return `CR заявка: ${pct(h.cr_lead_base ?? h.base_cr)} → ${pct(h.cr_lead_expected ?? h.expected_cr)}`;
+      if (impacts.includes('visit')) return `CR визит: ${pct(h.cr_visit_base)} → ${pct(h.cr_visit_expected)}`;
+      if (impacts.includes('approve')) return `CR апрув: ${pct(h.cr_approve_base ?? h.approve_rate)} → ${pct(h.cr_approve_expected)}`;
+      if (impacts.includes('revenue') && Number(h.revenue_total_base) > 0) return `Выручка: ${Math.round(Number(h.revenue_total_base)).toLocaleString('ru-RU')} → ${Math.round(Number(h.revenue_total_expected)).toLocaleString('ru-RU')} ₽`;
+      return `CR заявка: ${pct(h.base_cr)} → ${pct(h.expected_cr)}`;
+    })();
+    const roiLine = (() => {
+      const rb = fmtRoi(h.roi_base); const re = fmtRoi(h.roi_expected);
+      if (!rb && !re) return '';
+      return `ROI: ${rb || '—'} → ${re || '—'}`;
+    })();
+    const testCostLine = Number(h.testing_cost) > 0 ? `Бюджет теста: ${Math.round(Number(h.testing_cost)).toLocaleString('ru-RU')} ₽` : '';
+    // Лог заметок
+    const notes = Array.isArray(h.progress_notes) ? h.progress_notes : [];
+    const lastNote = notes.length ? notes[notes.length - 1] : null;
+    const notesHtml = lastNote
+      ? `<div class="hyp-note-entry"><div class="hyp-note-date">${escapeHtml(lastNote.date || '')}${notes.length > 1 ? ` (+${notes.length - 1} ещё)` : ''}</div><div class="hyp-note-text">${escapeHtml(lastNote.text || '')}</div></div>`
+      : '';
+    const keyBadge = isKey ? `<span class="text-[11px] px-2 py-0.5 rounded-full" style="background:rgba(34,197,94,.14);color:#4ade80;border:1px solid rgba(34,197,94,.3);">🚀 Ключевая</span>` : '';
+    const dateRange = (h.start_date || h.end_date) ? `${h.start_date || '?'} – ${h.end_date || '?'}${days > 0 ? ` (${days} дн.)` : ''}` : '—';
+    return `<article class="hyp-card${isKey ? ' is-key' : ''}">
+  <div class="flex justify-between items-start gap-2">
+    <div class="flex flex-wrap items-center gap-2 min-w-0">
+      <span class="hyp-status hyp-status-${escapeHtml(st)}">${escapeHtml(statusLabels[st] || st)}</span>
+      ${keyBadge}
+    </div>
+    <div class="flex gap-2 shrink-0">
+      <button type="button" class="text-xs" style="color:var(--accent);" onclick="editHypothesis(${Number(h.id)})">Изменить</button>
+      <button type="button" class="text-xs" style="color:#f87171;" onclick="deleteHypothesis(${Number(h.id)})">Удалить</button>
+    </div>
+  </div>
+  <h4 class="font-semibold" style="color:var(--text);font-size:15px;">${escapeHtml(h.title)}</h4>
+  ${h.description ? `<p class="text-sm" style="color:var(--text-dim);">${escapeHtml(h.description)}</p>` : ''}
+  <div class="grid grid-cols-2 gap-2">
+    <div class="hyp-metric"><div class="label">📈 Фокус</div><div class="value" style="font-size:12px;">${focusMetric}</div></div>
+    <div class="hyp-metric"><div class="label">💰 ROI</div><div class="value" style="font-size:12px;">${roiLine || '—'}</div></div>
+    ${testCostLine ? `<div class="hyp-metric"><div class="label">🎯 Бюджет</div><div class="value">${testCostLine}</div></div>` : ''}
+    <div class="hyp-metric"><div class="label">📅 Сроки</div><div class="value" style="font-size:12px;">${escapeHtml(dateRange)}</div></div>
+  </div>
+  <div class="grid grid-cols-3 gap-2 text-xs">
+    <div class="hyp-metric"><div class="label">Выборка</div><div class="value">${Math.ceil(Number(h.sample_size || 0)).toLocaleString('ru-RU')}</div></div>
+    <div class="hyp-metric"><div class="label">Заявки</div><div class="value">${Math.ceil(Number(h.leads_volume || 0)).toLocaleString('ru-RU')}</div></div>
+    <div class="hyp-metric"><div class="label">Апрувы</div><div class="value">${Math.ceil(Number(h.approvals_volume || 0)).toLocaleString('ru-RU')}</div></div>
+  </div>
+  ${notesHtml ? `<div>${notesHtml}</div>` : ''}
+  <div class="flex justify-between items-center">
+    ${h.levers ? `<p class="text-xs" style="color:var(--text-faint);"><b>Рычаги:</b> ${escapeHtml(h.levers)}</p>` : '<span></span>'}
+    <button type="button" onclick="openHypNoteModal(${Number(h.id)})" title="Добавить запись в дневник" class="text-lg" style="background:none;border:none;cursor:pointer;color:var(--text-dim);" >💬</button>
+  </div>
+</article>`;
+  }).join('');
+}
+
 async function renderHypothesesTab() {
   if (!document.getElementById('tab-hypotheses')) return;
   renderHypothesisKpis();
   await loadHypothesisMonths();
-  renderHypothesisCalc();
   const month = document.getElementById('hypMonthFilter')?.value || currentMonthKey();
   const j = await fetchJsonSafe(buildApiUrl({ action: 'hypotheses_list', month_key: month }));
   hypothesesState.items = (j.status === 'success' && Array.isArray(j.data)) ? j.data : [];
-  const cnt = document.getElementById('hypCount'); if (cnt) cnt.textContent = `${hypothesesState.items.length} шт.`;
-  const list = document.getElementById('hypList'); if (!list) return;
-  if (!hypothesesState.items.length) { list.innerHTML = '<p class="text-sm text-slate-500">В этом месяце гипотез пока нет.</p>'; return; }
-  const pct = v => (Number(v || 0) * 100).toFixed(2) + '%';
-  const impactLabels = { visit: 'CR в визит', lead: 'CR в заявку', approve: 'CR в апрув', revenue: 'Выручка' };
-  list.innerHTML = hypothesesState.items.map(h => {
-    const impacts = Array.isArray(h.impacts) ? h.impacts : [];
-    const badges = impacts.map(k => `<span class="text-[11px] px-2 py-0.5 rounded-full border border-sky-700 bg-sky-900/40 text-sky-300">${escapeHtml(impactLabels[k] || k)}</span>`).join(' ');
-    const visits = Number(h.visits_volume || h.traffic_volume || 0);
-    const days = (h.start_date && h.end_date) ? Math.round((new Date(h.end_date) - new Date(h.start_date)) / 86400000) + 1 : 0;
-    const crLine = impacts.map(k => {
-      if (k === 'visit') return `Выборка→визит: ${pct(h.cr_visit_base)} → ${pct(h.cr_visit_expected)}`;
-      if (k === 'lead') return `Визит→заявка: ${pct(h.cr_lead_base ?? h.base_cr)} → ${pct(h.cr_lead_expected ?? h.expected_cr)}`;
-      if (k === 'approve') return `Заявка→апрув: ${pct(h.cr_approve_base ?? h.approve_rate)} → ${pct(h.cr_approve_expected)}`;
-      if (Number(h.revenue_total_expected || 0) > 0 || Number(h.revenue_total_base || 0) > 0)
-        return `Выручка: ${Math.round(Number(h.revenue_total_base || 0)).toLocaleString('ru-RU')} → ${Math.round(Number(h.revenue_total_expected || 0)).toLocaleString('ru-RU')} ₽`;
-      return `Ценность апрува: ${Math.round(Number(h.revenue_base || h.approve_value || 0)).toLocaleString('ru-RU')} → ${Math.round(Number(h.revenue_expected || 0)).toLocaleString('ru-RU')} ₽`;
-    }).join(' · ') || `CR: ${pct(h.base_cr)} → ${pct(h.expected_cr)} · AR: ${pct(h.approve_rate)} · 1 апрув: ${Math.round(Number(h.approve_value || 0)).toLocaleString('ru-RU')} ₽`;
-    return `<article class="rounded-2xl border border-slate-700 bg-slate-900/30 p-4 space-y-3">
-    <div class="flex justify-between gap-3"><div><h4 class="text-white font-semibold">${escapeHtml(h.title)}</h4>${badges ? `<div class="flex flex-wrap gap-1 mt-1">${badges}</div>` : ''}</div><div class="flex gap-3 shrink-0"><button type="button" class="text-xs text-sky-400" onclick="editHypothesis(${Number(h.id)})">Изменить</button><button type="button" class="text-xs text-red-400" onclick="deleteHypothesis(${Number(h.id)})">Удалить</button></div></div>
-    <div class="grid grid-cols-2 gap-2 text-xs">
-      <div class="rounded-lg border border-sky-800/60 bg-sky-950/20 p-2"><div class="text-[10px] text-sky-300 uppercase">🚀 Срок запуска</div><div class="text-white font-semibold">${escapeHtml(h.start_date || '—')}</div></div>
-      <div class="rounded-lg border border-sky-800/60 bg-sky-950/20 p-2"><div class="text-[10px] text-sky-300 uppercase">🏁 Срок окончания</div><div class="text-white font-semibold">${escapeHtml(h.end_date || '—')}${days > 0 ? ` <span class="text-slate-400 font-normal">(${days} дн.)</span>` : ''}</div></div>
-    </div>
-    <p class="text-sm text-slate-300">${escapeHtml(h.description || '')}</p>
-    <div class="grid grid-cols-2 md:grid-cols-5 gap-2 text-xs">
-      <div class="relation-chip"><div class="label">Выборка</div><div class="value">${Math.ceil(Number(h.sample_size || 0)).toLocaleString('ru-RU')}</div></div>
-      <div class="relation-chip"><div class="label">Визиты</div><div class="value">${Math.ceil(visits).toLocaleString('ru-RU')}</div></div>
-      <div class="relation-chip"><div class="label">Заявки</div><div class="value">${Math.ceil(Number(h.leads_volume || 0)).toLocaleString('ru-RU')}</div></div>
-      <div class="relation-chip"><div class="label">Апрувы</div><div class="value">${Math.ceil(Number(h.approvals_volume || 0)).toLocaleString('ru-RU')}</div></div>
-      <div class="relation-chip"><div class="label">Выручка</div><div class="value">${Math.round(Number(h.expected_value || 0)).toLocaleString('ru-RU')} ₽</div></div>
-    </div>
-    <div class="text-xs text-slate-400">${crLine}</div>
-    ${h.levers ? `<div class="text-xs text-slate-300"><b>Рычаги:</b> ${escapeHtml(h.levers)}</div>` : ''}
-  </article>`;
-  }).join('');
+  renderHypList();
+  // Показываем/скрываем FAB
+  const fab = document.getElementById('hypFab');
+  if (fab) fab.classList.toggle('hyp-fab-visible', !!document.querySelector('#tab-hypotheses.active'));
 }
 async function saveHypothesisMonth() {
   const month = document.getElementById('hypNewMonth')?.value || '';
@@ -9118,18 +9412,44 @@ async function saveHypothesisMonth() {
   await fetchJsonSafe(buildApiUrl({ action: 'hypothesis_month_save' }), { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ month_key: month, title: month }) });
   await renderHypothesesTab();
 }
+
+// --- Открытие/закрытие модалки ---
+function openHypModal(id) {
+  const modal = document.getElementById('hypModal'); if (!modal) return;
+  if (id) {
+    editHypothesis(id);
+  } else {
+    resetHypothesisForm();
+    document.getElementById('hypModalTitle').textContent = 'Новая гипотеза';
+  }
+  modal.classList.add('is-open');
+  document.body.style.overflow = 'hidden';
+}
+function closeHypModal() {
+  const modal = document.getElementById('hypModal'); if (!modal) return;
+  modal.classList.remove('is-open');
+  document.body.style.overflow = '';
+}
+function hypModalBackdropClick(e) {
+  if (e.target === document.getElementById('hypModal')) closeHypModal();
+}
+
+// --- Сброс формы гипотезы (заполняет из текущих данных) ---
 function resetHypothesisForm() {
   for (const id of ['hypId','hypTitle','hypDescription','hypGoal','hypPlannedResult','hypLevers','hypManualSample',
-                    'hypCrVisitExpected','hypCrLeadExpected','hypCrApproveExpected','hypRevenueTotalExpected']) {
+                    'hypCrVisitExpected','hypCrLeadExpected','hypCrApproveExpected','hypRevenueTotalExpected',
+                    'hypExpensesBase','hypTestingCost','hypRevenueFinBase','hypNewNoteText']) {
     const el = document.getElementById(id); if (el) el.value = '';
   }
-  for (const id of ['hypImpactVisit','hypImpactLead','hypImpactApprove','hypImpactRevenue']) {
+  for (const id of ['hypImpactVisit','hypImpactLead','hypImpactApprove','hypImpactRevenue','hypIsKey']) {
     const el = document.getElementById(id); if (el) el.checked = false;
   }
   const today = new Date().toISOString().slice(0,10);
   const start = document.getElementById('hypStart'); const end = document.getElementById('hypEnd');
-  if (start && !start.value) start.value = today;
-  if (end && !end.value) end.value = today;
+  if (start) start.value = today;
+  if (end) end.value = today;
+  const statusEl = document.getElementById('hypStatus'); if (statusEl) statusEl.value = 'planning';
+  // Заполняем воронку из текущих данных
   const f = hypothesisFunnelSnapshot();
   const t = sumLeadRows(globalRawData || []);
   const crVisit = f.impressions ? f.traffic / f.impressions * 100 : 5;
@@ -9141,9 +9461,17 @@ function resetHypothesisForm() {
   document.getElementById('hypCrApproveBase').value = crApprove.toFixed(2);
   document.getElementById('hypRevenueBase').value = Math.round(avgValue || 0);
   document.getElementById('hypRevenueTotalBase').value = Math.round(t.revenue || 0);
+  document.getElementById('hypRevenueFinBase').value = Math.round(t.revenue || 0);
   const m = document.getElementById('hypMonth'); if (m) m.value = document.getElementById('hypMonthFilter')?.value || currentMonthKey();
+  // Очищаем лог заметок
+  hypothesesState.pendingNotes = [];
+  const notesLog = document.getElementById('hypNotesLog'); if (notesLog) notesLog.innerHTML = '';
+  const roiDisplay = document.getElementById('hypRoiDisplay'); if (roiDisplay) roiDisplay.classList.add('hidden');
   toggleHypImpact();
+  renderHypothesisCalc();
 }
+
+// --- Заполнение формы при редактировании ---
 function editHypothesis(id) {
   const h = hypothesesState.items.find(x => Number(x.id) === Number(id));
   if (!h) return;
@@ -9152,6 +9480,8 @@ function editHypothesis(id) {
   set('hypTitle', h.title); set('hypDescription', h.description); set('hypGoal', h.goal);
   set('hypPlannedResult', h.planned_result); set('hypLevers', h.levers);
   set('hypStart', h.start_date); set('hypEnd', h.end_date);
+  const statusEl = document.getElementById('hypStatus'); if (statusEl) statusEl.value = h.status || 'planning';
+  const isKeyEl = document.getElementById('hypIsKey'); if (isKeyEl) isKeyEl.checked = h.is_key == 1 || h.is_key === true;
   const m = document.getElementById('hypMonth'); if (m && h.month_key) m.value = h.month_key;
   const p = v => (Number(v || 0) * 100).toFixed(2);
   set('hypCrVisitBase', p(h.cr_visit_base));
@@ -9160,6 +9490,9 @@ function editHypothesis(id) {
   set('hypRevenueBase', Math.round(Number(h.revenue_base ?? h.approve_value ?? 0)));
   set('hypRevenueTotalBase', Math.round(Number(h.revenue_total_base || 0)));
   set('hypManualSample', Number(h.manual_sample || 0) > 0 ? Math.round(Number(h.manual_sample)) : '');
+  set('hypExpensesBase', Math.round(Number(h.expenses_base || 0)));
+  set('hypTestingCost', Math.round(Number(h.testing_cost || 0)));
+  set('hypRevenueFinBase', Math.round(Number(h.revenue_total_base || 0)));
   const impacts = Array.isArray(h.impacts) ? h.impacts : [];
   const cbMap = { visit: 'hypImpactVisit', lead: 'hypImpactLead', approve: 'hypImpactApprove', revenue: 'hypImpactRevenue' };
   for (const k of Object.keys(cbMap)) { const el = document.getElementById(cbMap[k]); if (el) el.checked = impacts.includes(k); }
@@ -9167,36 +9500,93 @@ function editHypothesis(id) {
   set('hypCrLeadExpected', impacts.includes('lead') ? p(h.cr_lead_expected ?? h.expected_cr) : '');
   set('hypCrApproveExpected', impacts.includes('approve') ? p(h.cr_approve_expected) : '');
   set('hypRevenueTotalExpected', impacts.includes('revenue') ? Math.round(Number(h.revenue_total_expected || 0)) : '');
+  // Лог заметок
+  const notes = Array.isArray(h.progress_notes) ? h.progress_notes : [];
+  hypothesesState.pendingNotes = [...notes];
+  renderHypNotesLog(notes);
   toggleHypImpact();
-  document.getElementById('hypothesisForm')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  renderHypothesisCalc();
+  const titleEl = document.getElementById('hypModalTitle'); if (titleEl) titleEl.textContent = 'Редактировать гипотезу';
 }
-async function saveHypothesis(ev) {
-  if (ev) ev.preventDefault();
+
+// --- Лог заметок внутри модалки ---
+function renderHypNotesLog(notes) {
+  const el = document.getElementById('hypNotesLog'); if (!el) return;
+  if (!notes.length) { el.innerHTML = '<p class="text-xs" style="color:var(--text-faint);">Записей пока нет.</p>'; return; }
+  el.innerHTML = [...notes].reverse().map(n =>
+    `<div class="hyp-note-entry"><div class="hyp-note-date">${escapeHtml(n.date || '')}${n.author ? ' · ' + escapeHtml(n.author) : ''}</div><div class="hyp-note-text">${escapeHtml(n.text || '')}</div></div>`
+  ).join('');
+}
+function hypAddNoteInline() {
+  const input = document.getElementById('hypNewNoteText'); if (!input) return;
+  const text = input.value.trim(); if (!text) return;
+  const note = { date: new Date().toISOString().slice(0,10), text, author: '' };
+  hypothesesState.pendingNotes = hypothesesState.pendingNotes || [];
+  hypothesesState.pendingNotes.push(note);
+  renderHypNotesLog(hypothesesState.pendingNotes);
+  input.value = '';
+}
+
+// --- Сохранение гипотезы ---
+async function saveHypothesis() {
   const n = calcHypothesisNumbers();
   const payload = Object.assign(n, {
     id: Number(document.getElementById('hypId')?.value || 0),
     month_key: document.getElementById('hypMonth')?.value || currentMonthKey(),
-    title: document.getElementById('hypTitle')?.value.trim() || '',
+    title: (document.getElementById('hypTitle')?.value || '').trim(),
     description: document.getElementById('hypDescription')?.value || '',
     goal: document.getElementById('hypGoal')?.value || '',
     planned_result: document.getElementById('hypPlannedResult')?.value || '',
     start_date: document.getElementById('hypStart')?.value || '',
     end_date: document.getElementById('hypEnd')?.value || '',
     levers: document.getElementById('hypLevers')?.value || '',
+    status: document.getElementById('hypStatus')?.value || 'planning',
+    is_key: document.getElementById('hypIsKey')?.checked ? 1 : 0,
+    testing_cost: hypNum('hypTestingCost'),
+    expenses_base: hypNum('hypExpensesBase'),
+    progress_notes: hypothesesState.pendingNotes || [],
   });
   if (!payload.title) return alert('Заполните название гипотезы');
   if (!payload.start_date || !payload.end_date) return alert('Укажите срок запуска и срок окончания гипотезы');
   if (payload.end_date < payload.start_date) return alert('Срок окончания не может быть раньше срока запуска');
   const j = await fetchJsonSafe(buildApiUrl({ action: 'hypothesis_save' }), { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
   if (j.status !== 'success') return alert('Ошибка сохранения: ' + (j.error || 'unknown'));
-  const msg = document.getElementById('hypMessage'); if (msg) { msg.textContent = 'Гипотеза сохранена'; msg.className = 'text-sm text-emerald-400'; setTimeout(() => msg.classList.add('hidden'), 3000); }
+  closeHypModal();
   document.getElementById('hypMonthFilter').value = payload.month_key;
-  resetHypothesisForm();
   await renderHypothesesTab();
 }
 async function deleteHypothesis(id) {
   if (!id || !confirm('Удалить гипотезу?')) return;
   await fetchJsonSafe(buildApiUrl({ action: 'hypothesis_delete', id }));
+  await renderHypothesesTab();
+}
+
+// --- Быстрая заметка (из карточки) ---
+function openHypNoteModal(id) {
+  const el = document.getElementById('hypNoteModal'); if (!el) return;
+  document.getElementById('hypNoteTargetId').value = id;
+  const txt = document.getElementById('hypNoteText'); if (txt) txt.value = '';
+  const err = document.getElementById('hypNoteError'); if (err) err.classList.add('hidden');
+  el.classList.add('is-open');
+  document.body.style.overflow = 'hidden';
+  setTimeout(() => { document.getElementById('hypNoteText')?.focus(); }, 50);
+}
+function closeHypNoteModal() {
+  const el = document.getElementById('hypNoteModal'); if (!el) return;
+  el.classList.remove('is-open');
+  document.body.style.overflow = '';
+}
+async function saveHypNote() {
+  const id = Number(document.getElementById('hypNoteTargetId')?.value || 0);
+  const text = (document.getElementById('hypNoteText')?.value || '').trim();
+  const err = document.getElementById('hypNoteError');
+  if (!id || !text) { if (err) { err.textContent = 'Заполните текст записи.'; err.classList.remove('hidden'); } return; }
+  const j = await fetchJsonSafe(buildApiUrl({ action: 'hypothesis_add_note' }), {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ id, text })
+  });
+  if (j.status !== 'success') { if (err) { err.textContent = 'Ошибка: ' + (j.error || 'unknown'); err.classList.remove('hidden'); } return; }
+  closeHypNoteModal();
   await renderHypothesesTab();
 }
 
