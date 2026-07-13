@@ -1198,7 +1198,7 @@
     .hyp-rows { min-width: 1180px; display: flex; flex-direction: column; gap: 6px; }
     .hyp-row-head, .hyp-row {
       display: grid;
-      grid-template-columns: 108px minmax(140px, 1.4fr) minmax(300px, 2.6fr) 84px minmax(150px, 1.4fr) minmax(140px, 1.2fr) 108px 120px 118px 92px;
+      grid-template-columns: 100px minmax(130px, 1.3fr) minmax(260px, 2.2fr) 78px minmax(140px, 1.2fr) minmax(130px, 1.1fr) 100px 116px 150px 116px;
       gap: 8px; align-items: center;
     }
     .hyp-row-head { padding: 2px 10px; font-size: 10px; text-transform: uppercase; letter-spacing: .05em; font-weight: 600; color: var(--text-faint); }
@@ -1236,6 +1236,20 @@
     .hyp-progress { height: 4px; border-radius: 4px; background: var(--surface-thin); border: 1px solid var(--border); overflow: hidden; margin-top: 3px; }
     .hyp-progress > div { height: 100%; border-radius: 4px; }
     .hyp-row-details { margin: 2px 0 6px 12px; }
+    /* На узких экранах строка гипотезы становится вертикальным списком без горизонтального скролла. */
+    @media (max-width: 900px) {
+      .hyp-rows-scroll { overflow-x: visible; }
+      .hyp-rows { min-width: 0; }
+      .hyp-row-head { display: none; }
+      .hyp-row-head, .hyp-row { grid-template-columns: 1fr; }
+      .hyp-row { row-gap: 6px; }
+      .hyp-row > div { width: 100%; }
+      .hyp-cr-chain { flex-wrap: wrap; overflow: visible; }
+      .hyp-row .hyp-row-title { white-space: normal; overflow: visible; text-overflow: clip; }
+      .hyp-row .hyp-pf-pair { white-space: normal; }
+      .hyp-row-details { margin-left: 0; }
+      .hyp-row > div:last-child { justify-content: flex-end; }
+    }
     @media (max-width: 767px) {
       #hypModal.modal-backdrop { padding: 0; align-items: stretch; }
       .hyp-modal-box {
@@ -1911,8 +1925,6 @@
           <button class="btn" type="button" onclick="openHypModal()">+ Новая гипотеза</button>
         </div>
       </div>
-      <!-- KPI снимок воронки -->
-      <div id="hypothesisKpis" class="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4"></div>
       <!-- Фильтр-бар -->
       <div class="hyp-filter-bar mb-3" id="hypFilterBar">
         <span class="text-xs text-slate-400 mr-1">Статус:</span>
@@ -9420,6 +9432,35 @@ function isoShift(iso, days) {
 // ========================== ГИПОТЕЗЫ ==========================
 let hypothesesState = { months: [], items: [], filterStatus: '', filterKey: false, pendingNotes: [] };
 function currentMonthKey() { return new Date().toISOString().slice(0, 7); }
+// Сдвигает YYYY-MM на delta месяцев.
+function shiftMonthKey(monthKey, delta) {
+  const parts = /^(\d{4})-(\d{2})$/.exec(monthKey || '') || [null, ...currentMonthKey().split('-')];
+  const y = Number(parts[1]), m = Number(parts[2]);
+  const d = new Date(Date.UTC(y, (m - 1) + delta, 1));
+  return d.toISOString().slice(0, 7);
+}
+// Сдвигает дату YYYY-MM-DD на delta месяцев (сохраняя день, ограничивая концом месяца).
+function shiftDateByMonths(dateStr, delta) {
+  if (!dateStr) return dateStr;
+  const d = new Date(dateStr + 'T00:00:00Z');
+  if (Number.isNaN(d.getTime())) return dateStr;
+  d.setUTCMonth(d.getUTCMonth() + delta);
+  return d.toISOString().slice(0, 10);
+}
+// Продлевает срок гипотезы на следующий месяц: сдвигает дату окончания и месяц гипотезы.
+async function extendHypothesisMonth(id) {
+  const h = (hypothesesState.items || []).find(x => Number(x.id) === Number(id));
+  if (!h) return;
+  const newEnd = shiftDateByMonths(h.end_date, 1);
+  const newMonth = shiftMonthKey(h.month_key, 1);
+  const payload = Object.assign({}, h, { id: Number(h.id), month_key: newMonth, end_date: newEnd });
+  const j = await fetchJsonSafe(buildApiUrl({ action: 'hypothesis_save' }), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+  if (j.status !== 'success') { alert('Ошибка продления: ' + (j.error || 'unknown')); return; }
+  await fetchJsonSafe(buildApiUrl({ action: 'hypothesis_month_save' }), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ month_key: newMonth, title: newMonth }) });
+  const filter = document.getElementById('hypMonthFilter');
+  if (filter) filter.value = newMonth;
+  await renderHypothesesTab();
+}
 function hypothesisFunnelSnapshot() {
   const t = sumLeadRows(globalRawData || []);
   const leadsClicks = trueUniqueClicksFor(globalRawData || []) ?? t.clicks;
@@ -9669,18 +9710,6 @@ function renderHypFactCalc() {
   const badge = document.getElementById('hypFactSigBadge');
   if (badge) badge.innerHTML = hypSigBadgeHtml(f);
 }
-function renderHypothesisKpis() {
-  const box = document.getElementById('hypothesisKpis');
-  if (!box) return;
-  const f = hypothesisFunnelSnapshot();
-  const conv = (a, b) => a > 0 ? (b / a * 100).toFixed(2) + '%' : '—';
-  const card = (label, val, sub = '') => `<div class="rounded-xl border border-slate-700 bg-slate-900/40 p-3"><div class="text-[11px] text-slate-400 uppercase">${label}</div><div class="text-lg font-bold text-white">${val}</div>${sub ? `<div class="text-[11px] text-slate-500">${sub}</div>` : ''}</div>`;
-  box.innerHTML = card('Показы', Math.round(f.impressions).toLocaleString('ru-RU')) +
-    card('Отказы', Math.round(f.bounces).toLocaleString('ru-RU'), 'отдельно от показов') +
-    card('Визиты', Math.round(f.traffic).toLocaleString('ru-RU'), `Показ → визит: ${conv(f.impressions, f.traffic)}`) +
-    card('Заявки', Math.round(f.leads).toLocaleString('ru-RU'), `Визит → заявка: ${conv(f.traffic, f.leads)}`) +
-    card('Апрувы', Math.round(f.approvals).toLocaleString('ru-RU'), `Заявка → апрув: ${conv(f.leads, f.approvals)}`);
-}
 async function loadHypothesisMonths() {
   const j = await fetchJsonSafe(buildApiUrl({ action: 'hypothesis_months_list' }));
   let months = (j.status === 'success' && Array.isArray(j.data)) ? j.data : [];
@@ -9815,6 +9844,7 @@ function hypCardHtml(h, c) {
       ${keyBadge}
     </div>
     <div class="flex gap-2 shrink-0">
+      <button type="button" class="text-xs" style="color:var(--text-dim);" onclick="extendHypothesisMonth(${Number(h.id)})" title="Продлить срок гипотезы на следующий месяц">⏩ Продлить на месяц</button>
       <button type="button" class="text-xs" style="color:var(--accent);" onclick="openHypModal(${Number(h.id)})">Изменить</button>
       <button type="button" class="text-xs" style="color:#f87171;" onclick="deleteHypothesis(${Number(h.id)})">Удалить</button>
     </div>
@@ -9933,8 +9963,9 @@ function hypRowHtml(h, c) {
     <div><div class="hyp-cell-label">Выручка</div>${pfPair(fmoney(revPlan), fmoney(revFact), revGood)}${revProgressBar}</div>
     <div><div class="hyp-cell-label">ROI</div>${pfPair(roiPlan, roiFact, roiGood)}</div>
     <div>${hypSigBadgeHtml(factN)}</div>
-    <div class="text-xs" style="color:var(--text-faint);">📅 ${escapeHtml(c.dateRange)}</div>
-    <div class="flex gap-2 justify-end" onclick="event.stopPropagation()">
+    <div class="text-xs" style="color:var(--text-faint);white-space:normal;">📅 ${escapeHtml(c.dateRange)}</div>
+    <div class="flex gap-2 flex-wrap justify-end" onclick="event.stopPropagation()">
+      <button type="button" class="text-xs" onclick="extendHypothesisMonth(${id})" title="Продлить срок гипотезы на следующий месяц">⏩</button>
       <button type="button" class="text-xs" style="color:var(--accent);" onclick="openHypModal(${id})" title="Изменить">✏️</button>
       <button type="button" class="text-xs" onclick="openHypNoteModal(${id})" title="Добавить запись в дневник" style="background:none;border:none;cursor:pointer;">💬</button>
       <button type="button" class="text-xs" style="color:#f87171;" onclick="deleteHypothesis(${id})" title="Удалить">🗑</button>
@@ -9962,7 +9993,6 @@ function renderHypList() {
 
 async function renderHypothesesTab() {
   if (!document.getElementById('tab-hypotheses')) return;
-  renderHypothesisKpis();
   await loadHypothesisMonths();
   const month = document.getElementById('hypMonthFilter')?.value || currentMonthKey();
   const j = await fetchJsonSafe(buildApiUrl({ action: 'hypotheses_list', month_key: month }));
