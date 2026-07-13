@@ -1065,13 +1065,13 @@
     /* ==================== ГИПОТЕЗЫ: трекер экспериментов ==================== */
     /* Широкое модальное окно */
     #hypModal.modal-backdrop {
-      padding: 16px;
+      padding: clamp(8px, 2vw, 24px);
       overflow-y: auto;
     }
     .hyp-modal-box {
-      width: 100%;
-      max-width: 1120px;
-      max-height: calc(100vh - 32px);
+      width: min(1360px, 100%);
+      max-height: calc(100vh - clamp(16px, 4vw, 48px));
+      max-height: calc(100dvh - clamp(16px, 4vw, 48px));
       box-sizing: border-box;
       margin: auto;
       background: var(--surface-solid);
@@ -1079,6 +1079,20 @@
       border-radius: var(--r-card);
       box-shadow: var(--shadow-pop);
       display: flex; flex-direction: column;
+    }
+    .hyp-modal-box .modal-body { overscroll-behavior: contain; }
+    .hyp-form-section {
+      min-width: 0;
+      border: 1px solid var(--border);
+      border-radius: var(--r-card);
+      background: var(--surface-thin);
+      padding: 16px;
+    }
+    .hyp-form-section .hyp-metric { background: var(--surface-solid); }
+    .hyp-form-error {
+      margin-right: auto;
+      color: var(--bad);
+      font-size: 12px;
     }
     /* Плавающая кнопка добавления */
     #hypFab {
@@ -1107,14 +1121,15 @@
 
     /* Карточка гипотезы */
     .hyp-card {
-      background: var(--surface-thin);
+      background: linear-gradient(145deg, var(--surface-thin), var(--surface-solid));
       border: 1px solid var(--border);
       border-radius: var(--r-card);
       padding: 16px;
       display: flex; flex-direction: column; gap: 10px;
-      transition: border-color var(--t-fast) var(--ease-apple);
+      min-width: 0;
+      transition: border-color var(--t-fast) var(--ease-apple), transform var(--t-fast) var(--ease-apple), box-shadow var(--t-fast) var(--ease-apple);
     }
-    .hyp-card:hover { border-color: var(--border-strong); }
+    .hyp-card:hover { border-color: var(--border-strong); transform: translateY(-1px); box-shadow: var(--shadow-card); }
     .hyp-card.is-key {
       border-left: 3px solid #22c55e;
     }
@@ -1151,6 +1166,27 @@
     .hyp-note-entry { border-left: 2px solid var(--border-strong); padding-left: 10px; margin-bottom: 8px; }
     .hyp-note-date  { font-size: 10px; color: var(--text-faint); }
     .hyp-note-text  { font-size: 13px; color: var(--text); }
+    @media (max-width: 767px) {
+      #hypModal.modal-backdrop { padding: 0; align-items: stretch; }
+      .hyp-modal-box {
+        width: 100%;
+        max-height: 100vh;
+        max-height: 100dvh;
+        border-radius: 0;
+        border-left: 0;
+        border-right: 0;
+      }
+      .hyp-modal-box > header { padding: 12px 14px !important; }
+      .hyp-modal-box > .modal-body { padding: 14px !important; }
+      .hyp-modal-box .modal-footer {
+        padding: 10px 14px calc(10px + env(safe-area-inset-bottom));
+        background: var(--surface-solid);
+      }
+      .hyp-form-section { padding: 12px; }
+      #hypCalcBox { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .hyp-filter-bar { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 4px; }
+      #hypKeyFilter { margin-left: 0; }
+    }
   </style>
 </head>
 <body>
@@ -2299,7 +2335,7 @@ CR_plan       = baseCR,   AR_plan = baseAR
       </div>
       <button type="button" class="close-x" onclick="closeHypModal()" aria-label="Закрыть">×</button>
     </header>
-    <div class="modal-body" style="overflow-y:auto;flex:1 1 0;padding:18px;">
+    <div class="modal-body" style="overflow-y:auto;flex:1 1 auto;min-height:0;padding:18px;">
       <input id="hypId" type="hidden">
       <!-- Строка 1: название + месяц + статус -->
       <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
@@ -2338,9 +2374,9 @@ CR_plan       = baseCR,   AR_plan = baseAR
         </div>
       </div>
       <!-- 2-колоночный макет: воронка | финансы + описание -->
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <!-- === Левая колонка: воронка === -->
-        <div>
+        <section class="hyp-form-section">
           <div class="text-xs font-semibold uppercase mb-2" style="color:var(--text-dim);letter-spacing:.05em;">Базовая воронка</div>
           <p class="text-[11px] mb-3" style="color:var(--text-faint);">Выборка → Визит → Заявка → Апрув. Подставляются из текущих данных.</p>
           <div class="grid grid-cols-2 gap-2 mb-3">
@@ -2378,9 +2414,9 @@ CR_plan       = baseCR,   AR_plan = baseAR
             <div id="hypCalcBox" class="grid grid-cols-3 gap-2"></div>
             <div id="hypCalcHint" class="text-[11px] mt-2" style="color:var(--text-faint);"></div>
           </div>
-        </div>
+        </section>
         <!-- === Правая колонка: финансы + описание + лог === -->
-        <div class="space-y-4">
+        <section class="hyp-form-section space-y-4">
           <div>
             <div class="text-xs font-semibold uppercase mb-2" style="color:var(--text-dim);letter-spacing:.05em;">Финансовый блок (ROI)</div>
             <div class="grid grid-cols-2 gap-2 mb-3">
@@ -2419,12 +2455,13 @@ CR_plan       = baseCR,   AR_plan = baseAR
               <button type="button" class="btn" style="padding:6px 12px;font-size:12px;" onclick="hypAddNoteInline()">Добавить</button>
             </div>
           </div>
-        </div>
+        </section>
       </div>
     </div>
     <div class="modal-footer">
+      <p id="hypFormError" class="hyp-form-error hidden" role="alert"></p>
       <button type="button" class="btn" style="background:transparent;border:1px solid var(--border-strong);color:var(--text-dim);" onclick="closeHypModal()">Отмена</button>
-      <button type="button" class="btn" onclick="saveHypothesis()">Сохранить</button>
+      <button id="hypSaveButton" type="button" class="btn" onclick="saveHypothesis()">Сохранить</button>
     </div>
   </div>
 </div>
@@ -9157,8 +9194,11 @@ function hypothesisFunnelSnapshot() {
   const bounces = (bouncesData || []).reduce((s, d) => s + (Number(d.bounces) || 0), 0);
   return { impressions, bounces, banner_clicks: bannerClicks, traffic: leadsClicks, leads: t.conversions, approvals: t.approved };
 }
-function hypNum(id) { return Math.max(0, Number(document.getElementById(id)?.value || 0)); }
-function hypPct(id) { return hypNum(id) / 100; }
+function hypNum(id) {
+  const value = Number(document.getElementById(id)?.value || 0);
+  return Number.isFinite(value) ? Math.max(0, value) : 0;
+}
+function hypPct(id) { return Math.min(100, hypNum(id)) / 100; }
 function hypSelectedImpacts() {
   const map = { visit: 'hypImpactVisit', lead: 'hypImpactLead', approve: 'hypImpactApprove', revenue: 'hypImpactRevenue' };
   return Object.keys(map).filter(k => document.getElementById(map[k])?.checked);
@@ -9204,11 +9244,14 @@ function calcHypothesisNumbers() {
   const revenueTotalExpected = impacts.includes('revenue') ? hypNum('hypRevenueTotalExpected') : revenueTotalBase;
   let sample = 0;
   if (impacts.includes('visit')) sample = Math.max(sample, hypSampleForStage(crVisitBase, crVisit));
-  if (impacts.includes('lead') && crVisitBase > 0) sample = Math.max(sample, hypSampleForStage(crLeadBase, crLead) / crVisitBase);
-  if (impacts.includes('approve') && crVisitBase > 0 && crLeadBase > 0) sample = Math.max(sample, hypSampleForStage(crApproveBase, crApprove) / (crVisitBase * crLeadBase));
+  const visitReach = Math.min(crVisitBase, crVisit) || Math.max(crVisitBase, crVisit);
+  const leadReach = Math.min(crLeadBase, crLead) || Math.max(crLeadBase, crLead);
+  if (impacts.includes('lead') && visitReach > 0) sample = Math.max(sample, hypSampleForStage(crLeadBase, crLead) / visitReach);
+  if (impacts.includes('approve') && visitReach > 0 && leadReach > 0) sample = Math.max(sample, hypSampleForStage(crApproveBase, crApprove) / (visitReach * leadReach));
   if (impacts.includes('revenue')) {
     const deltaRevenue = Math.max(0, revenueTotalExpected - revenueTotalBase);
-    const perSampleRevenue = crVisit * crLead * crApprove * revenueValue;
+    const approveReach = Math.min(crApproveBase, crApprove) || Math.max(crApproveBase, crApprove);
+    const perSampleRevenue = visitReach * leadReach * approveReach * revenueValue;
     if (deltaRevenue > 0 && perSampleRevenue > 0) sample = Math.max(sample, deltaRevenue / perSampleRevenue);
   }
   const manualSample = hypNum('hypManualSample');
@@ -9221,8 +9264,14 @@ function calcHypothesisNumbers() {
   const expensesBase = hypNum('hypExpensesBase');
   const testingCost = hypNum('hypTestingCost');
   const revenueFinBase = hypNum('hypRevenueFinBase');
+  const funnelBaseRate = crVisitBase * crLeadBase * crApproveBase;
+  const funnelExpectedRate = crVisit * crLead * crApprove;
+  const funnelLift = funnelBaseRate > 0 ? funnelExpectedRate / funnelBaseRate : 1;
+  const projectedRevenue = impacts.includes('revenue') && revenueTotalExpected > 0
+    ? revenueTotalExpected
+    : (revenueFinBase > 0 ? revenueFinBase * funnelLift : expectedValue);
   const roiBase = calcRoi(revenueFinBase, expensesBase);
-  const roiExpected = calcRoi(revenueTotalExpected || revenueFinBase, expensesBase + testingCost);
+  const roiExpected = calcRoi(projectedRevenue, expensesBase + testingCost);
   return {
     impacts,
     cr_visit_base: crVisitBase, cr_visit_expected: crVisit,
@@ -9231,6 +9280,7 @@ function calcHypothesisNumbers() {
     revenue_base: revenueBase, revenue_expected: revenueValue,
     revenue_total_base: revenueTotalBase, revenue_total_expected: revenueTotalExpected,
     manual_sample: manualSample,
+    revenue_fin_base: revenueFinBase, projected_revenue: projectedRevenue,
     expenses_base: expensesBase, testing_cost: testingCost,
     roi_base: roiBase ?? 0, roi_expected: roiExpected ?? 0,
     // Легаси-поля для совместимости со старой схемой/карточками.
@@ -9272,19 +9322,16 @@ function renderHypothesisCalc() {
   renderHypRoi();
 }
 function renderHypRoi() {
-  const expensesBase = hypNum('hypExpensesBase');
-  const testingCost = hypNum('hypTestingCost');
-  const revenueFinBase = hypNum('hypRevenueFinBase');
-  const revTotalExpected = hypNum('hypRevenueTotalExpected') || hypNum('hypRevenueTotalBase') || revenueFinBase;
+  const n = calcHypothesisNumbers();
   const display = document.getElementById('hypRoiDisplay');
   const baseEl = document.getElementById('hypRoiBase');
   const expEl = document.getElementById('hypRoiExpected');
   if (!display || !baseEl || !expEl) return;
-  if (expensesBase <= 0 && testingCost <= 0) { display.classList.add('hidden'); return; }
+  if (n.expenses_base <= 0 && n.testing_cost <= 0) { display.classList.add('hidden'); return; }
   display.classList.remove('hidden');
   const fmtRoi = v => v === null ? 'N/A' : v.toFixed(1) + '%';
-  baseEl.textContent = fmtRoi(calcRoi(revenueFinBase, expensesBase));
-  expEl.textContent = fmtRoi(calcRoi(revTotalExpected, expensesBase + testingCost));
+  baseEl.textContent = fmtRoi(calcRoi(n.revenue_fin_base, n.expenses_base));
+  expEl.textContent = fmtRoi(calcRoi(n.projected_revenue, n.expenses_base + n.testing_cost));
 }
 function renderHypothesisKpis() {
   const box = document.getElementById('hypothesisKpis');
@@ -9343,7 +9390,7 @@ function renderHypList() {
   if (!items.length) { list.innerHTML = '<p class="text-sm" style="color:var(--text-faint);">Нет гипотез по выбранным фильтрам.</p>'; return; }
   const statusLabels = { planning:'🕐 Планируется', in_progress:'🔵 В работе', success:'✅ Успех', failed:'❌ Провал', paused:'⏸ Отложено' };
   const pct = v => (Number(v || 0) * 100).toFixed(2) + '%';
-  const fmtRoi = v => v !== null && v !== undefined && v !== 0 ? Number(v).toFixed(1) + '%' : null;
+  const fmtRoi = (v, hasExpenses) => hasExpenses && Number.isFinite(Number(v)) ? Number(v).toFixed(1) + '%' : null;
   const impactLabels = { visit: 'CR визит', lead: 'CR заявка', approve: 'CR апрув', revenue: 'Выручка' };
   list.innerHTML = items.map(h => {
     const impacts = Array.isArray(h.impacts) ? h.impacts : [];
@@ -9360,11 +9407,22 @@ function renderHypList() {
       return `CR заявка: ${pct(h.base_cr)} → ${pct(h.expected_cr)}`;
     })();
     const roiLine = (() => {
-      const rb = fmtRoi(h.roi_base); const re = fmtRoi(h.roi_expected);
+      const rb = fmtRoi(h.roi_base, Number(h.expenses_base) > 0);
+      const re = fmtRoi(h.roi_expected, Number(h.expenses_base) + Number(h.testing_cost) > 0);
       if (!rb && !re) return '';
       return `ROI: ${rb || '—'} → ${re || '—'}`;
     })();
-    const testCostLine = Number(h.testing_cost) > 0 ? `Бюджет теста: ${Math.round(Number(h.testing_cost)).toLocaleString('ru-RU')} ₽` : '';
+    const testCostLine = Number(h.testing_cost) > 0 ? `${Math.round(Number(h.testing_cost)).toLocaleString('ru-RU')} ₽` : '';
+    const visitBase = Number(h.cr_visit_base);
+    const leadBase = Number(h.cr_lead_base ?? h.base_cr);
+    const approveBase = Number(h.cr_approve_base ?? h.approve_rate);
+    const baseRate = visitBase * leadBase * approveBase;
+    const expectedRate =
+      (impacts.includes('visit') ? Number(h.cr_visit_expected) : visitBase) *
+      (impacts.includes('lead') ? Number(h.cr_lead_expected ?? h.expected_cr) : leadBase) *
+      (impacts.includes('approve') ? Number(h.cr_approve_expected) : approveBase);
+    const uplift = baseRate > 0 ? (expectedRate / baseRate - 1) * 100 : 0;
+    const upliftLine = Math.abs(uplift) >= 0.05 ? `${uplift >= 0 ? '+' : ''}${uplift.toFixed(1)}% к воронке` : '';
     // Лог заметок
     const notes = Array.isArray(h.progress_notes) ? h.progress_notes : [];
     const lastNote = notes.length ? notes[notes.length - 1] : null;
@@ -9384,12 +9442,15 @@ function renderHypList() {
       <button type="button" class="text-xs" style="color:#f87171;" onclick="deleteHypothesis(${Number(h.id)})">Удалить</button>
     </div>
   </div>
-  <h4 class="font-semibold" style="color:var(--text);font-size:15px;">${escapeHtml(h.title)}</h4>
+  <div class="flex items-center justify-between gap-2">
+    <h4 class="font-semibold min-w-0" style="color:var(--text);font-size:16px;">${escapeHtml(h.title)}</h4>
+    ${upliftLine ? `<span class="text-xs shrink-0" style="color:${uplift >= 0 ? 'var(--ok)' : 'var(--bad)'}">${upliftLine}</span>` : ''}
+  </div>
   ${h.description ? `<p class="text-sm" style="color:var(--text-dim);">${escapeHtml(h.description)}</p>` : ''}
   <div class="grid grid-cols-2 gap-2">
     <div class="hyp-metric"><div class="label">📈 Фокус</div><div class="value" style="font-size:12px;">${focusMetric}</div></div>
     <div class="hyp-metric"><div class="label">💰 ROI</div><div class="value" style="font-size:12px;">${roiLine || '—'}</div></div>
-    ${testCostLine ? `<div class="hyp-metric"><div class="label">🎯 Бюджет</div><div class="value">${testCostLine}</div></div>` : ''}
+    ${testCostLine ? `<div class="hyp-metric"><div class="label">🎯 Бюджет теста</div><div class="value">${testCostLine}</div></div>` : ''}
     <div class="hyp-metric"><div class="label">📅 Сроки</div><div class="value" style="font-size:12px;">${escapeHtml(dateRange)}</div></div>
   </div>
   <div class="grid grid-cols-3 gap-2 text-xs">
@@ -9436,6 +9497,8 @@ function openHypModal(id) {
   }
   modal.classList.add('is-open');
   document.body.style.overflow = 'hidden';
+  const error = document.getElementById('hypFormError'); if (error) error.classList.add('hidden');
+  setTimeout(() => document.getElementById('hypTitle')?.focus(), 50);
 }
 function closeHypModal() {
   const modal = document.getElementById('hypModal'); if (!modal) return;
@@ -9504,7 +9567,7 @@ function editHypothesis(id) {
   set('hypManualSample', Number(h.manual_sample || 0) > 0 ? Math.round(Number(h.manual_sample)) : '');
   set('hypExpensesBase', Math.round(Number(h.expenses_base || 0)));
   set('hypTestingCost', Math.round(Number(h.testing_cost || 0)));
-  set('hypRevenueFinBase', Math.round(Number(h.revenue_total_base || 0)));
+  set('hypRevenueFinBase', Math.round(Number(h.revenue_fin_base ?? h.revenue_total_base ?? 0)));
   const impacts = Array.isArray(h.impacts) ? h.impacts : [];
   const cbMap = { visit: 'hypImpactVisit', lead: 'hypImpactLead', approve: 'hypImpactApprove', revenue: 'hypImpactRevenue' };
   for (const k of Object.keys(cbMap)) { const el = document.getElementById(cbMap[k]); if (el) el.checked = impacts.includes(k); }
@@ -9558,11 +9621,20 @@ async function saveHypothesis() {
     expenses_base: hypNum('hypExpensesBase'),
     progress_notes: hypothesesState.pendingNotes || [],
   });
-  if (!payload.title) return alert('Заполните название гипотезы');
-  if (!payload.start_date || !payload.end_date) return alert('Укажите срок запуска и срок окончания гипотезы');
-  if (payload.end_date < payload.start_date) return alert('Срок окончания не может быть раньше срока запуска');
+  const error = document.getElementById('hypFormError');
+  const showError = message => {
+    if (error) { error.textContent = message; error.classList.remove('hidden'); }
+    return false;
+  };
+  if (error) error.classList.add('hidden');
+  if (!payload.title) return showError('Заполните название гипотезы.');
+  if (!payload.start_date || !payload.end_date) return showError('Укажите срок запуска и срок окончания гипотезы.');
+  if (payload.end_date < payload.start_date) return showError('Срок окончания не может быть раньше срока запуска.');
+  const button = document.getElementById('hypSaveButton');
+  if (button) { button.disabled = true; button.textContent = 'Сохранение…'; }
   const j = await fetchJsonSafe(buildApiUrl({ action: 'hypothesis_save' }), { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
-  if (j.status !== 'success') return alert('Ошибка сохранения: ' + (j.error || 'unknown'));
+  if (button) { button.disabled = false; button.textContent = 'Сохранить'; }
+  if (j.status !== 'success') return showError('Ошибка сохранения: ' + (j.error || 'unknown'));
   closeHypModal();
   document.getElementById('hypMonthFilter').value = payload.month_key;
   await renderHypothesesTab();
