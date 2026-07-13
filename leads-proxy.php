@@ -956,6 +956,7 @@ try {
     $addColumnIfMissing('hypotheses', 'roi_base', 'REAL NOT NULL DEFAULT 0');
     $addColumnIfMissing('hypotheses', 'roi_expected', 'REAL NOT NULL DEFAULT 0');
     $addColumnIfMissing('hypotheses', 'progress_notes', 'TEXT');
+    $addColumnIfMissing('hypotheses', 'item_type', "TEXT NOT NULL DEFAULT 'hypothesis'");
     // Фактические результаты теста (цикл A/B: план vs факт).
     $addColumnIfMissing('hypotheses', 'fact_visits', 'INTEGER NOT NULL DEFAULT 0');
     $addColumnIfMissing('hypotheses', 'fact_leads', 'INTEGER NOT NULL DEFAULT 0');
@@ -5763,6 +5764,21 @@ if ($action === 'hypothesis_months_list') {
             if ($mk !== '' && !isset($months[$mk])) $months[$mk] = ['month_key' => $mk, 'title' => $mk];
         }
     }
+    $res = @$db->query("SELECT start_date, end_date FROM hypotheses WHERE start_date != '' OR end_date != ''");
+    if ($res instanceof SQLite3Result) {
+        while ($r = $res->fetchArray(SQLITE3_ASSOC)) {
+            $startMonth = substr((string)($r['start_date'] ?: $r['end_date']), 0, 7);
+            $endMonth = substr((string)($r['end_date'] ?: $r['start_date']), 0, 7);
+            if (!preg_match('/^\d{4}-\d{2}$/', $startMonth) || !preg_match('/^\d{4}-\d{2}$/', $endMonth)) continue;
+            $cursor = DateTime::createFromFormat('!Y-m', $startMonth);
+            $last = DateTime::createFromFormat('!Y-m', $endMonth);
+            while ($cursor && $last && $cursor <= $last) {
+                $mk = $cursor->format('Y-m');
+                if (!isset($months[$mk])) $months[$mk] = ['month_key' => $mk, 'title' => $mk];
+                $cursor->modify('+1 month');
+            }
+        }
+    }
     krsort($months);
     echo json_encode(['status' => 'success', 'data' => array_values($months)], JSON_UNESCAPED_UNICODE);
     exit;
@@ -5788,8 +5804,14 @@ if ($action === 'hypothesis_month_save') {
 if ($action === 'hypotheses_list') {
     $month = trim((string)($_GET['month_key'] ?? ''));
     if ($month !== '') {
-        $stmt = $db->prepare('SELECT * FROM hypotheses WHERE month_key = :m ORDER BY start_date DESC, id DESC');
-        $stmt->bindValue(':m', $month, SQLITE3_TEXT);
+        $monthStart = $month . '-01';
+        $monthEnd = date('Y-m-t', strtotime($monthStart));
+        $stmt = $db->prepare("SELECT * FROM hypotheses
+            WHERE COALESCE(NULLIF(start_date, ''), month_key || '-01') <= :month_end
+              AND COALESCE(NULLIF(end_date, ''), month_key || '-31') >= :month_start
+            ORDER BY start_date DESC, id DESC");
+        $stmt->bindValue(':month_start', $monthStart, SQLITE3_TEXT);
+        $stmt->bindValue(':month_end', $monthEnd, SQLITE3_TEXT);
         $res = $stmt->execute();
     } else {
         $res = @$db->query('SELECT * FROM hypotheses ORDER BY start_date DESC, id DESC LIMIT 500');
@@ -5839,6 +5861,8 @@ if ($action === 'hypothesis_save') {
             $stmt->bindValue(':' . $k, (int)($input[$k] ?? 0), SQLITE3_INTEGER);
         }
         $stmt->bindValue(':is_key', (int)!empty($input['is_key']), SQLITE3_INTEGER);
+        $itemType = (string)($input['item_type'] ?? 'hypothesis');
+        $stmt->bindValue(':item_type', $itemType === 'task' ? 'task' : 'hypothesis', SQLITE3_TEXT);
         $allowed_statuses = ['planning','in_progress','success','failed','paused'];
         $status = in_array((string)($input['status'] ?? ''), $allowed_statuses) ? (string)$input['status'] : 'planning';
         $stmt->bindValue(':status', $status, SQLITE3_TEXT);
@@ -5866,7 +5890,7 @@ if ($action === 'hypothesis_save') {
             cr_lead_expected=:cr_lead_expected,cr_approve_base=:cr_approve_base,cr_approve_expected=:cr_approve_expected,
             revenue_base=:revenue_base,revenue_expected=:revenue_expected,revenue_total_base=:revenue_total_base,
             revenue_total_expected=:revenue_total_expected,visits_volume=:visits_volume,manual_sample=:manual_sample,
-            is_key=:is_key,status=:status,testing_cost=:testing_cost,expenses_base=:expenses_base,revenue_fin_base=:revenue_fin_base,
+            is_key=:is_key,item_type=:item_type,status=:status,testing_cost=:testing_cost,expenses_base=:expenses_base,revenue_fin_base=:revenue_fin_base,
             roi_base=:roi_base,roi_expected=:roi_expected,progress_notes=:progress_notes,
             fact_visits=:fact_visits,fact_leads=:fact_leads,fact_approvals=:fact_approvals,fact_revenue=:fact_revenue,fact_expenses=:fact_expenses,
             updated_at=:updated_at WHERE id=:id');
@@ -5878,13 +5902,13 @@ if ($action === 'hypothesis_save') {
             approve_value,levers,sample_size,traffic_volume,leads_volume,approvals_volume,expected_value,funnel_json,
             impact_json,cr_visit_base,cr_visit_expected,cr_lead_base,cr_lead_expected,cr_approve_base,cr_approve_expected,
             revenue_base,revenue_expected,revenue_total_base,revenue_total_expected,visits_volume,manual_sample,
-            is_key,status,testing_cost,expenses_base,revenue_fin_base,roi_base,roi_expected,progress_notes,
+            is_key,item_type,status,testing_cost,expenses_base,revenue_fin_base,roi_base,roi_expected,progress_notes,
             fact_visits,fact_leads,fact_approvals,fact_revenue,fact_expenses,created_at,updated_at)
             VALUES (:m,:title,:description,:goal,:planned_result,:start_date,:end_date,:base_cr,:expected_cr,:approve_rate,
             :approve_value,:levers,:sample_size,:traffic_volume,:leads_volume,:approvals_volume,:expected_value,:funnel_json,
             :impact_json,:cr_visit_base,:cr_visit_expected,:cr_lead_base,:cr_lead_expected,:cr_approve_base,:cr_approve_expected,
             :revenue_base,:revenue_expected,:revenue_total_base,:revenue_total_expected,:visits_volume,:manual_sample,
-            :is_key,:status,:testing_cost,:expenses_base,:revenue_fin_base,:roi_base,:roi_expected,:progress_notes,
+            :is_key,:item_type,:status,:testing_cost,:expenses_base,:revenue_fin_base,:roi_base,:roi_expected,:progress_notes,
             :fact_visits,:fact_leads,:fact_approvals,:fact_revenue,:fact_expenses,:created_at,:updated_at)');
         $bind($stmt);
         $stmt->bindValue(':created_at', $now, SQLITE3_INTEGER);
