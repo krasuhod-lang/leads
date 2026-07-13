@@ -1195,10 +1195,10 @@
     .hyp-view-toggle button.active { background: var(--accent); color: #fff; }
     /* Однострочный вид гипотез */
     .hyp-rows-scroll { overflow-x: auto; }
-    .hyp-rows { min-width: 1180px; display: flex; flex-direction: column; gap: 6px; }
+    .hyp-rows { min-width: 1480px; display: flex; flex-direction: column; gap: 6px; }
     .hyp-row-head, .hyp-row {
       display: grid;
-      grid-template-columns: 100px minmax(130px, 1.3fr) minmax(260px, 2.2fr) 78px minmax(140px, 1.2fr) minmax(130px, 1.1fr) 100px 116px 150px 116px;
+      grid-template-columns: 90px minmax(150px, 1.3fr) minmax(270px, 2.2fr) 82px minmax(160px, 1.2fr) 150px 110px 150px 170px 100px;
       gap: 8px; align-items: center;
     }
     .hyp-row-head { padding: 2px 10px; font-size: 10px; text-transform: uppercase; letter-spacing: .05em; font-weight: 600; color: var(--text-faint); }
@@ -1211,7 +1211,7 @@
       transition: border-color var(--t-fast) var(--ease-apple), box-shadow var(--t-fast) var(--ease-apple);
     }
     .hyp-row:hover { border-color: var(--border-strong); box-shadow: var(--shadow-card); }
-    .hyp-row > div { min-width: 0; }
+    .hyp-row > div, .hyp-row-head > div { min-width: 0; overflow: hidden; }
     /* Цветовое кодирование по статусу: зелёный — успех, красный — провал, синий — тест, серый — нейтральный */
     .hyp-row--success { border-left-color: var(--ok); background: linear-gradient(145deg, rgba(34,197,94,.07), var(--surface-solid)); }
     .hyp-row--failed  { border-left-color: var(--bad); background: linear-gradient(145deg, rgba(239,68,68,.07), var(--surface-solid)); }
@@ -1219,7 +1219,9 @@
     .hyp-row--neutral { border-left-color: #64748b; }
     .hyp-row .hyp-row-title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .hyp-row .hyp-cell-label { font-size: 9px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-faint); font-weight: 600; }
-    .hyp-row .hyp-pf-pair { white-space: nowrap; }
+    .hyp-row .hyp-pf-pair { white-space: normal; line-height: 1.35; }
+    .hyp-row .hyp-sig { max-width: 100%; white-space: normal; text-align: center; justify-content: center; }
+    .hyp-row-date { line-height: 1.35; overflow-wrap: anywhere; }
     .hyp-row .hyp-pf-pair .plan { color: var(--text-dim); }
     .hyp-row .hyp-pf-pair .fact { font-weight: 700; }
     /* Цепочка воронки: чипы конверсий этап→этап */
@@ -1915,14 +1917,14 @@
     <div class="card">
       <div class="flex flex-wrap gap-3 justify-between items-center mb-4">
         <div>
-          <h2 class="text-white font-bold text-lg">Гипотезы роста</h2>
-          <p class="text-sm text-slate-400 mt-1">Трекер экспериментов: воронка, ROI, статусы, лог изменений.</p>
+          <h2 class="text-white font-bold text-lg">Гипотезы и задачи</h2>
+          <p class="text-sm text-slate-400 mt-1">Трекер экспериментов и задач: сроки, статусы, результаты и лог изменений.</p>
         </div>
         <div class="flex flex-wrap gap-2 items-end">
           <label class="block"><span class="block text-xs text-slate-400 mb-1">Месяц</span><select id="hypMonthFilter" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm" onchange="renderHypothesesTab()"></select></label>
           <label class="block"><span class="block text-xs text-slate-400 mb-1">Добавить месяц</span><input id="hypNewMonth" type="month" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm"></label>
           <button class="btn" type="button" onclick="saveHypothesisMonth()">+ Месяц</button>
-          <button class="btn" type="button" onclick="openHypModal()">+ Новая гипотеза</button>
+          <button class="btn" type="button" onclick="openHypModal()">+ Новая запись</button>
         </div>
       </div>
       <!-- Фильтр-бар -->
@@ -1940,7 +1942,7 @@
     <!-- Список карточек -->
     <div class="card">
       <div class="flex justify-between items-center mb-4">
-        <h3 class="text-white font-semibold">Список гипотез</h3>
+        <h3 class="text-white font-semibold">Список гипотез и задач</h3>
         <div class="flex items-center gap-3">
           <div class="hyp-view-toggle" id="hypViewToggle">
             <button type="button" data-view="rows" onclick="hypSetView('rows')">Строки</button>
@@ -2427,11 +2429,18 @@ CR_plan       = baseCR,   AR_plan = baseAR
     </header>
     <div class="modal-body" style="overflow-y:auto;flex:1 1 auto;min-height:0;padding:18px;">
       <input id="hypId" type="hidden">
-      <!-- Строка 1: название + месяц + статус -->
-      <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
+      <!-- Строка 1: название + тип + месяц + статус -->
+      <div class="grid grid-cols-1 md:grid-cols-4 gap-3 mb-4">
         <div class="form-field md:col-span-1">
           <label for="hypTitle">Название <span class="text-red-400">*</span></label>
           <input id="hypTitle" type="text" required placeholder="Кратко: что тестируем">
+        </div>
+        <div class="form-field">
+          <label for="hypItemType">Тип</label>
+          <select id="hypItemType" onchange="toggleHypItemType()">
+            <option value="hypothesis">Гипотеза</option>
+            <option value="task">Задача без оцифровки</option>
+          </select>
         </div>
         <div class="form-field">
           <label for="hypMonth">Месяц</label>
@@ -2464,9 +2473,9 @@ CR_plan       = baseCR,   AR_plan = baseAR
         </div>
       </div>
       <!-- 2-колоночный макет: воронка | финансы + описание -->
-      <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div id="hypFormGrid" class="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <!-- === Левая колонка: воронка === -->
-        <section class="hyp-form-section">
+        <section id="hypMetricsSection" class="hyp-form-section">
           <div class="text-xs font-semibold uppercase mb-2" style="color:var(--text-dim);letter-spacing:.05em;">Базовая воронка</div>
           <p class="text-[11px] mb-3" style="color:var(--text-faint);">Выборка → Визит → Заявка → Апрув. Подставляются из текущих данных.</p>
           <div class="grid grid-cols-2 gap-2 mb-3">
@@ -2507,7 +2516,7 @@ CR_plan       = baseCR,   AR_plan = baseAR
         </section>
         <!-- === Правая колонка: финансы + описание + лог === -->
         <section class="hyp-form-section space-y-4">
-          <div>
+          <div id="hypFinanceSection">
             <div class="text-xs font-semibold uppercase mb-2" style="color:var(--text-dim);letter-spacing:.05em;">Финансовый блок (ROI)</div>
             <div class="grid grid-cols-2 gap-2 mb-3">
               <div class="form-field"><label>Текущая выручка, ₽</label><input id="hypRevenueFinBase" type="number" min="0" step="100" oninput="renderHypRoi()"></div>
@@ -3925,9 +3934,9 @@ function startAutoRefresh() {
     visibilityListenerAdded = true;
     document.addEventListener('visibilitychange', () => {
       if (!document.hidden) {
-        // При возврате во вкладку: всегда подтягиваем свежий снапшот из БД,
-        // и при необходимости (>= 1 ч) — запускаем полный refresh с API.
-        autoLoadSavedStats();
+        // При возврате не перерисовываем интерфейс сохранённым снапшотом:
+        // это сбрасывало пользовательские фильтры и раскрытые строки.
+        // Полное обновление запускается только когда действительно истёк интервал.
         runAutoRefresh(false);
       }
     });
@@ -9430,7 +9439,10 @@ function isoShift(iso, days) {
 
 
 // ========================== ГИПОТЕЗЫ ==========================
-let hypothesesState = { months: [], items: [], filterStatus: '', filterKey: false, pendingNotes: [] };
+let hypothesesState = {
+  months: [], items: [], filterStatus: '', filterKey: false, pendingNotes: [],
+  expandedIds: new Set(), renderSeq: 0,
+};
 function currentMonthKey() { return new Date().toISOString().slice(0, 7); }
 // Сдвигает YYYY-MM на delta месяцев.
 function shiftMonthKey(monthKey, delta) {
@@ -9694,8 +9706,21 @@ function hypSigBadgeHtml(f) {
 function toggleHypFactSection() {
   const section = document.getElementById('hypFactSection'); if (!section) return;
   const st = document.getElementById('hypStatus')?.value || 'planning';
-  section.classList.toggle('hidden', !['in_progress', 'success', 'failed'].includes(st));
+  const isTask = document.getElementById('hypItemType')?.value === 'task';
+  section.classList.toggle('hidden', isTask || !['in_progress', 'success', 'failed'].includes(st));
   renderHypFactCalc();
+}
+function toggleHypItemType() {
+  const isTask = document.getElementById('hypItemType')?.value === 'task';
+  document.getElementById('hypMetricsSection')?.classList.toggle('hidden', isTask);
+  document.getElementById('hypFinanceSection')?.classList.toggle('hidden', isTask);
+  const grid = document.getElementById('hypFormGrid');
+  if (grid) grid.style.gridTemplateColumns = isTask ? 'minmax(0, 1fr)' : '';
+  const title = document.getElementById('hypModalTitle');
+  if (title) title.textContent = document.getElementById('hypId')?.value
+    ? `Редактировать ${isTask ? 'задачу' : 'гипотезу'}`
+    : `Новая ${isTask ? 'задача' : 'гипотеза'}`;
+  toggleHypFactSection();
 }
 function renderHypFactCalc() {
   const box = document.getElementById('hypFactCalcBox'); if (!box) return;
@@ -9761,7 +9786,10 @@ function hypUpdateViewToggle() {
 }
 function hypToggleRowExpand(id) {
   const el = document.getElementById('hypRowDetails-' + id);
-  if (el) el.classList.toggle('hidden');
+  if (!el) return;
+  el.classList.toggle('hidden');
+  if (el.classList.contains('hidden')) hypothesesState.expandedIds.delete(Number(id));
+  else hypothesesState.expandedIds.add(Number(id));
 }
 // Общие вычисления для карточки и строки гипотезы.
 function hypComputed(h) {
@@ -9771,6 +9799,7 @@ function hypComputed(h) {
   const impacts = Array.isArray(h.impacts) ? h.impacts : [];
   const st = h.status || 'planning';
   const isKey = h.is_key == 1 || h.is_key === true;
+  const isTask = h.item_type === 'task';
   const days = (h.start_date && h.end_date) ? Math.round((new Date(h.end_date) - new Date(h.start_date)) / 86400000) + 1 : 0;
   const visits = Number(h.visits_volume || h.traffic_volume || 0);
   // Факт: расчёты и достоверность
@@ -9829,7 +9858,7 @@ function hypComputed(h) {
     : '';
   const keyBadge = isKey ? `<span class="text-[11px] px-2 py-0.5 rounded-full" style="background:rgba(34,197,94,.14);color:#4ade80;border:1px solid rgba(34,197,94,.3);">🚀 Ключевая</span>` : '';
   const dateRange = (h.start_date || h.end_date) ? `${h.start_date || '?'} – ${h.end_date || '?'}${days > 0 ? ` (${days} дн.)` : ''}` : '—';
-  return { impacts, st, statusLabel: statusLabels[st] || st, isKey, days, visits, factN,
+  return { impacts, st, statusLabel: statusLabels[st] || st, isKey, isTask, days, visits, factN,
     fnum, fmoney, pct, fmtRoi, focusLabel, focusPlan, focusFact, focusGood, roiLine, testCostLine,
     visitBase, leadBase, approveBase, uplift, upliftLine, notesHtml, keyBadge, dateRange };
 }
@@ -9837,6 +9866,28 @@ function hypComputed(h) {
 function hypCardHtml(h, c) {
   const { st, isKey, visits, factN, fnum, fmoney, fmtRoi, focusLabel, focusPlan, focusFact,
     roiLine, testCostLine, uplift, upliftLine, notesHtml, keyBadge, dateRange } = c;
+  if (c.isTask) {
+    return `<article class="hyp-card${isKey ? ' is-key' : ''}">
+  <div class="flex justify-between items-start gap-2">
+    <div class="flex flex-wrap items-center gap-2 min-w-0">
+      <span class="hyp-status hyp-status-${escapeHtml(st)}">${escapeHtml(c.statusLabel)}</span>
+      <span class="text-[11px] px-2 py-0.5 rounded-full" style="background:var(--surface-thin);color:var(--text-dim);border:1px solid var(--border);">Задача</span>
+      ${keyBadge}
+    </div>
+    <div class="flex gap-2 shrink-0">
+      <button type="button" class="text-xs" style="color:var(--accent);" onclick="openHypModal(${Number(h.id)})">Изменить</button>
+      <button type="button" class="text-xs" style="color:#f87171;" onclick="deleteHypothesis(${Number(h.id)})">Удалить</button>
+    </div>
+  </div>
+  <h4 class="font-semibold" style="color:var(--text);font-size:16px;">${escapeHtml(h.title)}</h4>
+  <div class="text-xs" style="color:var(--text-faint);">📅 ${escapeHtml(dateRange)}</div>
+  ${h.description ? `<p class="text-sm" style="color:var(--text-dim);">${escapeHtml(h.description)}</p>` : ''}
+  ${h.goal ? `<p class="text-sm" style="color:var(--text-dim);"><b>Цель:</b> ${escapeHtml(h.goal)}</p>` : ''}
+  ${h.planned_result ? `<p class="text-sm" style="color:var(--text-dim);"><b>Результат:</b> ${escapeHtml(h.planned_result)}</p>` : ''}
+  ${notesHtml ? `<div>${notesHtml}</div>` : ''}
+  <div class="flex justify-end"><button type="button" onclick="openHypNoteModal(${Number(h.id)})" title="Добавить запись в дневник" class="text-lg" style="background:none;border:none;cursor:pointer;color:var(--text-dim);">💬</button></div>
+</article>`;
+  }
   return `<article class="hyp-card${isKey ? ' is-key' : ''}">
   <div class="flex justify-between items-start gap-2">
     <div class="flex flex-wrap items-center gap-2 min-w-0">
@@ -9953,6 +10004,24 @@ function hypRowHtml(h, c) {
   const roiFact = factN.fact_roi === null ? '—' : factN.fact_roi.toFixed(1) + '%';
   const roiGood = factN.fact_roi === null || !Number.isFinite(Number(h.roi_expected)) ? null : factN.fact_roi >= Number(h.roi_expected);
   const id = Number(h.id);
+  if (c.isTask) {
+    return `<div class="hyp-row-wrap">
+  <div class="hyp-row ${rowCls}" onclick="hypToggleRowExpand(${id})" title="Нажмите, чтобы раскрыть детали">
+    <div><span class="hyp-status hyp-status-${escapeHtml(st)}">${escapeHtml(shortStatus[st] || st)}</span></div>
+    <div class="hyp-row-title" title="${escapeHtml(h.title)}">${isKey ? '🚀 ' : ''}${escapeHtml(h.title)}</div>
+    <div><span class="hyp-cell-label">Тип</span><br><b>Задача без оцифровки</b></div>
+    <div>—</div><div>—</div><div>—</div><div>—</div>
+    <div><span class="hyp-sig hyp-sig-nodata">Не требуется</span></div>
+    <div class="hyp-row-date text-xs" style="color:var(--text-faint);">📅 ${escapeHtml(c.dateRange)}</div>
+    <div class="flex gap-2 flex-wrap justify-end" onclick="event.stopPropagation()">
+      <button type="button" class="text-xs" style="color:var(--accent);" onclick="openHypModal(${id})" title="Изменить">✏️</button>
+      <button type="button" class="text-xs" onclick="openHypNoteModal(${id})" title="Добавить запись в дневник" style="background:none;border:none;cursor:pointer;">💬</button>
+      <button type="button" class="text-xs" style="color:#f87171;" onclick="deleteHypothesis(${id})" title="Удалить">🗑</button>
+    </div>
+  </div>
+  <div class="hyp-row-details${hypothesesState.expandedIds.has(id) ? '' : ' hidden'}" id="hypRowDetails-${id}">${hypCardHtml(h, c)}</div>
+</div>`;
+  }
   return `<div class="hyp-row-wrap">
   <div class="hyp-row ${rowCls}" onclick="hypToggleRowExpand(${id})" title="Нажмите, чтобы раскрыть детали">
     <div><span class="hyp-status hyp-status-${escapeHtml(st)}">${escapeHtml(shortStatus[st] || st)}</span></div>
@@ -9963,7 +10032,7 @@ function hypRowHtml(h, c) {
     <div><div class="hyp-cell-label">Выручка</div>${pfPair(fmoney(revPlan), fmoney(revFact), revGood)}${revProgressBar}</div>
     <div><div class="hyp-cell-label">ROI</div>${pfPair(roiPlan, roiFact, roiGood)}</div>
     <div>${hypSigBadgeHtml(factN)}</div>
-    <div class="text-xs" style="color:var(--text-faint);white-space:normal;">📅 ${escapeHtml(c.dateRange)}</div>
+    <div class="hyp-row-date text-xs" style="color:var(--text-faint);">📅 ${escapeHtml(c.dateRange)}</div>
     <div class="flex gap-2 flex-wrap justify-end" onclick="event.stopPropagation()">
       <button type="button" class="text-xs" onclick="extendHypothesisMonth(${id})" title="Продлить срок гипотезы на следующий месяц">⏩</button>
       <button type="button" class="text-xs" style="color:var(--accent);" onclick="openHypModal(${id})" title="Изменить">✏️</button>
@@ -9971,7 +10040,7 @@ function hypRowHtml(h, c) {
       <button type="button" class="text-xs" style="color:#f87171;" onclick="deleteHypothesis(${id})" title="Удалить">🗑</button>
     </div>
   </div>
-  <div class="hyp-row-details hidden" id="hypRowDetails-${id}">${hypCardHtml(h, c)}</div>
+  <div class="hyp-row-details${hypothesesState.expandedIds.has(id) ? '' : ' hidden'}" id="hypRowDetails-${id}">${hypCardHtml(h, c)}</div>
 </div>`;
 }
 function renderHypList() {
@@ -9993,9 +10062,11 @@ function renderHypList() {
 
 async function renderHypothesesTab() {
   if (!document.getElementById('tab-hypotheses')) return;
+  const renderSeq = ++hypothesesState.renderSeq;
   await loadHypothesisMonths();
   const month = document.getElementById('hypMonthFilter')?.value || currentMonthKey();
   const j = await fetchJsonSafe(buildApiUrl({ action: 'hypotheses_list', month_key: month }));
+  if (renderSeq !== hypothesesState.renderSeq || month !== document.getElementById('hypMonthFilter')?.value) return;
   hypothesesState.items = (j.status === 'success' && Array.isArray(j.data)) ? j.data : [];
   renderHypList();
   // Показываем/скрываем FAB
@@ -10048,6 +10119,7 @@ function resetHypothesisForm() {
   if (start) start.value = today;
   if (end) end.value = today;
   const statusEl = document.getElementById('hypStatus'); if (statusEl) statusEl.value = 'planning';
+  const typeEl = document.getElementById('hypItemType'); if (typeEl) typeEl.value = 'hypothesis';
   // Заполняем воронку из текущих данных
   const f = hypothesisFunnelSnapshot();
   const t = sumLeadRows(globalRawData || []);
@@ -10067,6 +10139,7 @@ function resetHypothesisForm() {
   const notesLog = document.getElementById('hypNotesLog'); if (notesLog) notesLog.innerHTML = '';
   const roiDisplay = document.getElementById('hypRoiDisplay'); if (roiDisplay) roiDisplay.classList.add('hidden');
   toggleHypFactSection();
+  toggleHypItemType();
   toggleHypImpact();
   renderHypothesisCalc();
 }
@@ -10080,6 +10153,7 @@ function editHypothesis(id) {
   set('hypTitle', h.title); set('hypDescription', h.description); set('hypGoal', h.goal);
   set('hypPlannedResult', h.planned_result); set('hypLevers', h.levers);
   set('hypStart', h.start_date); set('hypEnd', h.end_date);
+  const typeEl = document.getElementById('hypItemType'); if (typeEl) typeEl.value = h.item_type === 'task' ? 'task' : 'hypothesis';
   const statusEl = document.getElementById('hypStatus'); if (statusEl) statusEl.value = h.status || 'planning';
   const isKeyEl = document.getElementById('hypIsKey'); if (isKeyEl) isKeyEl.checked = h.is_key == 1 || h.is_key === true;
   const m = document.getElementById('hypMonth'); if (m && h.month_key) m.value = h.month_key;
@@ -10108,13 +10182,13 @@ function editHypothesis(id) {
   setFact('hypFactRevenue', h.fact_revenue);
   setFact('hypFactExpenses', h.fact_expenses);
   toggleHypFactSection();
+  toggleHypItemType();
   // Лог заметок
   const notes = Array.isArray(h.progress_notes) ? h.progress_notes : [];
   hypothesesState.pendingNotes = [...notes];
   renderHypNotesLog(notes);
   toggleHypImpact();
   renderHypothesisCalc();
-  const titleEl = document.getElementById('hypModalTitle'); if (titleEl) titleEl.textContent = 'Редактировать гипотезу';
 }
 
 // --- Лог заметок внутри модалки ---
@@ -10138,8 +10212,21 @@ function hypAddNoteInline() {
 // --- Сохранение гипотезы ---
 async function saveHypothesis() {
   const n = calcHypothesisNumbers();
+  const isTask = document.getElementById('hypItemType')?.value === 'task';
+  if (isTask) {
+    n.impacts = [];
+    for (const key of [
+      'cr_visit_base','cr_visit_expected','cr_lead_base','cr_lead_expected','cr_approve_base','cr_approve_expected',
+      'revenue_base','revenue_expected','revenue_total_base','revenue_total_expected','manual_sample',
+      'revenue_fin_base','projected_revenue','expenses_base','testing_cost','roi_base','roi_expected',
+      'base_cr','expected_cr','approve_rate','approve_value','sample_size','traffic_volume','visits_volume',
+      'leads_volume','approvals_volume','expected_value',
+    ]) n[key] = 0;
+    n.funnel = {};
+  }
   const payload = Object.assign(n, {
     id: Number(document.getElementById('hypId')?.value || 0),
+    item_type: isTask ? 'task' : 'hypothesis',
     month_key: document.getElementById('hypMonth')?.value || currentMonthKey(),
     title: (document.getElementById('hypTitle')?.value || '').trim(),
     description: document.getElementById('hypDescription')?.value || '',
