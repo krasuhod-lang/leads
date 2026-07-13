@@ -5062,6 +5062,40 @@ if ($action === 'save_bounces') {
     exit;
 }
 
+// 5b. Пакетное сохранение отказов (ручной ввод по дням / загрузка CSV)
+if ($action === 'save_bounces_batch') {
+    $input = json_decode(file_get_contents('php://input'), true);
+    $source = trim((string)($input['source'] ?? ''));
+    $rows = $input['rows'] ?? null;
+    if ($source === '' || !is_array($rows)) {
+        echo json_encode(['status' => 'error', 'message' => 'Нужны source и массив rows']);
+        exit;
+    }
+    $saved = 0;
+    $skipped = [];
+    $db->exec('BEGIN');
+    $stmt = $db->prepare('INSERT INTO bounce_stats (date, source_name, bounces)
+        VALUES (:date, :source_name, :bounces)
+        ON CONFLICT(date, source_name) DO UPDATE SET bounces = excluded.bounces');
+    foreach ($rows as $r) {
+        $date = trim((string)($r['date'] ?? ''));
+        $bounces = $r['bounces'] ?? null;
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date) || !is_numeric($bounces) || (int)$bounces < 0) {
+            $skipped[] = $date !== '' ? $date : '(пустая дата)';
+            continue;
+        }
+        $stmt->reset();
+        $stmt->bindValue(':date', $date, SQLITE3_TEXT);
+        $stmt->bindValue(':source_name', $source, SQLITE3_TEXT);
+        $stmt->bindValue(':bounces', (int)$bounces, SQLITE3_INTEGER);
+        $stmt->execute();
+        $saved++;
+    }
+    $db->exec('COMMIT');
+    echo json_encode(['status' => 'success', 'saved' => $saved, 'skipped' => $skipped], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
 // 6. Получение баннерной статистики
 if ($action === 'get_banner_stats') {
     $start = $_GET['start_date'] ?? '';
