@@ -952,6 +952,7 @@ try {
     $addColumnIfMissing('hypotheses', 'status', "TEXT NOT NULL DEFAULT 'planning'");
     $addColumnIfMissing('hypotheses', 'testing_cost', 'REAL NOT NULL DEFAULT 0');
     $addColumnIfMissing('hypotheses', 'expenses_base', 'REAL NOT NULL DEFAULT 0');
+    $addColumnIfMissing('hypotheses', 'revenue_fin_base', 'REAL NOT NULL DEFAULT 0');
     $addColumnIfMissing('hypotheses', 'roi_base', 'REAL NOT NULL DEFAULT 0');
     $addColumnIfMissing('hypotheses', 'roi_expected', 'REAL NOT NULL DEFAULT 0');
     $addColumnIfMissing('hypotheses', 'progress_notes', 'TEXT');
@@ -5790,7 +5791,7 @@ if ($action === 'hypothesis_save') {
         foreach (['base_cr','expected_cr','approve_rate','approve_value','sample_size','traffic_volume','leads_volume','approvals_volume','expected_value',
                   'cr_visit_base','cr_visit_expected','cr_lead_base','cr_lead_expected','cr_approve_base','cr_approve_expected',
                   'revenue_base','revenue_expected','revenue_total_base','revenue_total_expected','visits_volume','manual_sample',
-                  'testing_cost','expenses_base','roi_base','roi_expected'] as $k) {
+                  'testing_cost','expenses_base','revenue_fin_base','roi_base','roi_expected'] as $k) {
             $stmt->bindValue(':' . $k, (float)($input[$k] ?? 0), SQLITE3_FLOAT);
         }
         $stmt->bindValue(':is_key', (int)!empty($input['is_key']), SQLITE3_INTEGER);
@@ -5821,7 +5822,7 @@ if ($action === 'hypothesis_save') {
             cr_lead_expected=:cr_lead_expected,cr_approve_base=:cr_approve_base,cr_approve_expected=:cr_approve_expected,
             revenue_base=:revenue_base,revenue_expected=:revenue_expected,revenue_total_base=:revenue_total_base,
             revenue_total_expected=:revenue_total_expected,visits_volume=:visits_volume,manual_sample=:manual_sample,
-            is_key=:is_key,status=:status,testing_cost=:testing_cost,expenses_base=:expenses_base,
+            is_key=:is_key,status=:status,testing_cost=:testing_cost,expenses_base=:expenses_base,revenue_fin_base=:revenue_fin_base,
             roi_base=:roi_base,roi_expected=:roi_expected,progress_notes=:progress_notes,
             updated_at=:updated_at WHERE id=:id');
         $bind($stmt);
@@ -5832,12 +5833,12 @@ if ($action === 'hypothesis_save') {
             approve_value,levers,sample_size,traffic_volume,leads_volume,approvals_volume,expected_value,funnel_json,
             impact_json,cr_visit_base,cr_visit_expected,cr_lead_base,cr_lead_expected,cr_approve_base,cr_approve_expected,
             revenue_base,revenue_expected,revenue_total_base,revenue_total_expected,visits_volume,manual_sample,
-            is_key,status,testing_cost,expenses_base,roi_base,roi_expected,progress_notes,created_at,updated_at)
+            is_key,status,testing_cost,expenses_base,revenue_fin_base,roi_base,roi_expected,progress_notes,created_at,updated_at)
             VALUES (:m,:title,:description,:goal,:planned_result,:start_date,:end_date,:base_cr,:expected_cr,:approve_rate,
             :approve_value,:levers,:sample_size,:traffic_volume,:leads_volume,:approvals_volume,:expected_value,:funnel_json,
             :impact_json,:cr_visit_base,:cr_visit_expected,:cr_lead_base,:cr_lead_expected,:cr_approve_base,:cr_approve_expected,
             :revenue_base,:revenue_expected,:revenue_total_base,:revenue_total_expected,:visits_volume,:manual_sample,
-            :is_key,:status,:testing_cost,:expenses_base,:roi_base,:roi_expected,:progress_notes,:created_at,:updated_at)');
+            :is_key,:status,:testing_cost,:expenses_base,:revenue_fin_base,:roi_base,:roi_expected,:progress_notes,:created_at,:updated_at)');
         $bind($stmt);
         $stmt->bindValue(':created_at', $now, SQLITE3_INTEGER);
         $stmt->execute();
