@@ -947,6 +947,14 @@ try {
     $addColumnIfMissing('hypotheses', 'revenue_total_expected', 'REAL NOT NULL DEFAULT 0');
     $addColumnIfMissing('hypotheses', 'visits_volume', 'REAL NOT NULL DEFAULT 0');
     $addColumnIfMissing('hypotheses', 'manual_sample', 'REAL NOT NULL DEFAULT 0');
+    // Трекер экспериментов: статус, ROI, расходы, лог изменений.
+    $addColumnIfMissing('hypotheses', 'is_key', 'INTEGER NOT NULL DEFAULT 0');
+    $addColumnIfMissing('hypotheses', 'status', "TEXT NOT NULL DEFAULT 'planning'");
+    $addColumnIfMissing('hypotheses', 'testing_cost', 'REAL NOT NULL DEFAULT 0');
+    $addColumnIfMissing('hypotheses', 'expenses_base', 'REAL NOT NULL DEFAULT 0');
+    $addColumnIfMissing('hypotheses', 'roi_base', 'REAL NOT NULL DEFAULT 0');
+    $addColumnIfMissing('hypotheses', 'roi_expected', 'REAL NOT NULL DEFAULT 0');
+    $addColumnIfMissing('hypotheses', 'progress_notes', 'TEXT');
 
     // Кэш результатов глубокого AI-анализа. Ключ — диапазон дат `from|to`,
     // чтобы при перезагрузке страницы пользователь видел тот же отчёт без
@@ -5752,6 +5760,8 @@ if ($action === 'hypotheses_list') {
             unset($r['funnel_json']);
             $r['impacts'] = json_decode((string)($r['impact_json'] ?? ''), true) ?: [];
             unset($r['impact_json']);
+            $r['progress_notes'] = json_decode((string)($r['progress_notes'] ?? ''), true) ?: [];
+            $r['is_key'] = (int)($r['is_key'] ?? 0);
             $rows[] = $r;
         }
     }
@@ -5779,9 +5789,14 @@ if ($action === 'hypothesis_save') {
         $stmt->bindValue(':end_date', $end, SQLITE3_TEXT);
         foreach (['base_cr','expected_cr','approve_rate','approve_value','sample_size','traffic_volume','leads_volume','approvals_volume','expected_value',
                   'cr_visit_base','cr_visit_expected','cr_lead_base','cr_lead_expected','cr_approve_base','cr_approve_expected',
-                  'revenue_base','revenue_expected','revenue_total_base','revenue_total_expected','visits_volume','manual_sample'] as $k) {
+                  'revenue_base','revenue_expected','revenue_total_base','revenue_total_expected','visits_volume','manual_sample',
+                  'testing_cost','expenses_base','roi_base','roi_expected'] as $k) {
             $stmt->bindValue(':' . $k, (float)($input[$k] ?? 0), SQLITE3_FLOAT);
         }
+        $stmt->bindValue(':is_key', (int)!empty($input['is_key']), SQLITE3_INTEGER);
+        $allowed_statuses = ['planning','in_progress','success','failed','paused'];
+        $status = in_array((string)($input['status'] ?? ''), $allowed_statuses) ? (string)$input['status'] : 'planning';
+        $stmt->bindValue(':status', $status, SQLITE3_TEXT);
         $stmt->bindValue(':levers', (string)($input['levers'] ?? ''), SQLITE3_TEXT);
         $stmt->bindValue(':funnel_json', json_encode($input['funnel'] ?? [], JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
         $impacts = is_array($input['impacts'] ?? null) ? array_values(array_intersect(
@@ -5789,6 +5804,12 @@ if ($action === 'hypothesis_save') {
             ['visit', 'lead', 'approve', 'revenue']
         )) : [];
         $stmt->bindValue(':impact_json', json_encode($impacts, JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
+        // progress_notes: клиент отправляет массив; если отсутствует — оставляем NULL.
+        if (isset($input['progress_notes']) && is_array($input['progress_notes'])) {
+            $stmt->bindValue(':progress_notes', json_encode($input['progress_notes'], JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
+        } else {
+            $stmt->bindValue(':progress_notes', null, SQLITE3_NULL);
+        }
         $stmt->bindValue(':updated_at', $now, SQLITE3_INTEGER);
     };
     if ($id > 0) {
@@ -5800,6 +5821,8 @@ if ($action === 'hypothesis_save') {
             cr_lead_expected=:cr_lead_expected,cr_approve_base=:cr_approve_base,cr_approve_expected=:cr_approve_expected,
             revenue_base=:revenue_base,revenue_expected=:revenue_expected,revenue_total_base=:revenue_total_base,
             revenue_total_expected=:revenue_total_expected,visits_volume=:visits_volume,manual_sample=:manual_sample,
+            is_key=:is_key,status=:status,testing_cost=:testing_cost,expenses_base=:expenses_base,
+            roi_base=:roi_base,roi_expected=:roi_expected,progress_notes=:progress_notes,
             updated_at=:updated_at WHERE id=:id');
         $bind($stmt);
         $stmt->bindValue(':id', $id, SQLITE3_INTEGER);
@@ -5808,11 +5831,13 @@ if ($action === 'hypothesis_save') {
         $stmt = $db->prepare('INSERT INTO hypotheses (month_key,title,description,goal,planned_result,start_date,end_date,base_cr,expected_cr,approve_rate,
             approve_value,levers,sample_size,traffic_volume,leads_volume,approvals_volume,expected_value,funnel_json,
             impact_json,cr_visit_base,cr_visit_expected,cr_lead_base,cr_lead_expected,cr_approve_base,cr_approve_expected,
-            revenue_base,revenue_expected,revenue_total_base,revenue_total_expected,visits_volume,manual_sample,created_at,updated_at)
+            revenue_base,revenue_expected,revenue_total_base,revenue_total_expected,visits_volume,manual_sample,
+            is_key,status,testing_cost,expenses_base,roi_base,roi_expected,progress_notes,created_at,updated_at)
             VALUES (:m,:title,:description,:goal,:planned_result,:start_date,:end_date,:base_cr,:expected_cr,:approve_rate,
             :approve_value,:levers,:sample_size,:traffic_volume,:leads_volume,:approvals_volume,:expected_value,:funnel_json,
             :impact_json,:cr_visit_base,:cr_visit_expected,:cr_lead_base,:cr_lead_expected,:cr_approve_base,:cr_approve_expected,
-            :revenue_base,:revenue_expected,:revenue_total_base,:revenue_total_expected,:visits_volume,:manual_sample,:created_at,:updated_at)');
+            :revenue_base,:revenue_expected,:revenue_total_base,:revenue_total_expected,:visits_volume,:manual_sample,
+            :is_key,:status,:testing_cost,:expenses_base,:roi_base,:roi_expected,:progress_notes,:created_at,:updated_at)');
         $bind($stmt);
         $stmt->bindValue(':created_at', $now, SQLITE3_INTEGER);
         $stmt->execute();
@@ -5831,6 +5856,30 @@ if ($action === 'hypothesis_delete') {
     echo json_encode(['status' => 'success', 'deleted' => $db->changes()]);
     exit;
 }
+
+if ($action === 'hypothesis_add_note') {
+    // Добавляет одну запись в progress_notes гипотезы (дата + текст + автор).
+    $input = json_decode(file_get_contents('php://input'), true) ?: [];
+    $id   = (int)($input['id'] ?? 0);
+    $text = trim((string)($input['text'] ?? ''));
+    if ($id <= 0 || $text === '') { echo json_encode(['status'=>'error','error'=>'id and text required']); exit; }
+    $row = @$db->querySingle("SELECT progress_notes FROM hypotheses WHERE id = $id", false);
+    $notes = json_decode((string)($row ?: ''), true);
+    if (!is_array($notes)) $notes = [];
+    $notes[] = [
+        'date'   => date('Y-m-d'),
+        'text'   => $text,
+        'author' => trim((string)($input['author'] ?? '')),
+    ];
+    $stmt = $db->prepare('UPDATE hypotheses SET progress_notes=:n, updated_at=:t WHERE id=:id');
+    $stmt->bindValue(':n', json_encode($notes, JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
+    $stmt->bindValue(':t', time(), SQLITE3_INTEGER);
+    $stmt->bindValue(':id', $id, SQLITE3_INTEGER);
+    $stmt->execute();
+    echo json_encode(['status' => 'success', 'notes' => $notes], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
 
 // ============================================================================
 // Дашборд монетизации отказного трафика — backend-stubs (PR 1 каркаса).
