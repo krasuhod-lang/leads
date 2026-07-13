@@ -1166,6 +1166,21 @@
     .hyp-note-entry { border-left: 2px solid var(--border-strong); padding-left: 10px; margin-bottom: 8px; }
     .hyp-note-date  { font-size: 10px; color: var(--text-faint); }
     .hyp-note-text  { font-size: 13px; color: var(--text); }
+    /* Таблица сравнения План vs Факт внутри карточки */
+    .hyp-pf-table { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; font-size: 12px; }
+    .hyp-pf-row { display: grid; grid-template-columns: minmax(90px, 1.2fr) 1fr 1fr; align-items: center; }
+    .hyp-pf-row + .hyp-pf-row { border-top: 1px solid var(--border); }
+    .hyp-pf-row > div { padding: 6px 10px; min-width: 0; }
+    .hyp-pf-head { background: var(--surface-thin); font-size: 10px; text-transform: uppercase; letter-spacing: .05em; font-weight: 600; color: var(--text-faint); }
+    .hyp-pf-label { color: var(--text-faint); font-size: 11px; }
+    .hyp-pf-plan { background: var(--surface-thin); color: var(--text-dim); font-weight: 600; }
+    .hyp-pf-fact { background: rgba(0,113,227,.06); color: var(--text); font-weight: 700; }
+    .hyp-pf-fact .hyp-pf-uplift { font-weight: 600; font-size: 11px; margin-left: 4px; }
+    /* Плашка статзначимости */
+    .hyp-sig { display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px; border-radius: 980px; font-size: 11px; font-weight: 600; white-space: nowrap; }
+    .hyp-sig-yes  { background: rgba(34,197,94,.14); color: #4ade80; border: 1px solid rgba(34,197,94,.3); }
+    .hyp-sig-no   { background: rgba(239,68,68,.12); color: #f87171; border: 1px solid rgba(239,68,68,.3); }
+    .hyp-sig-nodata { background: rgba(234,179,8,.12); color: #facc15; border: 1px solid rgba(234,179,8,.3); }
     @media (max-width: 767px) {
       #hypModal.modal-backdrop { padding: 0; align-items: stretch; }
       .hyp-modal-box {
@@ -2349,7 +2364,7 @@ CR_plan       = baseCR,   AR_plan = baseAR
         </div>
         <div class="form-field">
           <label for="hypStatus">Статус</label>
-          <select id="hypStatus">
+          <select id="hypStatus" onchange="toggleHypFactSection()">
             <option value="planning">🕐 Планируется</option>
             <option value="in_progress">🔵 В работе</option>
             <option value="success">✅ Успех</option>
@@ -2429,6 +2444,20 @@ CR_plan       = baseCR,   AR_plan = baseAR
               <div class="text-2xl" style="color:var(--text-dim);">→</div>
               <div class="roi-item"><div class="roi-label">Ожидаемый ROI</div><div class="roi-val" id="hypRoiExpected">—</div></div>
             </div>
+          </div>
+          <!-- Фактические результаты (видно, если тест запущен/завершён) -->
+          <div id="hypFactSection" class="hidden">
+            <div class="text-xs font-semibold uppercase mb-2" style="color:var(--text-dim);letter-spacing:.05em;">📊 Фактические результаты</div>
+            <p class="text-[11px] mb-2" style="color:var(--text-faint);">Заполните после запуска теста — необязательно. Конверсии, uplift, ROI и достоверность посчитаются автоматически.</p>
+            <div class="grid grid-cols-2 gap-2 mb-3">
+              <div class="form-field"><label>Факт. визиты</label><input id="hypFactVisits" type="number" min="0" step="1" placeholder="—" oninput="renderHypFactCalc()"></div>
+              <div class="form-field"><label>Факт. заявки</label><input id="hypFactLeads" type="number" min="0" step="1" placeholder="—" oninput="renderHypFactCalc()"></div>
+              <div class="form-field"><label>Факт. апрувы</label><input id="hypFactApprovals" type="number" min="0" step="1" placeholder="—" oninput="renderHypFactCalc()"></div>
+              <div class="form-field"><label>Факт. затраты, ₽</label><input id="hypFactExpenses" type="number" min="0" step="100" placeholder="—" oninput="renderHypFactCalc()"></div>
+              <div class="form-field"><label>Факт. выручка, ₽</label><input id="hypFactRevenue" type="number" min="0" step="100" placeholder="—" oninput="renderHypFactCalc()"></div>
+            </div>
+            <div id="hypFactCalcBox" class="grid grid-cols-2 gap-2 mb-2"></div>
+            <div id="hypFactSigBadge"></div>
           </div>
           <div class="form-field">
             <label>Описание / суть гипотезы</label>
@@ -9333,6 +9362,108 @@ function renderHypRoi() {
   baseEl.textContent = fmtRoi(calcRoi(n.revenue_fin_base, n.expenses_base));
   expEl.textContent = fmtRoi(calcRoi(n.projected_revenue, n.expenses_base + n.testing_cost));
 }
+
+// --- Факт: расчёты, uplift и статзначимость (Z-test двух пропорций) ---
+function normCdf(z) {
+  // Аппроксимация функции нормального распределения (Abramowitz & Stegun 26.2.17).
+  const t = 1 / (1 + 0.2316419 * Math.abs(z));
+  const d = 0.3989422804014327 * Math.exp(-z * z / 2);
+  const p = d * t * (0.319381530 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))));
+  return z >= 0 ? 1 - p : p;
+}
+function hypZTestProportions(p1, n1, p2, n2) {
+  // Сравнение двух долей: возвращает {z, pValue, significant} или null (мало данных).
+  if (!(n1 > 0 && n2 > 0)) return null;
+  if (!(p1 >= 0 && p1 <= 1 && p2 >= 0 && p2 <= 1)) return null;
+  const pooled = (p1 * n1 + p2 * n2) / (n1 + n2);
+  const se = Math.sqrt(pooled * (1 - pooled) * (1 / n1 + 1 / n2));
+  if (!(se > 0)) return null;
+  const z = (p2 - p1) / se;
+  const pValue = 2 * (1 - normCdf(Math.abs(z)));
+  return { z, pValue, significant: pValue < 0.05 };
+}
+function calcFactNumbers(h) {
+  // h — объект гипотезы из состояния; если не передан — берём из инпутов модалки
+  // (база — из calcHypothesisNumbers()). Все поля факта необязательны.
+  const num = v => { const n = Number(v); return Number.isFinite(n) && n > 0 ? n : 0; };
+  let fact, base;
+  if (h) {
+    fact = {
+      visits: num(h.fact_visits), leads: num(h.fact_leads), approvals: num(h.fact_approvals),
+      revenue: num(h.fact_revenue), expenses: num(h.fact_expenses),
+    };
+    base = {
+      crLead: num(h.cr_lead_base ?? h.base_cr),
+      crApprove: num(h.cr_approve_base ?? h.approve_rate),
+      crLeadExpected: num(h.cr_lead_expected ?? h.expected_cr),
+      crApproveExpected: num(h.cr_approve_expected),
+      visits: num(h.visits_volume || h.traffic_volume),
+      leads: num(h.leads_volume),
+      revenue: num(h.revenue_total_expected) || num(h.expected_value),
+      roiExpected: Number.isFinite(Number(h.roi_expected)) ? Number(h.roi_expected) : null,
+      expensesPlan: num(h.expenses_base) + num(h.testing_cost),
+    };
+  } else {
+    const n = calcHypothesisNumbers();
+    fact = {
+      visits: hypNum('hypFactVisits'), leads: hypNum('hypFactLeads'), approvals: hypNum('hypFactApprovals'),
+      revenue: hypNum('hypFactRevenue'), expenses: hypNum('hypFactExpenses'),
+    };
+    base = {
+      crLead: n.cr_lead_base, crApprove: n.cr_approve_base,
+      crLeadExpected: n.cr_lead_expected, crApproveExpected: n.cr_approve_expected,
+      visits: n.visits_volume, leads: n.leads_volume,
+      revenue: n.revenue_total_expected || n.expected_value,
+      roiExpected: n.roi_expected, expensesPlan: n.expenses_base + n.testing_cost,
+    };
+  }
+  const hasFact = fact.visits > 0 || fact.leads > 0 || fact.approvals > 0 || fact.revenue > 0 || fact.expenses > 0;
+  const crLead = fact.visits > 0 ? fact.leads / fact.visits : null;
+  const crApprove = fact.leads > 0 ? fact.approvals / fact.leads : null;
+  const upliftLead = (crLead !== null && base.crLead > 0) ? (crLead / base.crLead - 1) * 100 : null;
+  const upliftApprove = (crApprove !== null && base.crApprove > 0) ? (crApprove / base.crApprove - 1) * 100 : null;
+  const roi = calcRoi(fact.revenue, fact.expenses);
+  // Статзначимость по фокусному этапу: заявка (визит→заявка), иначе апрув (заявка→апрув).
+  let sig = null, sigStage = null;
+  if (crLead !== null && base.crLead > 0 && base.visits > 0) {
+    sig = hypZTestProportions(base.crLead, base.visits, crLead, fact.visits);
+    sigStage = 'lead';
+  } else if (crApprove !== null && base.crApprove > 0 && base.leads > 0) {
+    sig = hypZTestProportions(base.crApprove, base.leads, crApprove, fact.leads);
+    sigStage = 'approve';
+  }
+  return {
+    hasFact, fact, base,
+    fact_cr_lead: crLead, fact_cr_approve: crApprove,
+    uplift_lead: upliftLead, uplift_approve: upliftApprove,
+    fact_roi: roi, sig, sigStage,
+  };
+}
+function hypSigBadgeHtml(f) {
+  if (!f.hasFact || !f.sig) return '<span class="hyp-sig hyp-sig-nodata">⏳ Недостаточно данных</span>';
+  return f.sig.significant
+    ? '<span class="hyp-sig hyp-sig-yes" title="p = ' + f.sig.pValue.toFixed(4) + '">✔ Статзначимо (достоверно)</span>'
+    : '<span class="hyp-sig hyp-sig-no" title="p = ' + f.sig.pValue.toFixed(4) + '">✖ Не значимо (случайность)</span>';
+}
+function toggleHypFactSection() {
+  const section = document.getElementById('hypFactSection'); if (!section) return;
+  const st = document.getElementById('hypStatus')?.value || 'planning';
+  section.classList.toggle('hidden', !['in_progress', 'success', 'failed'].includes(st));
+  renderHypFactCalc();
+}
+function renderHypFactCalc() {
+  const box = document.getElementById('hypFactCalcBox'); if (!box) return;
+  const f = calcFactNumbers();
+  const pct = v => v === null ? '—' : (v * 100).toFixed(2) + '%';
+  const up = v => v === null ? '' : ` <span style="color:${v >= 0 ? 'var(--ok)' : 'var(--bad)'}">(${v >= 0 ? '+' : ''}${v.toFixed(1)}%)</span>`;
+  const card = (label, val) => `<div class="hyp-metric"><div class="label">${label}</div><div class="value" style="font-size:13px;">${val}</div></div>`;
+  box.innerHTML = card('CR визит→заявка (факт)', pct(f.fact_cr_lead) + up(f.uplift_lead)) +
+    card('CR заявка→апрув (факт)', pct(f.fact_cr_approve) + up(f.uplift_approve)) +
+    card('Факт. ROI', f.fact_roi === null ? '—' : f.fact_roi.toFixed(1) + '%') +
+    card('Факт. выручка', f.fact.revenue > 0 ? Math.round(f.fact.revenue).toLocaleString('ru-RU') + ' ₽' : '—');
+  const badge = document.getElementById('hypFactSigBadge');
+  if (badge) badge.innerHTML = hypSigBadgeHtml(f);
+}
 function renderHypothesisKpis() {
   const box = document.getElementById('hypothesisKpis');
   if (!box) return;
@@ -9398,13 +9529,32 @@ function renderHypList() {
     const isKey = h.is_key == 1 || h.is_key === true;
     const days = (h.start_date && h.end_date) ? Math.round((new Date(h.end_date) - new Date(h.start_date)) / 86400000) + 1 : 0;
     const visits = Number(h.visits_volume || h.traffic_volume || 0);
-    // Фокусная метрика конверсии
-    const focusMetric = (() => {
-      if (impacts.includes('lead')) return `CR заявка: ${pct(h.cr_lead_base ?? h.base_cr)} → ${pct(h.cr_lead_expected ?? h.expected_cr)}`;
-      if (impacts.includes('visit')) return `CR визит: ${pct(h.cr_visit_base)} → ${pct(h.cr_visit_expected)}`;
-      if (impacts.includes('approve')) return `CR апрув: ${pct(h.cr_approve_base ?? h.approve_rate)} → ${pct(h.cr_approve_expected)}`;
-      if (impacts.includes('revenue') && Number(h.revenue_total_base) > 0) return `Выручка: ${Math.round(Number(h.revenue_total_base)).toLocaleString('ru-RU')} → ${Math.round(Number(h.revenue_total_expected)).toLocaleString('ru-RU')} ₽`;
-      return `CR заявка: ${pct(h.base_cr)} → ${pct(h.expected_cr)}`;
+    // Факт: расчёты и достоверность
+    const factN = calcFactNumbers(h);
+    const fnum = v => v > 0 ? Math.round(v).toLocaleString('ru-RU') : '—';
+    const fmoney = v => v > 0 ? Math.round(v).toLocaleString('ru-RU') + ' ₽' : '—';
+    const factUp = v => v === null ? '' : `<span class="hyp-pf-uplift" style="color:${v >= 0 ? 'var(--ok)' : 'var(--bad)'}">(${v >= 0 ? '+' : ''}${v.toFixed(1)}%)</span>`;
+    // Фокусная метрика конверсии: план (база → ожидание) и факт (+ uplift к базе)
+    const { focusLabel, focusPlan, focusFact } = (() => {
+      const fpct = v => v === null ? '—' : (v * 100).toFixed(2) + '%';
+      if (impacts.includes('lead') || (!impacts.includes('visit') && !impacts.includes('approve') && !impacts.includes('revenue'))) {
+        return { focusLabel: 'CR визит → заявка',
+          focusPlan: `${pct(h.cr_lead_base ?? h.base_cr)} → ${pct(h.cr_lead_expected ?? h.expected_cr)}`,
+          focusFact: `${fpct(factN.fact_cr_lead)}${factUp(factN.uplift_lead)}` };
+      }
+      if (impacts.includes('approve')) {
+        return { focusLabel: 'CR заявка → апрув',
+          focusPlan: `${pct(h.cr_approve_base ?? h.approve_rate)} → ${pct(h.cr_approve_expected)}`,
+          focusFact: `${fpct(factN.fact_cr_approve)}${factUp(factN.uplift_approve)}` };
+      }
+      if (impacts.includes('visit')) {
+        return { focusLabel: 'CR выборка → визит',
+          focusPlan: `${pct(h.cr_visit_base)} → ${pct(h.cr_visit_expected)}`,
+          focusFact: '—' };
+      }
+      return { focusLabel: 'Выручка (фокус)',
+        focusPlan: `${fmoney(Number(h.revenue_total_base))} → ${fmoney(Number(h.revenue_total_expected))}`,
+        focusFact: fmoney(factN.fact.revenue) };
     })();
     const roiLine = (() => {
       const rb = fmtRoi(h.roi_base, Number(h.expenses_base) > 0);
@@ -9447,16 +9597,47 @@ function renderHypList() {
     ${upliftLine ? `<span class="text-xs shrink-0" style="color:${uplift >= 0 ? 'var(--ok)' : 'var(--bad)'}">${upliftLine}</span>` : ''}
   </div>
   ${h.description ? `<p class="text-sm" style="color:var(--text-dim);">${escapeHtml(h.description)}</p>` : ''}
-  <div class="grid grid-cols-2 gap-2">
-    <div class="hyp-metric"><div class="label">📈 Фокус</div><div class="value" style="font-size:12px;">${focusMetric}</div></div>
-    <div class="hyp-metric"><div class="label">💰 ROI</div><div class="value" style="font-size:12px;">${roiLine || '—'}</div></div>
-    ${testCostLine ? `<div class="hyp-metric"><div class="label">🎯 Бюджет теста</div><div class="value">${testCostLine}</div></div>` : ''}
-    <div class="hyp-metric"><div class="label">📅 Сроки</div><div class="value" style="font-size:12px;">${escapeHtml(dateRange)}</div></div>
+  <div class="flex flex-wrap items-center gap-2 text-xs" style="color:var(--text-faint);">
+    <span>📅 ${escapeHtml(dateRange)}</span>
+    ${testCostLine ? `<span>🎯 Бюджет теста: ${testCostLine}</span>` : ''}
   </div>
-  <div class="grid grid-cols-3 gap-2 text-xs">
-    <div class="hyp-metric"><div class="label">Выборка</div><div class="value">${Math.ceil(Number(h.sample_size || 0)).toLocaleString('ru-RU')}</div></div>
-    <div class="hyp-metric"><div class="label">Заявки</div><div class="value">${Math.ceil(Number(h.leads_volume || 0)).toLocaleString('ru-RU')}</div></div>
-    <div class="hyp-metric"><div class="label">Апрувы</div><div class="value">${Math.ceil(Number(h.approvals_volume || 0)).toLocaleString('ru-RU')}</div></div>
+  <div class="hyp-pf-table">
+    <div class="hyp-pf-row hyp-pf-head"><div>Метрика</div><div>Ожидание (план)</div><div>Реальность (факт)</div></div>
+    <div class="hyp-pf-row">
+      <div class="hyp-pf-label">Выборка / визиты</div>
+      <div class="hyp-pf-plan">${fnum(visits || Number(h.sample_size))}</div>
+      <div class="hyp-pf-fact">${fnum(factN.fact.visits)}</div>
+    </div>
+    <div class="hyp-pf-row">
+      <div class="hyp-pf-label">Заявки</div>
+      <div class="hyp-pf-plan">${fnum(Number(h.leads_volume))}</div>
+      <div class="hyp-pf-fact">${fnum(factN.fact.leads)}</div>
+    </div>
+    <div class="hyp-pf-row">
+      <div class="hyp-pf-label">Апрувы</div>
+      <div class="hyp-pf-plan">${fnum(Number(h.approvals_volume))}</div>
+      <div class="hyp-pf-fact">${fnum(factN.fact.approvals)}</div>
+    </div>
+    <div class="hyp-pf-row">
+      <div class="hyp-pf-label">${escapeHtml(focusLabel)}</div>
+      <div class="hyp-pf-plan">${focusPlan}</div>
+      <div class="hyp-pf-fact">${focusFact}</div>
+    </div>
+    <div class="hyp-pf-row">
+      <div class="hyp-pf-label">Выручка</div>
+      <div class="hyp-pf-plan">${fmoney(Number(h.revenue_total_expected) || Number(h.expected_value))}</div>
+      <div class="hyp-pf-fact">${fmoney(factN.fact.revenue)}</div>
+    </div>
+    <div class="hyp-pf-row">
+      <div class="hyp-pf-label">ROI</div>
+      <div class="hyp-pf-plan">${fmtRoi(h.roi_expected, Number(h.expenses_base) + Number(h.testing_cost) > 0) || '—'}</div>
+      <div class="hyp-pf-fact">${factN.fact_roi === null ? '—' : factN.fact_roi.toFixed(1) + '%'}</div>
+    </div>
+  </div>
+  <div class="flex flex-wrap items-center gap-2">
+    ${hypSigBadgeHtml(factN)}
+    ${upliftLine ? `<span class="text-xs" style="color:${uplift >= 0 ? 'var(--ok)' : 'var(--bad)'}">${upliftLine} (план)</span>` : ''}
+    ${roiLine ? `<span class="text-xs" style="color:var(--text-dim);">💰 ${roiLine}</span>` : ''}
   </div>
   ${notesHtml ? `<div>${notesHtml}</div>` : ''}
   <div class="flex justify-between items-center">
@@ -9513,7 +9694,8 @@ function hypModalBackdropClick(e) {
 function resetHypothesisForm() {
   for (const id of ['hypId','hypTitle','hypDescription','hypGoal','hypPlannedResult','hypLevers','hypManualSample',
                     'hypCrVisitExpected','hypCrLeadExpected','hypCrApproveExpected','hypRevenueTotalExpected',
-                    'hypExpensesBase','hypTestingCost','hypRevenueFinBase','hypNewNoteText']) {
+                    'hypExpensesBase','hypTestingCost','hypRevenueFinBase','hypNewNoteText',
+                    'hypFactVisits','hypFactLeads','hypFactApprovals','hypFactRevenue','hypFactExpenses']) {
     const el = document.getElementById(id); if (el) el.value = '';
   }
   for (const id of ['hypImpactVisit','hypImpactLead','hypImpactApprove','hypImpactRevenue','hypIsKey']) {
@@ -9542,6 +9724,7 @@ function resetHypothesisForm() {
   hypothesesState.pendingNotes = [];
   const notesLog = document.getElementById('hypNotesLog'); if (notesLog) notesLog.innerHTML = '';
   const roiDisplay = document.getElementById('hypRoiDisplay'); if (roiDisplay) roiDisplay.classList.add('hidden');
+  toggleHypFactSection();
   toggleHypImpact();
   renderHypothesisCalc();
 }
@@ -9575,6 +9758,14 @@ function editHypothesis(id) {
   set('hypCrLeadExpected', impacts.includes('lead') ? p(h.cr_lead_expected ?? h.expected_cr) : '');
   set('hypCrApproveExpected', impacts.includes('approve') ? p(h.cr_approve_expected) : '');
   set('hypRevenueTotalExpected', impacts.includes('revenue') ? Math.round(Number(h.revenue_total_expected || 0)) : '');
+  // Фактические результаты (0 → пустой инпут, факт необязателен)
+  const setFact = (elId, v) => set(elId, Number(v || 0) > 0 ? Math.round(Number(v)) : '');
+  setFact('hypFactVisits', h.fact_visits);
+  setFact('hypFactLeads', h.fact_leads);
+  setFact('hypFactApprovals', h.fact_approvals);
+  setFact('hypFactRevenue', h.fact_revenue);
+  setFact('hypFactExpenses', h.fact_expenses);
+  toggleHypFactSection();
   // Лог заметок
   const notes = Array.isArray(h.progress_notes) ? h.progress_notes : [];
   hypothesesState.pendingNotes = [...notes];
@@ -9619,6 +9810,11 @@ async function saveHypothesis() {
     is_key: document.getElementById('hypIsKey')?.checked ? 1 : 0,
     testing_cost: hypNum('hypTestingCost'),
     expenses_base: hypNum('hypExpensesBase'),
+    fact_visits: hypNum('hypFactVisits'),
+    fact_leads: hypNum('hypFactLeads'),
+    fact_approvals: hypNum('hypFactApprovals'),
+    fact_revenue: hypNum('hypFactRevenue'),
+    fact_expenses: hypNum('hypFactExpenses'),
     progress_notes: hypothesesState.pendingNotes || [],
   });
   const error = document.getElementById('hypFormError');
