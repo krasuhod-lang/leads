@@ -1412,7 +1412,7 @@
         <button class="layer-toggle active" data-layer="trend" aria-pressed="true" onclick="toggleBannerRelationLayer('trend')">Линии тренда</button>
         <button class="layer-toggle active" data-layer="ma" aria-pressed="true" onclick="toggleBannerRelationLayer('ma')">Скользящая средняя</button>
         <button class="layer-toggle" data-layer="bounces" aria-pressed="false" onclick="toggleBannerRelationLayer('bounces')">Отказы баннера</button>
-        <button class="layer-toggle" type="button" onclick="openBannerBouncesModal()" title="Ввести отказы баннера по дням вручную или загрузить CSV-файл">✏️ Ввести отказы</button>
+        <button class="layer-toggle" type="button" onclick="openBannerBouncesModal()" title="Ввести отказы баннера вручную или загрузить Excel-файл">📥 Загрузить отказы</button>
       </div>
       <div class="chart-wrap" style="height:360px"><canvas id="rejectRevenueChart"></canvas></div>
       <div id="rejectRevenueInsight"></div>
@@ -2602,7 +2602,7 @@ CR_plan       = baseCR,   AR_plan = baseAR
 </div>
 
 <!-- Плавающая кнопка «+ Новая гипотеза» -->
-<!-- ===== Модалка «Отказы баннера по дням» (ручной ввод + CSV) ===== -->
+<!-- ===== Модалка «Отказы баннера по дням» (ручной ввод + Excel) ===== -->
 <div id="bannerBouncesModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="bannerBouncesModalTitle">
   <div class="modal-box" style="max-width:560px;">
     <header>
@@ -2610,10 +2610,10 @@ CR_plan       = baseCR,   AR_plan = baseAR
       <button type="button" class="close-x" onclick="closeBannerBouncesModal()" aria-label="Закрыть">×</button>
     </header>
     <div class="modal-body">
-      <p class="text-xs mb-3" style="color:var(--text-dim);">Данные сохраняются с источником «banner» и выводятся отдельным слоем на графике «Показы баннера ↔ выручка». Можно править строки вручную или загрузить CSV-файл формата <code>дата;отказы</code> (разделитель «;» или «,», даты ГГГГ-ММ-ДД или ДД.ММ.ГГГГ).</p>
+      <p class="text-xs mb-3" style="color:var(--text-dim);">Загрузите Excel-файл с двумя колонками: <strong>A — дата</strong>, <strong>B — количество отказников</strong>. Первая строка может содержать заголовки. Поддерживаются даты ГГГГ-ММ-ДД и ДД.ММ.ГГГГ. Данные выводятся отдельным слоем на графике «Показы баннера ↔ выручка».</p>
       <div class="mb-3">
-        <label class="block text-xs mb-1" style="color:var(--text-dim);">Загрузить CSV-файл</label>
-        <input id="bannerBouncesFile" type="file" accept=".csv,.txt,text/csv" class="text-xs" onchange="handleBannerBouncesFile(this)">
+        <label class="block text-xs mb-1" style="color:var(--text-dim);">Загрузить Excel-файл</label>
+        <input id="bannerBouncesFile" type="file" accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv" class="text-xs" onchange="handleBannerBouncesFile(this)">
       </div>
       <div id="bannerBouncesRows" class="space-y-2" style="max-height:300px;overflow-y:auto;"></div>
       <button type="button" class="btn mt-2" style="background:transparent;border:1px solid var(--border-strong);color:var(--text-dim);" onclick="bannerBouncesAddRow()">+ Добавить день</button>
@@ -4658,7 +4658,7 @@ function renderRejectRevenueAnalysis(data, sourceFilter = 'all') {
     : escapeHtml(relationLabel(corr));
   summaryEl.innerHTML = `
     <div class="relation-chip"><div class="label">Показы баннера${infoTip('Сумма показов рекламного баннера за выбранный период, источник — Яндекс.Метрика. CTR цели = клики по баннеру ÷ показы × 100%.')}</div><div class="value">${Math.round(totalImpressions).toLocaleString('ru-RU')}</div><div class="text-xs text-slate-500 mt-1">CTR цели: ${bannerCtr.toFixed(2)}%</div></div>
-    <div class="relation-chip"><div class="label">Отказы${infoTip('Сумма отказов за выбранный период (ручной ввод по дням или загрузка CSV, кнопка «Ввести отказы»). Выводятся отдельным слоем на графике.')}</div><div class="value">${totalBounces > 0 ? Math.round(totalBounces).toLocaleString('ru-RU') : '—'}</div><div class="text-xs text-slate-500 mt-1">${totalBounces > 0 ? 'слой «Отказы баннера»' : 'нет данных — введите вручную'}</div></div>
+    <div class="relation-chip"><div class="label">Отказы${infoTip('Сумма отказов за выбранный период (ручной ввод по дням или загрузка Excel с колонками A — дата, B — количество). Выводятся отдельным слоем на графике.')}</div><div class="value">${totalBounces > 0 ? Math.round(totalBounces).toLocaleString('ru-RU') : '—'}</div><div class="text-xs text-slate-500 mt-1">${totalBounces > 0 ? 'слой «Отказы баннера»' : 'нет данных — загрузите Excel'}</div></div>
     <div class="relation-chip"><div class="label">Выручка${infoTip('Выручка из Leads.su за тот же период. RPM = выручка ÷ показы × 1000 — сколько ₽ приносит 1000 показов баннера.')}</div><div class="value">${Math.round(totalRevenue).toLocaleString('ru-RU')} ₽</div><div class="text-xs text-slate-500 mt-1">RPM: ${rpm.toFixed(2)} ₽ / 1000 показов</div></div>
     <div class="relation-chip"><div class="label">Связь r${infoTip('Коэффициент корреляции Пирсона между рядами «Показы» и «Выручка» по периодам внутри диапазона. r ∈ [−1; +1]. |r| ≥ 0.7 — сильная связь; 0.4–0.7 — средняя; < 0.2 — практически нет. Нужно минимум 2 точки с вариацией. Положительный r — баннер реально драйвит выручку; r≈0 — выручка зависит не от показов, а от качества трафика и оффера.')}</div><div class="value ${corrCls}">${corr === null ? '—' : corr.toFixed(2)}</div><div class="text-xs text-slate-500 mt-1">${corrHint}</div></div>`;
   // Подвал с авто-выводами под чартом
@@ -5461,7 +5461,7 @@ function toggleBannerRelationLayer(layer) {
   rerenderBannerRelation();
 }
 
-// ===== Отказы баннера: ручной ввод по дням и загрузка CSV =====
+// ===== Отказы баннера: ручной ввод по дням и загрузка Excel =====
 const BANNER_BOUNCES_SOURCE = 'banner';
 function rerenderBannerRelation() {
   const sourceFilter = ((document.getElementById('chartSourceFilter') || {}).value || 'all');
@@ -5502,28 +5502,33 @@ function closeBannerBouncesModal() {
   el.classList.remove('is-open');
   document.body.style.overflow = '';
 }
-// Даты в CSV: YYYY-MM-DD или DD.MM.YYYY → ISO; иначе null.
 function parseBannerBounceDate(s) {
+  if (s instanceof Date && !Number.isNaN(s.getTime())) return s.toISOString().slice(0, 10);
+  if (typeof s === 'number' && Number.isFinite(s) && window.XLSX?.SSF?.parse_date_code) {
+    const d = XLSX.SSF.parse_date_code(s);
+    if (d) return `${String(d.y).padStart(4, '0')}-${String(d.m).padStart(2, '0')}-${String(d.d).padStart(2, '0')}`;
+  }
   const v = String(s || '').trim();
   if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
   const m = v.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
   if (m) return `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
   return null;
 }
-function handleBannerBouncesFile(input) {
+async function handleBannerBouncesFile(input) {
   const f = input.files && input.files[0]; if (!f) return;
-  const reader = new FileReader();
-  reader.onload = () => {
-    const lines = String(reader.result || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  try {
+    const workbook = XLSX.read(await f.arrayBuffer(), { cellDates: true });
+    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+    const lines = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: '' });
     const parsed = []; const errors = [];
-    for (const line of lines) {
-      const parts = line.split(/[;,\t]/).map(p => p.trim());
-      if (parts.length < 2) { errors.push(line); continue; }
-      const date = parseBannerBounceDate(parts[0]);
-      const n = Number(parts[1].replace(/\s/g, ''));
+    for (let i = 0; i < lines.length; i++) {
+      const row = lines[i] || [];
+      if (!String(row[0]).trim() && !String(row[1]).trim()) continue;
+      if (i === 0 && /дата|date/i.test(String(row[0]))) continue;
+      const date = parseBannerBounceDate(row[0]);
+      const n = Number(String(row[1]).replace(/\s/g, '').replace(',', '.'));
       if (!date || !Number.isFinite(n) || n < 0 || !Number.isInteger(n)) {
-        // Пропускаем строку-заголовок без сообщения об ошибке
-        if (parsed.length || errors.length || lines.indexOf(line) !== 0) errors.push(line);
+        errors.push(`строка ${i + 1}`);
         continue;
       }
       parsed.push({ date, bounces: n });
@@ -5534,9 +5539,10 @@ function handleBannerBouncesFile(input) {
     }
     bannerBouncesSetError(errors.length
       ? `Пропущены строки с ошибками (${errors.length}): ${errors.slice(0, 3).join(' | ')}${errors.length > 3 ? '…' : ''}`
-      : (parsed.length ? '' : 'В файле не найдено корректных строк формата «дата;отказы».'));
-  };
-  reader.readAsText(f);
+      : (parsed.length ? '' : 'В файле не найдено корректных строк: колонка A — дата, колонка B — количество отказников.'));
+  } catch (e) {
+    bannerBouncesSetError(`Не удалось прочитать файл: ${e.message || 'неверный формат'}.`);
+  }
 }
 async function saveBannerBounces() {
   const box = document.getElementById('bannerBouncesRows'); if (!box) return;
