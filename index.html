@@ -1395,6 +1395,8 @@
       <div id="bannerRelationLayers" class="flex flex-wrap gap-2 mb-3" aria-label="Слои графика баннера">
         <button class="layer-toggle active" data-layer="trend" aria-pressed="true" onclick="toggleBannerRelationLayer('trend')">Линии тренда</button>
         <button class="layer-toggle active" data-layer="ma" aria-pressed="true" onclick="toggleBannerRelationLayer('ma')">Скользящая средняя</button>
+        <button class="layer-toggle" data-layer="bounces" aria-pressed="false" onclick="toggleBannerRelationLayer('bounces')">Отказы баннера</button>
+        <button class="layer-toggle" type="button" onclick="openBannerBouncesModal()" title="Ввести отказы баннера по дням вручную или загрузить CSV-файл">✏️ Ввести отказы</button>
       </div>
       <div class="chart-wrap" style="height:360px"><canvas id="rejectRevenueChart"></canvas></div>
       <div id="rejectRevenueInsight"></div>
@@ -2579,6 +2581,30 @@ CR_plan       = baseCR,   AR_plan = baseAR
 </div>
 
 <!-- Плавающая кнопка «+ Новая гипотеза» -->
+<!-- ===== Модалка «Отказы баннера по дням» (ручной ввод + CSV) ===== -->
+<div id="bannerBouncesModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="bannerBouncesModalTitle">
+  <div class="modal-box" style="max-width:560px;">
+    <header>
+      <h3 id="bannerBouncesModalTitle">Отказы баннера по дням</h3>
+      <button type="button" class="close-x" onclick="closeBannerBouncesModal()" aria-label="Закрыть">×</button>
+    </header>
+    <div class="modal-body">
+      <p class="text-xs mb-3" style="color:var(--text-dim);">Данные сохраняются с источником «banner» и выводятся отдельным слоем на графике «Показы баннера ↔ выручка». Можно править строки вручную или загрузить CSV-файл формата <code>дата;отказы</code> (разделитель «;» или «,», даты ГГГГ-ММ-ДД или ДД.ММ.ГГГГ).</p>
+      <div class="mb-3">
+        <label class="block text-xs mb-1" style="color:var(--text-dim);">Загрузить CSV-файл</label>
+        <input id="bannerBouncesFile" type="file" accept=".csv,.txt,text/csv" class="text-xs" onchange="handleBannerBouncesFile(this)">
+      </div>
+      <div id="bannerBouncesRows" class="space-y-2" style="max-height:300px;overflow-y:auto;"></div>
+      <button type="button" class="btn mt-2" style="background:transparent;border:1px solid var(--border-strong);color:var(--text-dim);" onclick="bannerBouncesAddRow()">+ Добавить день</button>
+      <p id="bannerBouncesError" class="text-xs mt-2 hidden" style="color:var(--bad);"></p>
+    </div>
+    <div class="modal-footer">
+      <button type="button" class="btn" style="background:transparent;border:1px solid var(--border-strong);color:var(--text-dim);" onclick="closeBannerBouncesModal()">Отмена</button>
+      <button type="button" class="btn" onclick="saveBannerBounces()">Сохранить</button>
+    </div>
+  </div>
+</div>
+
 <button id="hypFab" type="button" onclick="openHypModal()" title="Новая гипотеза">+</button>
 
 <script>
@@ -4611,13 +4637,17 @@ function renderRejectRevenueAnalysis(data, sourceFilter = 'all') {
     : escapeHtml(relationLabel(corr));
   summaryEl.innerHTML = `
     <div class="relation-chip"><div class="label">Показы баннера${infoTip('Сумма показов рекламного баннера за выбранный период, источник — Яндекс.Метрика. CTR цели = клики по баннеру ÷ показы × 100%.')}</div><div class="value">${Math.round(totalImpressions).toLocaleString('ru-RU')}</div><div class="text-xs text-slate-500 mt-1">CTR цели: ${bannerCtr.toFixed(2)}%</div></div>
+    <div class="relation-chip"><div class="label">Отказы${infoTip('Сумма отказов за выбранный период (ручной ввод по дням или загрузка CSV, кнопка «Ввести отказы»). Выводятся отдельным слоем на графике.')}</div><div class="value">${totalBounces > 0 ? Math.round(totalBounces).toLocaleString('ru-RU') : '—'}</div><div class="text-xs text-slate-500 mt-1">${totalBounces > 0 ? 'слой «Отказы баннера»' : 'нет данных — введите вручную'}</div></div>
     <div class="relation-chip"><div class="label">Выручка${infoTip('Выручка из Leads.su за тот же период. RPM = выручка ÷ показы × 1000 — сколько ₽ приносит 1000 показов баннера.')}</div><div class="value">${Math.round(totalRevenue).toLocaleString('ru-RU')} ₽</div><div class="text-xs text-slate-500 mt-1">RPM: ${rpm.toFixed(2)} ₽ / 1000 показов</div></div>
     <div class="relation-chip"><div class="label">Связь r${infoTip('Коэффициент корреляции Пирсона между рядами «Показы» и «Выручка» по периодам внутри диапазона. r ∈ [−1; +1]. |r| ≥ 0.7 — сильная связь; 0.4–0.7 — средняя; < 0.2 — практически нет. Нужно минимум 2 точки с вариацией. Положительный r — баннер реально драйвит выручку; r≈0 — выручка зависит не от показов, а от качества трафика и оффера.')}</div><div class="value ${corrCls}">${corr === null ? '—' : corr.toFixed(2)}</div><div class="text-xs text-slate-500 mt-1">${corrHint}</div></div>`;
   // Подвал с авто-выводами под чартом
   const insightEl = document.getElementById('rejectRevenueInsight');
+  const bouncesSeriesAll = labels.map(l => grouped[l].bounces);
+  const bounceCorr = totalBounces > 0 ? pearsonCorrelation(bouncesSeriesAll, labels.map(l => grouped[l].revenue)) : null;
   if (insightEl) {
     const items = [
       narrateCorrelation(corr, 'Показы баннера', 'Выручка', labels.length),
+      bounceCorr !== null ? narrateCorrelation(bounceCorr, 'Отказы баннера', 'Выручка', labels.length) : null,
       narrateRpm(rpm, totalImpressions),
       sourceFilter !== 'all' ? { tone: 'mute', confidence: 'low',
         html: 'Фильтр по площадке активен: показы баннера приходят из Я.Метрики общей суммой, выручка отфильтрована — r может быть менее показательным.' } : null
@@ -4638,6 +4668,10 @@ function renderRejectRevenueAnalysis(data, sourceFilter = 'all') {
     { label: 'Показы баннера', data: impressionsSeries, borderColor: P.clicks.stroke, backgroundColor: P.clicks.fill, fill: true, tension: .35, pointRadius: 2, yAxisID: 'y' },
     { label: 'Выручка ₽', data: revenueSeries, borderColor: P.revenue.stroke, backgroundColor: P.revenue.fill, fill: true, tension: .35, pointRadius: 2, yAxisID: 'y1' }
   ];
+  if (bannerRelationLayers.has('bounces')) {
+    const bouncesSeries = labels.map(l => grouped[l].bounces);
+    datasets.push({ label: 'Отказы баннера', data: bouncesSeries, borderColor: '#F87171', backgroundColor: 'rgba(248,113,113,0.10)', fill: false, tension: .35, pointRadius: 2, borderDash: [4, 3], yAxisID: 'y' });
+  }
   if (bannerRelationLayers.has('trend')) {
     datasets.push({ label: 'Тренд показов', data: linearTrend(impressionsSeries), borderColor: CHART_PALETTE_MUTED.clicks, borderDash: [8, 5], pointRadius: 0, fill: false, yAxisID: 'y' });
     datasets.push({ label: 'Тренд выручки', data: linearTrend(revenueSeries), borderColor: CHART_PALETTE_MUTED.revenue, borderDash: [8, 5], pointRadius: 0, fill: false, yAxisID: 'y1' });
@@ -5391,6 +5425,7 @@ function chartModeHint(modes) {
 
 function updateBannerRelationLayerButtons() {
   document.querySelectorAll('#bannerRelationLayers .layer-toggle').forEach(btn => {
+    if (!btn.dataset.layer) return;
     const active = bannerRelationLayers.has(btn.dataset.layer);
     btn.classList.toggle('active', active);
     btn.setAttribute('aria-pressed', active ? 'true' : 'false');
@@ -5402,10 +5437,118 @@ function toggleBannerRelationLayer(layer) {
   if (bannerRelationLayers.has(layer)) bannerRelationLayers.delete(layer);
   else bannerRelationLayers.add(layer);
   updateBannerRelationLayerButtons();
+  rerenderBannerRelation();
+}
+
+// ===== Отказы баннера: ручной ввод по дням и загрузка CSV =====
+const BANNER_BOUNCES_SOURCE = 'banner';
+function rerenderBannerRelation() {
   const sourceFilter = ((document.getElementById('chartSourceFilter') || {}).value || 'all');
   let data = [...(globalRawData || [])];
   if (sourceFilter !== 'all') data = data.filter(r => sourceMatches(r, sourceFilter));
   renderRejectRevenueAnalysis(data, sourceFilter);
+}
+function bannerBouncesRowHtml(date = '', bounces = '') {
+  return `<div class="banner-bounce-row flex gap-2 items-center">
+    <input type="date" class="bb-date bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm" value="${escapeHtml(date)}">
+    <input type="number" min="0" step="1" class="bb-val bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm w-28" placeholder="отказы" value="${escapeHtml(String(bounces))}">
+    <button type="button" class="text-sm" style="color:#f87171;background:none;border:none;cursor:pointer;" title="Удалить строку" onclick="this.parentElement.remove()">✕</button>
+  </div>`;
+}
+function bannerBouncesAddRow(date = '', bounces = '') {
+  const box = document.getElementById('bannerBouncesRows');
+  if (box) box.insertAdjacentHTML('beforeend', bannerBouncesRowHtml(date, bounces));
+}
+function bannerBouncesSetError(msg) {
+  const err = document.getElementById('bannerBouncesError'); if (!err) return;
+  err.textContent = msg || '';
+  err.classList.toggle('hidden', !msg);
+}
+function openBannerBouncesModal() {
+  const el = document.getElementById('bannerBouncesModal'); if (!el) return;
+  const box = document.getElementById('bannerBouncesRows');
+  const rows = (bouncesData || []).filter(r => r.source === BANNER_BOUNCES_SOURCE)
+    .slice().sort((a, b) => String(a.date).localeCompare(String(b.date)));
+  box.innerHTML = rows.map(r => bannerBouncesRowHtml(r.date, r.bounces)).join('');
+  if (!rows.length) bannerBouncesAddRow(new Date().toISOString().slice(0, 10), '');
+  const file = document.getElementById('bannerBouncesFile'); if (file) file.value = '';
+  bannerBouncesSetError('');
+  el.classList.add('is-open');
+  document.body.style.overflow = 'hidden';
+}
+function closeBannerBouncesModal() {
+  const el = document.getElementById('bannerBouncesModal'); if (!el) return;
+  el.classList.remove('is-open');
+  document.body.style.overflow = '';
+}
+// Даты в CSV: YYYY-MM-DD или DD.MM.YYYY → ISO; иначе null.
+function parseBannerBounceDate(s) {
+  const v = String(s || '').trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
+  const m = v.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
+  if (m) return `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+  return null;
+}
+function handleBannerBouncesFile(input) {
+  const f = input.files && input.files[0]; if (!f) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    const lines = String(reader.result || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    const parsed = []; const errors = [];
+    for (const line of lines) {
+      const parts = line.split(/[;,\t]/).map(p => p.trim());
+      if (parts.length < 2) { errors.push(line); continue; }
+      const date = parseBannerBounceDate(parts[0]);
+      const n = Number(parts[1].replace(/\s/g, ''));
+      if (!date || !Number.isFinite(n) || n < 0 || !Number.isInteger(n)) {
+        // Пропускаем строку-заголовок без сообщения об ошибке
+        if (parsed.length || errors.length || lines.indexOf(line) !== 0) errors.push(line);
+        continue;
+      }
+      parsed.push({ date, bounces: n });
+    }
+    if (parsed.length) {
+      const box = document.getElementById('bannerBouncesRows');
+      if (box) box.innerHTML = parsed.map(r => bannerBouncesRowHtml(r.date, r.bounces)).join('');
+    }
+    bannerBouncesSetError(errors.length
+      ? `Пропущены строки с ошибками (${errors.length}): ${errors.slice(0, 3).join(' | ')}${errors.length > 3 ? '…' : ''}`
+      : (parsed.length ? '' : 'В файле не найдено корректных строк формата «дата;отказы».'));
+  };
+  reader.readAsText(f);
+}
+async function saveBannerBounces() {
+  const box = document.getElementById('bannerBouncesRows'); if (!box) return;
+  const rows = []; const bad = [];
+  box.querySelectorAll('.banner-bounce-row').forEach(rowEl => {
+    const date = rowEl.querySelector('.bb-date')?.value || '';
+    const valRaw = rowEl.querySelector('.bb-val')?.value ?? '';
+    if (!date && valRaw === '') return;
+    const n = Number(valRaw);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(n) || n < 0 || !Number.isInteger(n)) {
+      bad.push(date || '(без даты)');
+      return;
+    }
+    rows.push({ date, bounces: n });
+  });
+  if (!rows.length) { bannerBouncesSetError('Нет корректных строк для сохранения: нужны дата и целое неотрицательное число отказов.'); return; }
+  bannerBouncesSetError(bad.length ? `Строки с ошибками пропущены: ${bad.join(', ')}` : '');
+  try {
+    const j = await fetchJsonSafe(buildApiUrl({ action: 'save_bounces_batch' }), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source: BANNER_BOUNCES_SOURCE, rows })
+    });
+    if (j.status !== 'success') { bannerBouncesSetError(j.message || 'Ошибка сохранения.'); return; }
+    const dFrom = (document.getElementById('dateFrom') || {}).value || '';
+    const dTo = (document.getElementById('dateTo') || {}).value || '';
+    if (dFrom && dTo) await fetchBouncesStats(dFrom, dTo);
+    bannerRelationLayers.add('bounces');
+    updateBannerRelationLayerButtons();
+    rerenderBannerRelation();
+    if (!bad.length) closeBannerBouncesModal();
+  } catch (e) {
+    bannerBouncesSetError('Ошибка сохранения: ' + (e && e.message ? e.message : e));
+  }
 }
 
 function movingAverage(values, windowSize) {
