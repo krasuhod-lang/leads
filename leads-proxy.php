@@ -956,6 +956,12 @@ try {
     $addColumnIfMissing('hypotheses', 'roi_base', 'REAL NOT NULL DEFAULT 0');
     $addColumnIfMissing('hypotheses', 'roi_expected', 'REAL NOT NULL DEFAULT 0');
     $addColumnIfMissing('hypotheses', 'progress_notes', 'TEXT');
+    // Фактические результаты теста (цикл A/B: план vs факт).
+    $addColumnIfMissing('hypotheses', 'fact_visits', 'INTEGER NOT NULL DEFAULT 0');
+    $addColumnIfMissing('hypotheses', 'fact_leads', 'INTEGER NOT NULL DEFAULT 0');
+    $addColumnIfMissing('hypotheses', 'fact_approvals', 'INTEGER NOT NULL DEFAULT 0');
+    $addColumnIfMissing('hypotheses', 'fact_revenue', 'REAL NOT NULL DEFAULT 0');
+    $addColumnIfMissing('hypotheses', 'fact_expenses', 'REAL NOT NULL DEFAULT 0');
 
     // Кэш результатов глубокого AI-анализа. Ключ — диапазон дат `from|to`,
     // чтобы при перезагрузке страницы пользователь видел тот же отчёт без
@@ -5791,8 +5797,12 @@ if ($action === 'hypothesis_save') {
         foreach (['base_cr','expected_cr','approve_rate','approve_value','sample_size','traffic_volume','leads_volume','approvals_volume','expected_value',
                   'cr_visit_base','cr_visit_expected','cr_lead_base','cr_lead_expected','cr_approve_base','cr_approve_expected',
                   'revenue_base','revenue_expected','revenue_total_base','revenue_total_expected','visits_volume','manual_sample',
-                  'testing_cost','expenses_base','revenue_fin_base','roi_base','roi_expected'] as $k) {
+                  'testing_cost','expenses_base','revenue_fin_base','roi_base','roi_expected',
+                  'fact_revenue','fact_expenses'] as $k) {
             $stmt->bindValue(':' . $k, (float)($input[$k] ?? 0), SQLITE3_FLOAT);
+        }
+        foreach (['fact_visits','fact_leads','fact_approvals'] as $k) {
+            $stmt->bindValue(':' . $k, (int)($input[$k] ?? 0), SQLITE3_INTEGER);
         }
         $stmt->bindValue(':is_key', (int)!empty($input['is_key']), SQLITE3_INTEGER);
         $allowed_statuses = ['planning','in_progress','success','failed','paused'];
@@ -5824,6 +5834,7 @@ if ($action === 'hypothesis_save') {
             revenue_total_expected=:revenue_total_expected,visits_volume=:visits_volume,manual_sample=:manual_sample,
             is_key=:is_key,status=:status,testing_cost=:testing_cost,expenses_base=:expenses_base,revenue_fin_base=:revenue_fin_base,
             roi_base=:roi_base,roi_expected=:roi_expected,progress_notes=:progress_notes,
+            fact_visits=:fact_visits,fact_leads=:fact_leads,fact_approvals=:fact_approvals,fact_revenue=:fact_revenue,fact_expenses=:fact_expenses,
             updated_at=:updated_at WHERE id=:id');
         $bind($stmt);
         $stmt->bindValue(':id', $id, SQLITE3_INTEGER);
@@ -5833,12 +5844,14 @@ if ($action === 'hypothesis_save') {
             approve_value,levers,sample_size,traffic_volume,leads_volume,approvals_volume,expected_value,funnel_json,
             impact_json,cr_visit_base,cr_visit_expected,cr_lead_base,cr_lead_expected,cr_approve_base,cr_approve_expected,
             revenue_base,revenue_expected,revenue_total_base,revenue_total_expected,visits_volume,manual_sample,
-            is_key,status,testing_cost,expenses_base,revenue_fin_base,roi_base,roi_expected,progress_notes,created_at,updated_at)
+            is_key,status,testing_cost,expenses_base,revenue_fin_base,roi_base,roi_expected,progress_notes,
+            fact_visits,fact_leads,fact_approvals,fact_revenue,fact_expenses,created_at,updated_at)
             VALUES (:m,:title,:description,:goal,:planned_result,:start_date,:end_date,:base_cr,:expected_cr,:approve_rate,
             :approve_value,:levers,:sample_size,:traffic_volume,:leads_volume,:approvals_volume,:expected_value,:funnel_json,
             :impact_json,:cr_visit_base,:cr_visit_expected,:cr_lead_base,:cr_lead_expected,:cr_approve_base,:cr_approve_expected,
             :revenue_base,:revenue_expected,:revenue_total_base,:revenue_total_expected,:visits_volume,:manual_sample,
-            :is_key,:status,:testing_cost,:expenses_base,:revenue_fin_base,:roi_base,:roi_expected,:progress_notes,:created_at,:updated_at)');
+            :is_key,:status,:testing_cost,:expenses_base,:revenue_fin_base,:roi_base,:roi_expected,:progress_notes,
+            :fact_visits,:fact_leads,:fact_approvals,:fact_revenue,:fact_expenses,:created_at,:updated_at)');
         $bind($stmt);
         $stmt->bindValue(':created_at', $now, SQLITE3_INTEGER);
         $stmt->execute();
