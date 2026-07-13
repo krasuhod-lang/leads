@@ -903,15 +903,18 @@
       display: flex; align-items: center; justify-content: space-between;
     }
     .modal-box header h3 { color: var(--text); font-weight: 600; font-size: 16px; }
-    .modal-box header button.close-x {
+    .modal-box header button.close-x,
+    .hyp-modal-box header button.close-x {
       background: none; border: 0; color: var(--text-dim); font-size: 20px; cursor: pointer;
       line-height: 1; padding: 4px 8px; border-radius: 6px;
     }
-    .modal-box header button.close-x:hover { color: var(--text); background: var(--surface-thin); }
+    .modal-box header button.close-x:hover,
+    .hyp-modal-box header button.close-x:hover { color: var(--text); background: var(--surface-thin); }
     .modal-box .modal-body { padding: 18px; overflow: auto; }
-    .modal-box .modal-footer {
+    .modal-box .modal-footer,
+    .hyp-modal-box .modal-footer {
       padding: 12px 18px; border-top: 1px solid var(--border);
-      display: flex; justify-content: flex-end; gap: 8px;
+      display: flex; justify-content: flex-end; gap: 8px; flex-shrink: 0;
     }
     .form-field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
     .form-field label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .04em; }
@@ -2410,7 +2413,7 @@ CR_plan       = baseCR,   AR_plan = baseAR
         </div>
       </div>
     </div>
-    <div class="modal-footer" style="flex-shrink:0;">
+    <div class="modal-footer">
       <button type="button" class="btn" style="background:transparent;border:1px solid var(--border-strong);color:var(--text-dim);" onclick="closeHypModal()">Отмена</button>
       <button type="button" class="btn" onclick="saveHypothesis()">Сохранить</button>
     </div>
@@ -9368,7 +9371,7 @@ function renderHypList() {
       ${keyBadge}
     </div>
     <div class="flex gap-2 shrink-0">
-      <button type="button" class="text-xs" style="color:var(--accent);" onclick="editHypothesis(${Number(h.id)})">Изменить</button>
+      <button type="button" class="text-xs" style="color:var(--accent);" onclick="openHypModal(${Number(h.id)})">Изменить</button>
       <button type="button" class="text-xs" style="color:#f87171;" onclick="deleteHypothesis(${Number(h.id)})">Удалить</button>
     </div>
   </div>
