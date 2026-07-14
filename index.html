@@ -9945,8 +9945,13 @@ function hypCardHtml(h, c) {
   <div class="hyp-pf-table">
     <div class="hyp-pf-row hyp-pf-head"><div>Метрика</div><div>Ожидание (план)</div><div>Реальность (факт)</div></div>
     <div class="hyp-pf-row">
-      <div class="hyp-pf-label">Выборка / визиты</div>
-      <div class="hyp-pf-plan">${fnum(visits || Number(h.sample_size))}</div>
+      <div class="hyp-pf-label">Объем выборки</div>
+      <div class="hyp-pf-plan">${fnum(Number(h.manual_sample) > 0 ? Number(h.manual_sample) : Number(h.sample_size))}</div>
+      <div class="hyp-pf-fact">—</div>
+    </div>
+    <div class="hyp-pf-row">
+      <div class="hyp-pf-label">Визиты</div>
+      <div class="hyp-pf-plan">${fnum(visits)}</div>
       <div class="hyp-pf-fact">${fnum(factN.fact.visits)}</div>
     </div>
     <div class="hyp-pf-row">
