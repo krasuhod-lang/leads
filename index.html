@@ -9538,6 +9538,16 @@ function calcRoi(revenue, expenses) {
   if (!expenses || expenses <= 0) return null;
   return ((revenue - expenses) / expenses) * 100;
 }
+function hypExpectedRoi(h) {
+  const testingCost = Number(h.testing_cost) || 0;
+  if (testingCost <= 0) return null;
+  const impacts = Array.isArray(h.impacts) ? h.impacts : [];
+  if (impacts.includes('revenue')) {
+    return calcRoi(Number(h.revenue_total_expected) || 0, testingCost);
+  }
+  const savedRoi = Number(h.roi_expected);
+  return Number.isFinite(savedRoi) ? savedRoi : null;
+}
 function calcHypothesisNumbers() {
   const impacts = hypSelectedImpacts();
   const crVisitBase = hypPct('hypCrVisitBase');
@@ -9576,16 +9586,11 @@ function calcHypothesisNumbers() {
   const funnelExpectedRate = crVisit * crLead * crApprove;
   const funnelLift = funnelBaseRate > 0 ? funnelExpectedRate / funnelBaseRate : 1;
   const hasRevenueImpact = impacts.includes('revenue');
-  const revenueLift = hasRevenueImpact && revenueTotalBase > 0
-    ? revenueTotalExpected / revenueTotalBase
-    : 1;
   let projectedRevenue;
-  if (hasRevenueImpact && revenueTotalBase <= 0) {
-    projectedRevenue = revenueTotalExpected * funnelLift;
+  if (hasRevenueImpact) {
+    projectedRevenue = revenueTotalExpected;
   } else if (revenueFinBase > 0) {
-    projectedRevenue = revenueFinBase * funnelLift * revenueLift;
-  } else if (hasRevenueImpact) {
-    projectedRevenue = revenueTotalExpected * funnelLift;
+    projectedRevenue = revenueFinBase * funnelLift;
   } else {
     projectedRevenue = expectedValue;
   }
@@ -9690,7 +9695,7 @@ function calcFactNumbers(h) {
       visits: num(h.visits_volume || h.traffic_volume),
       leads: num(h.leads_volume),
       revenue: num(h.revenue_total_expected) || num(h.expected_value),
-      roiExpected: calcRoi(num(h.projected_revenue), num(h.testing_cost)),
+      roiExpected: hypExpectedRoi(h),
       expensesPlan: num(h.expenses_base) + num(h.testing_cost),
     };
   } else {
@@ -9828,7 +9833,7 @@ function hypComputed(h) {
   const statusLabels = { planning:'🕐 Планируется', in_progress:'🔵 В работе', success:'✅ Успех', failed:'❌ Провал', paused:'⏸ Отложено' };
   const pct = v => (Number(v || 0) * 100).toFixed(2) + '%';
   const fmtRoi = (v, hasExpenses) => hasExpenses && Number.isFinite(Number(v)) ? Number(v).toFixed(1) + '%' : null;
-  const expectedRoi = calcRoi(Number(h.projected_revenue) || 0, Number(h.testing_cost) || 0);
+  const expectedRoi = hypExpectedRoi(h);
   const impacts = Array.isArray(h.impacts) ? h.impacts : [];
   const st = h.status || 'planning';
   const isKey = h.is_key == 1 || h.is_key === true;
