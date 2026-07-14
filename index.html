@@ -1239,16 +1239,25 @@
     .hyp-row-date { line-height: 1.35; overflow-wrap: anywhere; }
     .hyp-row .hyp-pf-pair .plan { color: var(--text-dim); }
     .hyp-row .hyp-pf-pair .fact { font-weight: 700; }
-    /* Цепочка воронки: чипы конверсий этап→этап */
-    .hyp-cr-chain { display: flex; align-items: center; gap: 4px; flex-wrap: nowrap; overflow: hidden; }
+    /* Цепочка воронки: чипы конверсий этап→этап (переносим на новые строки, чтобы верстка не уезжала) */
+    .hyp-cr-chain { display: flex; align-items: center; gap: 4px; row-gap: 3px; flex-wrap: wrap; overflow: visible; }
     .hyp-cr-stage { font-size: 10px; color: var(--text-faint); white-space: nowrap; }
     .hyp-cr-chip {
       display: inline-flex; flex-direction: column; align-items: center; gap: 0;
-      padding: 2px 7px; border-radius: 8px; font-size: 10px; white-space: nowrap;
+      padding: 2px 7px; border-radius: 8px; font-size: 10px; white-space: nowrap; max-width: 100%;
       border: 1px solid var(--border); background: var(--surface-thin); color: var(--text-dim);
     }
+    .hyp-cr-chip > span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
     .hyp-cr-chip.impacted { border-color: var(--accent); background: rgba(59,130,246,.10); color: var(--text); }
     .hyp-cr-chip .cr-fact { font-weight: 700; }
+    /* Выделение метрики, на которую влияет гипотеза */
+    .hyp-pf-row.hyp-pf-impacted { background: rgba(59,130,246,.08); box-shadow: inset 3px 0 0 var(--accent); }
+    .hyp-pf-row.hyp-pf-impacted .hyp-pf-label { color: var(--accent); font-weight: 700; }
+    .hyp-row .hyp-cell-impacted {
+      border-left: 3px solid var(--accent); background: rgba(59,130,246,.08);
+      border-radius: 8px; padding: 3px 6px;
+    }
+    .hyp-row .hyp-cell-impacted .hyp-cell-label { color: var(--accent); }
     /* Мини-прогрессбар выполнения плана по выручке */
     .hyp-progress { height: 4px; border-radius: 4px; background: var(--surface-thin); border: 1px solid var(--border); overflow: hidden; margin-top: 3px; }
     .hyp-progress > div { height: 100%; border-radius: 4px; }
@@ -9924,6 +9933,9 @@ function hypCardHtml(h, c) {
   <div class="flex justify-end"><button type="button" onclick="openHypNoteModal(${Number(h.id)})" title="Добавить запись в дневник" class="text-lg" style="background:none;border:none;cursor:pointer;color:var(--text-dim);">💬</button></div>
 </article>`;
   }
+  const impactedRow = key => c.impacts.includes(key) ? ' hyp-pf-impacted' : '';
+  const impactTip = key => c.impacts.includes(key) ? ' title="Гипотеза влияет на этот показатель"' : '';
+  const impactMark = key => c.impacts.includes(key) ? '🎯 ' : '';
   return `<article class="hyp-card${isKey ? ' is-key' : ''}">
   <div class="flex justify-between items-start gap-2">
     <div class="flex flex-wrap items-center gap-2 min-w-0">
@@ -9952,28 +9964,28 @@ function hypCardHtml(h, c) {
       <div class="hyp-pf-plan">${fnum(Number(h.manual_sample) > 0 ? Number(h.manual_sample) : Number(h.sample_size))}</div>
       <div class="hyp-pf-fact">—</div>
     </div>
-    <div class="hyp-pf-row">
-      <div class="hyp-pf-label">Визиты</div>
+    <div class="hyp-pf-row${impactedRow('visit')}"${impactTip('visit')}>
+      <div class="hyp-pf-label">${impactMark('visit')}Визиты</div>
       <div class="hyp-pf-plan">${fnum(visits)}</div>
       <div class="hyp-pf-fact">${fnum(factN.fact.visits)}</div>
     </div>
-    <div class="hyp-pf-row">
-      <div class="hyp-pf-label">Заявки</div>
+    <div class="hyp-pf-row${impactedRow('lead')}"${impactTip('lead')}>
+      <div class="hyp-pf-label">${impactMark('lead')}Заявки</div>
       <div class="hyp-pf-plan">${fnum(Number(h.leads_volume))}</div>
       <div class="hyp-pf-fact">${fnum(factN.fact.leads)}</div>
     </div>
-    <div class="hyp-pf-row">
-      <div class="hyp-pf-label">Апрувы</div>
+    <div class="hyp-pf-row${impactedRow('approve')}"${impactTip('approve')}>
+      <div class="hyp-pf-label">${impactMark('approve')}Апрувы</div>
       <div class="hyp-pf-plan">${fnum(Number(h.approvals_volume))}</div>
       <div class="hyp-pf-fact">${fnum(factN.fact.approvals)}</div>
     </div>
-    <div class="hyp-pf-row">
-      <div class="hyp-pf-label">${escapeHtml(focusLabel)}</div>
+    <div class="hyp-pf-row hyp-pf-impacted" title="Фокусная метрика гипотезы">
+      <div class="hyp-pf-label">🎯 ${escapeHtml(focusLabel)}</div>
       <div class="hyp-pf-plan">${focusPlan}</div>
       <div class="hyp-pf-fact">${focusFact}</div>
     </div>
-    <div class="hyp-pf-row">
-      <div class="hyp-pf-label">Выручка</div>
+    <div class="hyp-pf-row${impactedRow('revenue')}"${impactTip('revenue')}>
+      <div class="hyp-pf-label">${impactMark('revenue')}Выручка</div>
       <div class="hyp-pf-plan">${fmoney(Number(h.revenue_total_expected) || Number(h.expected_value))}</div>
       <div class="hyp-pf-fact">${fmoney(factN.fact.revenue)}</div>
     </div>
@@ -10006,9 +10018,9 @@ function hypRowHtml(h, c) {
     const impacted = impacts.includes(key);
     const planTxt = impacted ? `${p(base)}→${p(expected)}` : p(base);
     const factTxt = (fact !== null && fact !== undefined && Number.isFinite(fact))
-      ? ` · <span class="cr-fact" style="color:${factUplift !== null && factUplift < 0 ? 'var(--bad)' : 'var(--ok)'}">ф ${p(fact)}</span>` : '';
+      ? `<span class="cr-fact" style="color:${factUplift !== null && factUplift < 0 ? 'var(--bad)' : 'var(--ok)'}">ф ${p(fact)}</span>` : '';
     const tip = `${label}: план ${planTxt}${(fact !== null && fact !== undefined && Number.isFinite(fact)) ? `, факт ${p(fact)}` : ''}${impacted ? ' (этап затронут гипотезой)' : ''}`;
-    return `<span class="hyp-cr-chip${impacted ? ' impacted' : ''}" title="${escapeHtml(tip)}">${planTxt}${factTxt}</span>`;
+    return `<span class="hyp-cr-chip${impacted ? ' impacted' : ''}" title="${escapeHtml(tip)}"><span>${impacted ? '🎯 ' : ''}${planTxt}</span>${factTxt}</span>`;
   };
   const chain = `<div class="hyp-cr-chain">
     <span class="hyp-cr-stage">Выборка</span>
@@ -10069,8 +10081,8 @@ function hypRowHtml(h, c) {
     <div class="hyp-row-title" title="${escapeHtml(h.title)}">${isKey ? '🚀 ' : ''}${escapeHtml(h.title)}</div>
     <div>${chain}</div>
     <div title="${escapeHtml(sampleTip)}"><div class="hyp-cell-label">Выборка${manual ? ' (ручная)' : ''}</div><b>${sampleVal > 0 ? Math.ceil(sampleVal).toLocaleString('ru-RU') : '—'}</b></div>
-    <div><div class="hyp-cell-label">${escapeHtml(c.focusLabel)}</div>${pfPair(c.focusPlan, c.focusFact, c.focusGood)}</div>
-    <div><div class="hyp-cell-label">Выручка</div>${pfPair(fmoney(revPlan), fmoney(revFact), revGood)}${revProgressBar}</div>
+    <div class="hyp-cell-impacted" title="Фокусная метрика гипотезы"><div class="hyp-cell-label">🎯 ${escapeHtml(c.focusLabel)}</div>${pfPair(c.focusPlan, c.focusFact, c.focusGood)}</div>
+    <div${impacts.includes('revenue') ? ' class="hyp-cell-impacted" title="Гипотеза влияет на этот показатель"' : ''}><div class="hyp-cell-label">${impacts.includes('revenue') ? '🎯 ' : ''}Выручка</div>${pfPair(fmoney(revPlan), fmoney(revFact), revGood)}${revProgressBar}</div>
     <div><div class="hyp-cell-label">ROI</div>${pfPair(roiPlan, roiFact, roiGood)}</div>
     <div>${hypSigBadgeHtml(factN)}</div>
     <div class="hyp-row-date text-xs" style="color:var(--text-faint);">📅 ${escapeHtml(c.dateRange)}</div>
