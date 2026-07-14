@@ -9539,12 +9539,17 @@ function calcRoi(revenue, expenses) {
   return ((revenue - expenses) / expenses) * 100;
 }
 function hypExpectedRoi(h) {
+  // Ожидаемый ROI = (прогнозная выручка − бюджет теста) / бюджет теста × 100.
+  // Прогнозная выручка: целевая выручка при влиянии на выручку, иначе —
+  // автопрогноз из воронки (expected_value). Сохранённый roi_expected —
+  // только запасной вариант для старых записей без прогноза.
   const testingCost = Number(h.testing_cost) || 0;
   if (testingCost <= 0) return null;
   const impacts = Array.isArray(h.impacts) ? h.impacts : [];
-  if (impacts.includes('revenue')) {
-    return calcRoi(Number(h.revenue_total_expected) || 0, testingCost);
-  }
+  const forecastRevenue = impacts.includes('revenue')
+    ? Number(h.revenue_total_expected) || 0
+    : Number(h.expected_value) || 0;
+  if (forecastRevenue > 0) return calcRoi(forecastRevenue, testingCost);
   const savedRoi = Number(h.roi_expected);
   return Number.isFinite(savedRoi) ? savedRoi : null;
 }
@@ -9582,18 +9587,9 @@ function calcHypothesisNumbers() {
   const expensesBase = hypNum('hypExpensesBase');
   const testingCost = hypNum('hypTestingCost');
   const revenueFinBase = hypNum('hypRevenueFinBase');
-  const funnelBaseRate = crVisitBase * crLeadBase * crApproveBase;
-  const funnelExpectedRate = crVisit * crLead * crApprove;
-  const funnelLift = funnelBaseRate > 0 ? funnelExpectedRate / funnelBaseRate : 1;
-  const hasRevenueImpact = impacts.includes('revenue');
-  let projectedRevenue;
-  if (hasRevenueImpact) {
-    projectedRevenue = revenueTotalExpected;
-  } else if (revenueFinBase > 0) {
-    projectedRevenue = revenueFinBase * funnelLift;
-  } else {
-    projectedRevenue = expectedValue;
-  }
+  // Прогнозная выручка для ROI: целевая выручка при влиянии на выручку,
+  // иначе — автопрогноз из воронки (тот же, что в блоке «Прогноз»).
+  const projectedRevenue = impacts.includes('revenue') ? revenueTotalExpected : expectedValue;
   const roiBase = calcRoi(revenueFinBase, expensesBase);
   const roiExpected = calcRoi(projectedRevenue, testingCost);
   return {
@@ -9694,7 +9690,9 @@ function calcFactNumbers(h) {
       crApproveExpected: num(h.cr_approve_expected),
       visits: num(h.visits_volume || h.traffic_volume),
       leads: num(h.leads_volume),
-      revenue: num(h.revenue_total_expected) || num(h.expected_value),
+      revenue: (Array.isArray(h.impacts) && h.impacts.includes('revenue'))
+        ? num(h.revenue_total_expected) || num(h.expected_value)
+        : num(h.expected_value),
       roiExpected: hypExpectedRoi(h),
       expensesPlan: num(h.expenses_base) + num(h.testing_cost),
     };
@@ -9708,7 +9706,7 @@ function calcFactNumbers(h) {
       crLead: n.cr_lead_base, crApprove: n.cr_approve_base,
       crLeadExpected: n.cr_lead_expected, crApproveExpected: n.cr_approve_expected,
       visits: n.visits_volume, leads: n.leads_volume,
-      revenue: n.revenue_total_expected || n.expected_value,
+      revenue: n.impacts.includes('revenue') ? (n.revenue_total_expected || n.expected_value) : n.expected_value,
       roiExpected: n.roi_expected, expensesPlan: n.expenses_base + n.testing_cost,
     };
   }
