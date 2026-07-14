@@ -1133,6 +1133,14 @@
     .hyp-card.is-key {
       border-left: 3px solid #22c55e;
     }
+    .hyp-card-title-row { align-items: flex-start; }
+    .hyp-card-title {
+      flex: 1 1 auto;
+      min-width: 0;
+      white-space: normal;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
     /* Метрика внутри карточки */
     .hyp-metric {
       background: var(--surface);
@@ -1217,7 +1225,14 @@
     .hyp-row--failed  { border-left-color: var(--bad); background: linear-gradient(145deg, rgba(239,68,68,.07), var(--surface-solid)); }
     .hyp-row--testing { border-left-color: var(--accent); background: linear-gradient(145deg, rgba(59,130,246,.07), var(--surface-solid)); }
     .hyp-row--neutral { border-left-color: #64748b; }
-    .hyp-row .hyp-row-title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .hyp-row .hyp-row-title {
+      font-weight: 600;
+      white-space: normal;
+      overflow: visible;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+      line-height: 1.35;
+    }
     .hyp-row .hyp-cell-label { font-size: 9px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-faint); font-weight: 600; }
     .hyp-row .hyp-pf-pair { white-space: normal; line-height: 1.35; }
     .hyp-row .hyp-sig { max-width: 100%; white-space: normal; text-align: center; justify-content: center; }
@@ -9560,9 +9575,20 @@ function calcHypothesisNumbers() {
   const funnelBaseRate = crVisitBase * crLeadBase * crApproveBase;
   const funnelExpectedRate = crVisit * crLead * crApprove;
   const funnelLift = funnelBaseRate > 0 ? funnelExpectedRate / funnelBaseRate : 1;
-  const projectedRevenue = impacts.includes('revenue') && revenueTotalExpected > 0
-    ? revenueTotalExpected
-    : (revenueFinBase > 0 ? revenueFinBase * funnelLift : expectedValue);
+  const hasRevenueImpact = impacts.includes('revenue');
+  const revenueLift = hasRevenueImpact && revenueTotalBase > 0
+    ? revenueTotalExpected / revenueTotalBase
+    : 1;
+  let projectedRevenue;
+  if (hasRevenueImpact && revenueTotalBase <= 0) {
+    projectedRevenue = revenueTotalExpected * funnelLift;
+  } else if (revenueFinBase > 0) {
+    projectedRevenue = revenueFinBase * funnelLift * revenueLift;
+  } else if (hasRevenueImpact) {
+    projectedRevenue = revenueTotalExpected * funnelLift;
+  } else {
+    projectedRevenue = expectedValue;
+  }
   const roiBase = calcRoi(revenueFinBase, expensesBase);
   const roiExpected = calcRoi(projectedRevenue, expensesBase + testingCost);
   return {
@@ -9885,7 +9911,7 @@ function hypCardHtml(h, c) {
       <button type="button" class="text-xs" style="color:#f87171;" onclick="deleteHypothesis(${Number(h.id)})">Удалить</button>
     </div>
   </div>
-  <h4 class="font-semibold" style="color:var(--text);font-size:16px;">${escapeHtml(h.title)}</h4>
+  <h4 class="hyp-card-title font-semibold" style="color:var(--text);font-size:16px;">${escapeHtml(h.title)}</h4>
   <div class="text-xs" style="color:var(--text-faint);">📅 ${escapeHtml(dateRange)}</div>
   ${h.description ? `<p class="text-sm" style="color:var(--text-dim);">${escapeHtml(h.description)}</p>` : ''}
   ${h.goal ? `<p class="text-sm" style="color:var(--text-dim);"><b>Цель:</b> ${escapeHtml(h.goal)}</p>` : ''}
@@ -9906,8 +9932,8 @@ function hypCardHtml(h, c) {
       <button type="button" class="text-xs" style="color:#f87171;" onclick="deleteHypothesis(${Number(h.id)})">Удалить</button>
     </div>
   </div>
-  <div class="flex items-center justify-between gap-2">
-    <h4 class="font-semibold min-w-0" style="color:var(--text);font-size:16px;">${escapeHtml(h.title)}</h4>
+  <div class="hyp-card-title-row flex justify-between gap-2">
+    <h4 class="hyp-card-title font-semibold" style="color:var(--text);font-size:16px;">${escapeHtml(h.title)}</h4>
     ${upliftLine ? `<span class="text-xs shrink-0" style="color:${uplift >= 0 ? 'var(--ok)' : 'var(--bad)'}">${upliftLine}</span>` : ''}
   </div>
   ${h.description ? `<p class="text-sm" style="color:var(--text-dim);">${escapeHtml(h.description)}</p>` : ''}
