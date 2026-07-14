@@ -5534,7 +5534,9 @@ function closeBannerBouncesModal() {
   document.body.style.overflow = '';
 }
 function parseBannerBounceDate(s) {
-  if (s instanceof Date && !Number.isNaN(s.getTime())) return s.toISOString().slice(0, 10);
+  if (s instanceof Date && !Number.isNaN(s.getTime())) {
+    return `${String(s.getFullYear()).padStart(4, '0')}-${String(s.getMonth() + 1).padStart(2, '0')}-${String(s.getDate()).padStart(2, '0')}`;
+  }
   if (typeof s === 'number' && Number.isFinite(s) && window.XLSX?.SSF?.parse_date_code) {
     const d = XLSX.SSF.parse_date_code(s);
     if (d) return `${String(d.y).padStart(4, '0')}-${String(d.m).padStart(2, '0')}-${String(d.d).padStart(2, '0')}`;
