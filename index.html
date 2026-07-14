@@ -9590,7 +9590,7 @@ function calcHypothesisNumbers() {
     projectedRevenue = expectedValue;
   }
   const roiBase = calcRoi(revenueFinBase, expensesBase);
-  const roiExpected = calcRoi(projectedRevenue, expensesBase + testingCost);
+  const roiExpected = calcRoi(projectedRevenue, testingCost);
   return {
     impacts,
     cr_visit_base: crVisitBase, cr_visit_expected: crVisit,
@@ -9650,7 +9650,7 @@ function renderHypRoi() {
   display.classList.remove('hidden');
   const fmtRoi = v => v === null ? 'N/A' : v.toFixed(1) + '%';
   baseEl.textContent = fmtRoi(calcRoi(n.revenue_fin_base, n.expenses_base));
-  expEl.textContent = fmtRoi(calcRoi(n.projected_revenue, n.expenses_base + n.testing_cost));
+  expEl.textContent = fmtRoi(calcRoi(n.projected_revenue, n.testing_cost));
 }
 
 // --- Факт: расчёты, uplift и статзначимость (Z-test двух пропорций) ---
@@ -9690,7 +9690,7 @@ function calcFactNumbers(h) {
       visits: num(h.visits_volume || h.traffic_volume),
       leads: num(h.leads_volume),
       revenue: num(h.revenue_total_expected) || num(h.expected_value),
-      roiExpected: Number.isFinite(Number(h.roi_expected)) ? Number(h.roi_expected) : null,
+      roiExpected: calcRoi(num(h.projected_revenue), num(h.testing_cost)),
       expensesPlan: num(h.expenses_base) + num(h.testing_cost),
     };
   } else {
@@ -9828,6 +9828,7 @@ function hypComputed(h) {
   const statusLabels = { planning:'🕐 Планируется', in_progress:'🔵 В работе', success:'✅ Успех', failed:'❌ Провал', paused:'⏸ Отложено' };
   const pct = v => (Number(v || 0) * 100).toFixed(2) + '%';
   const fmtRoi = (v, hasExpenses) => hasExpenses && Number.isFinite(Number(v)) ? Number(v).toFixed(1) + '%' : null;
+  const expectedRoi = calcRoi(Number(h.projected_revenue) || 0, Number(h.testing_cost) || 0);
   const impacts = Array.isArray(h.impacts) ? h.impacts : [];
   const st = h.status || 'planning';
   const isKey = h.is_key == 1 || h.is_key === true;
@@ -9867,7 +9868,7 @@ function hypComputed(h) {
   })();
   const roiLine = (() => {
     const rb = fmtRoi(h.roi_base, Number(h.expenses_base) > 0);
-    const re = fmtRoi(h.roi_expected, Number(h.expenses_base) + Number(h.testing_cost) > 0);
+    const re = fmtRoi(expectedRoi, Number(h.testing_cost) > 0);
     if (!rb && !re) return '';
     return `ROI: ${rb || '—'} → ${re || '—'}`;
   })();
@@ -9891,12 +9892,12 @@ function hypComputed(h) {
   const keyBadge = isKey ? `<span class="text-[11px] px-2 py-0.5 rounded-full" style="background:rgba(34,197,94,.14);color:#4ade80;border:1px solid rgba(34,197,94,.3);">🚀 Ключевая</span>` : '';
   const dateRange = (h.start_date || h.end_date) ? `${h.start_date || '?'} – ${h.end_date || '?'}${days > 0 ? ` (${days} дн.)` : ''}` : '—';
   return { impacts, st, statusLabel: statusLabels[st] || st, isKey, isTask, days, visits, factN,
-    fnum, fmoney, pct, fmtRoi, focusLabel, focusPlan, focusFact, focusGood, roiLine, testCostLine,
+    fnum, fmoney, pct, fmtRoi, expectedRoi, focusLabel, focusPlan, focusFact, focusGood, roiLine, testCostLine,
     visitBase, leadBase, approveBase, uplift, upliftLine, notesHtml, keyBadge, dateRange };
 }
 // Полная карточка гипотезы (используется в виде «Карточки» и в раскрытии строки).
 function hypCardHtml(h, c) {
-  const { st, isKey, visits, factN, fnum, fmoney, fmtRoi, focusLabel, focusPlan, focusFact,
+  const { st, isKey, visits, factN, fnum, fmoney, fmtRoi, expectedRoi, focusLabel, focusPlan, focusFact,
     roiLine, testCostLine, uplift, upliftLine, notesHtml, keyBadge, dateRange } = c;
   if (c.isTask) {
     return `<article class="hyp-card${isKey ? ' is-key' : ''}">
@@ -9944,8 +9945,13 @@ function hypCardHtml(h, c) {
   <div class="hyp-pf-table">
     <div class="hyp-pf-row hyp-pf-head"><div>Метрика</div><div>Ожидание (план)</div><div>Реальность (факт)</div></div>
     <div class="hyp-pf-row">
-      <div class="hyp-pf-label">Выборка / визиты</div>
-      <div class="hyp-pf-plan">${fnum(visits || Number(h.sample_size))}</div>
+      <div class="hyp-pf-label">Объем выборки</div>
+      <div class="hyp-pf-plan">${fnum(Number(h.manual_sample) > 0 ? Number(h.manual_sample) : Number(h.sample_size))}</div>
+      <div class="hyp-pf-fact">—</div>
+    </div>
+    <div class="hyp-pf-row">
+      <div class="hyp-pf-label">Визиты</div>
+      <div class="hyp-pf-plan">${fnum(visits)}</div>
       <div class="hyp-pf-fact">${fnum(factN.fact.visits)}</div>
     </div>
     <div class="hyp-pf-row">
@@ -9970,7 +9976,7 @@ function hypCardHtml(h, c) {
     </div>
     <div class="hyp-pf-row">
       <div class="hyp-pf-label">ROI</div>
-      <div class="hyp-pf-plan">${fmtRoi(h.roi_expected, Number(h.expenses_base) + Number(h.testing_cost) > 0) || '—'}</div>
+      <div class="hyp-pf-plan">${fmtRoi(expectedRoi, Number(h.testing_cost) > 0) || '—'}</div>
       <div class="hyp-pf-fact">${factN.fact_roi === null ? '—' : factN.fact_roi.toFixed(1) + '%'}</div>
     </div>
   </div>
@@ -9988,7 +9994,7 @@ function hypCardHtml(h, c) {
 }
 // Однострочный вид гипотезы: статус, воронка «план→факт», выборка, фокус, выручка, ROI.
 function hypRowHtml(h, c) {
-  const { impacts, st, isKey, factN, fmoney, fmtRoi } = c;
+  const { impacts, st, isKey, factN, fmoney, fmtRoi, expectedRoi } = c;
   const rowCls = st === 'success' ? 'hyp-row--success' : st === 'failed' ? 'hyp-row--failed' : st === 'in_progress' ? 'hyp-row--testing' : 'hyp-row--neutral';
   const shortStatus = { planning:'🕐 План', in_progress:'🔵 Тест', success:'✅ Успех', failed:'❌ Провал', paused:'⏸ Пауза' };
   const p = v => Number.isFinite(Number(v)) && Number(v) > 0 ? (Number(v) * 100).toFixed(2) + '%' : '—';
@@ -10032,9 +10038,9 @@ function hypRowHtml(h, c) {
   const revProgress = revPlan > 0 ? Math.min(100, revFact / revPlan * 100) : 0;
   const revProgressBar = revPlan > 0
     ? `<div class="hyp-progress" title="Выполнение плана по выручке: ${revProgress.toFixed(0)}%"><div style="width:${revProgress.toFixed(1)}%;background:${revProgress >= 100 ? 'var(--ok)' : 'var(--accent)'};"></div></div>` : '';
-  const roiPlan = fmtRoi(h.roi_expected, Number(h.expenses_base) + Number(h.testing_cost) > 0) || '—';
+  const roiPlan = fmtRoi(expectedRoi, Number(h.testing_cost) > 0) || '—';
   const roiFact = factN.fact_roi === null ? '—' : factN.fact_roi.toFixed(1) + '%';
-  const roiGood = factN.fact_roi === null || !Number.isFinite(Number(h.roi_expected)) ? null : factN.fact_roi >= Number(h.roi_expected);
+  const roiGood = factN.fact_roi === null || expectedRoi === null ? null : factN.fact_roi >= expectedRoi;
   const id = Number(h.id);
   if (c.isTask) {
     return `<div class="hyp-row-wrap">
