@@ -1189,6 +1189,12 @@
     .hyp-pf-plan { background: var(--surface-thin); color: var(--text-dim); font-weight: 600; }
     .hyp-pf-fact { background: rgba(0,113,227,.06); color: var(--text); font-weight: 700; }
     .hyp-pf-fact .hyp-pf-uplift { font-weight: 600; font-size: 11px; margin-left: 4px; }
+    /* Подстроки конверсий этап→этап в таблице план/факт */
+    .hyp-pf-row.hyp-pf-cr { background: rgba(148,163,184,.05); }
+    .hyp-pf-row.hyp-pf-cr .hyp-pf-label { font-size: 10.5px; padding-left: 18px; }
+    .hyp-pf-row.hyp-pf-cr .hyp-pf-plan, .hyp-pf-row.hyp-pf-cr .hyp-pf-fact { font-size: 12px; }
+    /* Бейдж «Фокус» — метрика, на которую влияет гипотеза (галочки в форме) */
+    .hyp-focus-badge { display: inline-block; font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; padding: 1px 6px; border-radius: 999px; background: rgba(59,130,246,.15); color: var(--accent); border: 1px solid rgba(59,130,246,.35); margin-left: 6px; vertical-align: 1px; white-space: nowrap; }
     /* Плашка статзначимости */
     .hyp-sig { display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px; border-radius: 980px; font-size: 11px; font-weight: 600; white-space: nowrap; }
     .hyp-sig-yes  { background: rgba(34,197,94,.14); color: #4ade80; border: 1px solid rgba(34,197,94,.3); }
@@ -2509,7 +2515,8 @@ CR_plan       = baseCR,   AR_plan = baseAR
             <div class="form-field"><label>Ценность 1 апрува, ₽</label><input id="hypRevenueBase" type="number" min="0" step="100" oninput="renderHypothesisCalc()"></div>
             <div class="form-field"><label>Выборка вручную</label><input id="hypManualSample" type="number" min="0" step="1" placeholder="авто" oninput="renderHypothesisCalc()"></div>
           </div>
-          <div class="text-xs font-semibold uppercase mb-2 mt-3" style="color:var(--text-dim);letter-spacing:.05em;">Разделы влияния</div>
+          <div class="text-xs font-semibold uppercase mb-1 mt-3" style="color:var(--text-dim);letter-spacing:.05em;">🎯 Фокус — разделы влияния</div>
+          <div class="text-[11px] mb-2" style="color:var(--text-faint);">Отметьте галочками этапы, на которые влияет гипотеза. Они помечаются бейджем «Фокус» в таблице метрик и в борде.</div>
           <div class="space-y-2">
             <div class="rounded-lg p-2" style="border:1px solid var(--border);background:var(--surface-thin);">
               <label class="flex items-center gap-2 text-sm mb-1"><input id="hypImpactVisit" type="checkbox" onchange="toggleHypImpact()"> Влияние на визит</label>
@@ -9909,7 +9916,7 @@ function hypComputed(h) {
 }
 // Полная карточка гипотезы (используется в виде «Карточки» и в раскрытии строки).
 function hypCardHtml(h, c) {
-  const { st, isKey, visits, factN, fnum, fmoney, fmtRoi, expectedRoi, focusLabel, focusPlan, focusFact,
+  const { st, isKey, visits, factN, fnum, fmoney, fmtRoi, expectedRoi,
     roiLine, testCostLine, uplift, upliftLine, notesHtml, keyBadge, dateRange } = c;
   if (c.isTask) {
     return `<article class="hyp-card${isKey ? ' is-key' : ''}">
@@ -9934,8 +9941,23 @@ function hypCardHtml(h, c) {
 </article>`;
   }
   const impactedRow = key => c.impacts.includes(key) ? ' hyp-pf-impacted' : '';
-  const impactTip = key => c.impacts.includes(key) ? ' title="Гипотеза влияет на этот показатель"' : '';
+  const impactTip = key => c.impacts.includes(key) ? ' title="Фокус: гипотеза влияет на этот показатель"' : '';
+  const focusBadge = '<span class="hyp-focus-badge">Фокус</span>';
   const impactMark = key => c.impacts.includes(key) ? '🎯 ' : '';
+  const focusTag = key => c.impacts.includes(key) ? focusBadge : '';
+  // Конверсии этап→этап: план (база → ожидание для фокусных) и факт с апрувом к базе.
+  const fpct = v => (v === null || v === undefined || !Number.isFinite(v)) ? '—' : (v * 100).toFixed(2) + '%';
+  const factUp = v => v === null ? '' : `<span class="hyp-pf-uplift" style="color:${v >= 0 ? 'var(--ok)' : 'var(--bad)'}">(${v >= 0 ? '+' : ''}${v.toFixed(1)}%)</span>`;
+  const crRow = (key, label, base, expected, fact, uplift) => {
+    const impacted = c.impacts.includes(key);
+    const planTxt = impacted ? `${c.pct(base)} → ${c.pct(expected)}` : c.pct(base);
+    const factTxt = (fact !== null && fact !== undefined && Number.isFinite(fact)) ? `${fpct(fact)}${factUp(uplift)}` : '—';
+    return `<div class="hyp-pf-row hyp-pf-cr${impacted ? ' hyp-pf-impacted' : ''}"${impacted ? ' title="Фокус: гипотеза влияет на эту конверсию"' : ''}>
+      <div class="hyp-pf-label">↳ ${impacted ? '🎯 ' : ''}${label}${impacted ? focusBadge : ''}</div>
+      <div class="hyp-pf-plan">${planTxt}</div>
+      <div class="hyp-pf-fact">${factTxt}</div>
+    </div>`;
+  };
   return `<article class="hyp-card${isKey ? ' is-key' : ''}">
   <div class="flex justify-between items-start gap-2">
     <div class="flex flex-wrap items-center gap-2 min-w-0">
@@ -9964,28 +9986,26 @@ function hypCardHtml(h, c) {
       <div class="hyp-pf-plan">${fnum(Number(h.manual_sample) > 0 ? Number(h.manual_sample) : Number(h.sample_size))}</div>
       <div class="hyp-pf-fact">—</div>
     </div>
+    ${crRow('visit', 'CR выборка → визит', h.cr_visit_base, h.cr_visit_expected, null, null)}
     <div class="hyp-pf-row${impactedRow('visit')}"${impactTip('visit')}>
-      <div class="hyp-pf-label">${impactMark('visit')}Визиты</div>
+      <div class="hyp-pf-label">${impactMark('visit')}Визиты${focusTag('visit')}</div>
       <div class="hyp-pf-plan">${fnum(visits)}</div>
       <div class="hyp-pf-fact">${fnum(factN.fact.visits)}</div>
     </div>
+    ${crRow('lead', 'CR визит → заявка', h.cr_lead_base ?? h.base_cr, h.cr_lead_expected ?? h.expected_cr, factN.fact_cr_lead, factN.uplift_lead)}
     <div class="hyp-pf-row${impactedRow('lead')}"${impactTip('lead')}>
-      <div class="hyp-pf-label">${impactMark('lead')}Заявки</div>
+      <div class="hyp-pf-label">${impactMark('lead')}Заявки${focusTag('lead')}</div>
       <div class="hyp-pf-plan">${fnum(Number(h.leads_volume))}</div>
       <div class="hyp-pf-fact">${fnum(factN.fact.leads)}</div>
     </div>
+    ${crRow('approve', 'CR заявка → апрув', h.cr_approve_base ?? h.approve_rate, h.cr_approve_expected, factN.fact_cr_approve, factN.uplift_approve)}
     <div class="hyp-pf-row${impactedRow('approve')}"${impactTip('approve')}>
-      <div class="hyp-pf-label">${impactMark('approve')}Апрувы</div>
+      <div class="hyp-pf-label">${impactMark('approve')}Апрувы${focusTag('approve')}</div>
       <div class="hyp-pf-plan">${fnum(Number(h.approvals_volume))}</div>
       <div class="hyp-pf-fact">${fnum(factN.fact.approvals)}</div>
     </div>
-    <div class="hyp-pf-row hyp-pf-impacted" title="Фокусная метрика гипотезы">
-      <div class="hyp-pf-label">🎯 ${escapeHtml(focusLabel)}</div>
-      <div class="hyp-pf-plan">${focusPlan}</div>
-      <div class="hyp-pf-fact">${focusFact}</div>
-    </div>
     <div class="hyp-pf-row${impactedRow('revenue')}"${impactTip('revenue')}>
-      <div class="hyp-pf-label">${impactMark('revenue')}Выручка</div>
+      <div class="hyp-pf-label">${impactMark('revenue')}Выручка${focusTag('revenue')}</div>
       <div class="hyp-pf-plan">${fmoney(Number(h.revenue_total_expected) || Number(h.expected_value))}</div>
       <div class="hyp-pf-fact">${fmoney(factN.fact.revenue)}</div>
     </div>
@@ -10019,7 +10039,7 @@ function hypRowHtml(h, c) {
     const planTxt = impacted ? `${p(base)}→${p(expected)}` : p(base);
     const factTxt = (fact !== null && fact !== undefined && Number.isFinite(fact))
       ? `<span class="cr-fact" style="color:${factUplift !== null && factUplift < 0 ? 'var(--bad)' : 'var(--ok)'}">ф ${p(fact)}</span>` : '';
-    const tip = `${label}: план ${planTxt}${(fact !== null && fact !== undefined && Number.isFinite(fact)) ? `, факт ${p(fact)}` : ''}${impacted ? ' (этап затронут гипотезой)' : ''}`;
+    const tip = `${label}: план ${planTxt}${(fact !== null && fact !== undefined && Number.isFinite(fact)) ? `, факт ${p(fact)}` : ''}${impacted ? ' (Фокус — гипотеза влияет на этот этап)' : ''}`;
     return `<span class="hyp-cr-chip${impacted ? ' impacted' : ''}" title="${escapeHtml(tip)}"><span>${impacted ? '🎯 ' : ''}${planTxt}</span>${factTxt}</span>`;
   };
   const chain = `<div class="hyp-cr-chain">
@@ -10081,8 +10101,8 @@ function hypRowHtml(h, c) {
     <div class="hyp-row-title" title="${escapeHtml(h.title)}">${isKey ? '🚀 ' : ''}${escapeHtml(h.title)}</div>
     <div>${chain}</div>
     <div title="${escapeHtml(sampleTip)}"><div class="hyp-cell-label">Выборка${manual ? ' (ручная)' : ''}</div><b>${sampleVal > 0 ? Math.ceil(sampleVal).toLocaleString('ru-RU') : '—'}</b></div>
-    <div class="hyp-cell-impacted" title="Фокусная метрика гипотезы"><div class="hyp-cell-label">🎯 ${escapeHtml(c.focusLabel)}</div>${pfPair(c.focusPlan, c.focusFact, c.focusGood)}</div>
-    <div${impacts.includes('revenue') ? ' class="hyp-cell-impacted" title="Гипотеза влияет на этот показатель"' : ''}><div class="hyp-cell-label">${impacts.includes('revenue') ? '🎯 ' : ''}Выручка</div>${pfPair(fmoney(revPlan), fmoney(revFact), revGood)}${revProgressBar}</div>
+    <div class="hyp-cell-impacted" title="Фокусная метрика гипотезы"><div class="hyp-cell-label">🎯 Фокус: ${escapeHtml(c.focusLabel)}</div>${pfPair(c.focusPlan, c.focusFact, c.focusGood)}</div>
+    <div${impacts.includes('revenue') ? ' class="hyp-cell-impacted" title="Фокус: гипотеза влияет на этот показатель"' : ''}><div class="hyp-cell-label">${impacts.includes('revenue') ? '🎯 ' : ''}Выручка${impacts.includes('revenue') ? '<span class="hyp-focus-badge">Фокус</span>' : ''}</div>${pfPair(fmoney(revPlan), fmoney(revFact), revGood)}${revProgressBar}</div>
     <div><div class="hyp-cell-label">ROI</div>${pfPair(roiPlan, roiFact, roiGood)}</div>
     <div>${hypSigBadgeHtml(factN)}</div>
     <div class="hyp-row-date text-xs" style="color:var(--text-faint);">📅 ${escapeHtml(c.dateRange)}</div>
