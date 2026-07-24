@@ -988,6 +988,28 @@
     .my-funnel-plat-toggle button:first-child { border-radius: 8px 0 0 8px; }
     .my-funnel-plat-toggle button:last-child { border-radius: 0 8px 8px 0; }
     .my-funnel-plat-toggle button.active { background: var(--accent-soft); color: var(--text); border-color: var(--accent); }
+    /* ----- Сравнение воронки по периодам ----- */
+    .fc-period-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .fc-period-row .fc-period-idx { width: 20px; height: 20px; flex: none; display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; background: var(--accent-soft); color: var(--text); font-size: 11px; font-weight: 700; }
+    .fc-period-row input[type="text"] { flex: 1; min-width: 140px; }
+    .fc-period-row input[type="date"] { width: 150px; }
+    .fc-viz-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; }
+    .fc-viz-col { border: 1px solid var(--border); border-radius: 10px; padding: 10px; background: var(--surface); }
+    .fc-viz-title { font-size: 12px; font-weight: 700; color: var(--text); margin-bottom: 8px; text-align: center; }
+    .fc-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .fc-table th, .fc-table td { padding: 6px 10px; border-bottom: 1px solid var(--border); }
+    .fc-table th { text-align: right; color: var(--text-dim); font-weight: 600; vertical-align: bottom; }
+    .fc-table th.fc-stage-name, .fc-table td.fc-stage-name { text-align: left; }
+    .fc-col-sub { font-size: 10px; color: var(--text-faint); font-weight: 400; }
+    .fc-num { text-align: right; font-feature-settings: "tnum" 1, "lnum" 1; white-space: nowrap; }
+    .fc-stage-row.zone-external .fc-stage-name { border-left: 3px solid var(--text-faint); padding-left: 8px; }
+    .fc-stage-row.zone-internal .fc-stage-name { border-left: 3px solid var(--accent); padding-left: 8px; }
+    .fc-cr-row td { color: var(--text-dim); font-size: 11px; padding-top: 2px; padding-bottom: 2px; border-bottom: none; }
+    .fc-cr-row .fc-cr { font-style: italic; }
+    .fc-delta { display: inline-block; margin-left: 6px; font-size: 11px; font-weight: 600; }
+    .fc-delta.fc-up { color: var(--good, #34d399); }
+    .fc-delta.fc-down { color: var(--bad, #f87171); }
+    .fc-total-row td { font-weight: 700; border-top: 2px solid var(--border-strong); }
     .relation-chip {
       border: 1px solid var(--border);
       border-radius: var(--r-card);
@@ -1390,6 +1412,7 @@
     <button class="tab-btn" data-tab="compare" onclick="switchTab('compare')">Сравнение</button>
     <button class="tab-btn" data-tab="banner" onclick="switchTab('banner')">Баннер</button>
     <button class="tab-btn" data-tab="reject-mon" onclick="switchTab('reject-mon')">Планирование</button>
+    <button class="tab-btn" data-tab="myfunnels" onclick="switchTab('myfunnels')">Мои воронки</button>
     <button class="tab-btn" data-tab="hypotheses" onclick="switchTab('hypotheses')">Гипотезы</button>
     <button class="tab-btn" data-tab="ai" onclick="switchTab('ai')">AI-аналитика<span id="aiKeyIndicator" class="tab-dot off" title="Статус AI-ключа неизвестен">●</span></button>
     <button class="tab-btn" data-tab="events" onclick="switchTab('events')">События<span id="eventsUnreadBadge" class="tab-badge hidden">0</span></button>
@@ -1862,7 +1885,6 @@
     <div id="rejectSubTabBar" class="flex gap-1 border-b border-slate-700">
       <button class="tab-btn active" data-rsub="channels" onclick="switchRejectSubTab('channels')">Сводка по 5 каналам</button>
       <button class="tab-btn"        data-rsub="funnel"   onclick="switchRejectSubTab('funnel')">Воронка и динамика</button>
-      <button class="tab-btn"        data-rsub="myfunnels" onclick="switchRejectSubTab('myfunnels')">Мои воронки</button>
     </div>
 
     <!-- SUB-TAB 1: Channels Overview -->
@@ -1962,20 +1984,23 @@
 
     <!-- SUB-TAB 3 (Unit Economics by CJM) removed by request -->
 
-    <!-- SUB-TAB: My Funnels (конструктор пользовательских воронок) -->
-    <div id="rsub-myfunnels" class="reject-sub space-y-6 hidden">
-      <div class="card">
-        <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
-          <div>
-            <h3 class="text-white font-semibold">Мои воронки</h3>
-            <p class="text-sm text-slate-400 mt-1">Собственные воронки за произвольный период с разбивкой по площадкам. Источник каждого этапа — Я.Метрика, Leads.su или ручной ввод (мобильные приложения — только вручную).</p>
-          </div>
+  </div>
+
+  <!-- TAB: MY FUNNELS (конструктор пользовательских воронок + сравнение периодов) -->
+  <div id="tab-myfunnels" class="tab-content space-y-6">
+    <div class="card">
+      <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+        <div>
+          <h2 class="text-white font-bold text-lg">Мои воронки</h2>
+          <p class="text-sm text-slate-400 mt-1">Собственные воронки за произвольный период с разбивкой по площадкам. Источник каждого этапа — Я.Метрика, Leads.su или ручной ввод (мобильные приложения — только вручную). Одну и ту же воронку можно сравнить по разным периодам — кнопка «⇄ Сравнить периоды» на карточке.</p>
+        </div>
+        <div class="flex items-center gap-2 flex-wrap">
+          <input id="myFunnelsSearch" type="search" placeholder="Поиск по названию…" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm" oninput="renderMyFunnels()" style="min-width:180px;">
           <button class="btn" type="button" onclick="openFunnelBuilder()">+ Новая воронка</button>
         </div>
-        <div id="myFunnelsList" class="space-y-4"><!-- renderMyFunnels() --></div>
       </div>
+      <div id="myFunnelsList" class="space-y-4"><!-- renderMyFunnels() --></div>
     </div>
-
   </div>
 
   <!-- TAB: HYPOTHESES -->
@@ -2795,6 +2820,41 @@ CR_plan       = baseCR,   AR_plan = baseAR
   </div>
 </div>
 
+<!-- ===== Модалка сравнения воронки по периодам ===== -->
+<div id="funnelCompareModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="funnelCompareTitle">
+  <div class="modal-box" style="max-width:1100px;">
+    <header>
+      <h3 id="funnelCompareTitle">Сравнение периодов</h3>
+      <button type="button" class="close-x" onclick="closeFunnelCompare()" aria-label="Закрыть">×</button>
+    </header>
+    <div class="modal-body">
+      <p class="text-xs mb-3" style="color:var(--text-dim);">Одна и та же воронка за несколько периодов. Добавьте периоды вручную или готовыми пресетами, затем нажмите «Сравнить».</p>
+      <div class="fb-section" style="margin-bottom:12px;">
+        <div class="flex items-center justify-between gap-2 mb-2 flex-wrap">
+          <div class="fb-section-title" style="margin:0;">Периоды</div>
+          <div class="flex gap-2 flex-wrap">
+            <button type="button" class="fb-icon-btn" onclick="fcAddPreset('this_month')">Текущий месяц</button>
+            <button type="button" class="fb-icon-btn" onclick="fcAddPreset('prev_month')">Прошлый месяц</button>
+            <button type="button" class="fb-icon-btn" onclick="fcAddPreset('prev2_month')">Позапрошлый месяц</button>
+            <button type="button" class="fb-icon-btn" onclick="fcAddPreset('funnel')">Период воронки</button>
+            <button type="button" class="fb-icon-btn" onclick="fcAddPeriod()">+ Период</button>
+          </div>
+        </div>
+        <div id="fcPeriodsBox" class="space-y-2"><!-- fcRenderPeriods() --></div>
+      </div>
+      <div class="flex items-center gap-2 mb-3">
+        <button type="button" class="btn" onclick="runFunnelCompare()">Сравнить</button>
+        <span class="text-xs" style="color:var(--text-dim);">Разбивка по площадкам в сравнении не показывается — только суммарные объёмы этапов.</span>
+      </div>
+      <p id="fcError" class="text-xs mb-2 hidden" style="color:var(--bad);"></p>
+      <div id="fcResult"><!-- runFunnelCompare() --></div>
+    </div>
+    <div class="modal-footer">
+      <button type="button" class="btn" style="background:transparent;border:1px solid var(--border-strong);color:var(--text-dim);" onclick="closeFunnelCompare()">Закрыть</button>
+    </div>
+  </div>
+</div>
+
 <button id="hypFab" type="button" onclick="openHypModal()" title="Новая гипотеза">+</button>
 
 <script>
@@ -3162,6 +3222,9 @@ function switchTab(tabName) {
   }
   if (tabName === 'hypotheses') {
     try { renderHypothesesTab(); } catch (_) {}
+  }
+  if (tabName === 'myfunnels') {
+    try { loadAndRenderMyFunnels(); } catch (_) {}
   }
   // FAB видна только на вкладке гипотез
   const fab = document.getElementById('hypFab');
@@ -5784,30 +5847,50 @@ async function loadAndRenderMyFunnels() {
   } catch (e) {
     myFunnelsState.list = [];
   }
-  await renderMyFunnels();
-}
-
-async function renderMyFunnels() {
-  const box = document.getElementById('myFunnelsList');
-  if (!box) return;
-  if (!myFunnelsState.list.length) {
-    box.innerHTML = '<div class="text-sm text-slate-500">Пока нет ни одной воронки. Нажмите «+ Новая воронка», чтобы собрать свою — за нужный период и с разбивкой по площадкам.</div>';
-    return;
-  }
-  // Резолвим значения по каждой воронке параллельно.
+  // Резолвим значения по каждой воронке параллельно (один раз при загрузке).
   await Promise.all(myFunnelsState.list.map(async cfg => {
     try {
       const j = await fetchJsonSafe(buildApiUrl({ action: 'funnel_resolve', id: cfg.id }));
       myFunnelsState.resolved[cfg.id] = (j && j.status === 'success') ? j.data : null;
     } catch (e) { myFunnelsState.resolved[cfg.id] = null; }
   }));
-  box.innerHTML = myFunnelsState.list.map(cfg => myFunnelCardHtml(cfg)).join('');
-  myFunnelsState.list.forEach(cfg => {
+  renderMyFunnels();
+}
+
+// Синхронный рендер списка «Моих воронок» из уже резолвнутых данных
+// (используется поиском без повторных сетевых запросов).
+function renderMyFunnels() {
+  const box = document.getElementById('myFunnelsList');
+  if (!box) return;
+  if (!myFunnelsState.list.length) {
+    box.innerHTML = '<div class="text-sm text-slate-500">Пока нет ни одной воронки. Нажмите «+ Новая воронка», чтобы собрать свою — за нужный период и с разбивкой по площадкам.</div>';
+    return;
+  }
+  const q = (document.getElementById('myFunnelsSearch')?.value || '').trim().toLowerCase();
+  const list = q
+    ? myFunnelsState.list.filter(cfg => ((cfg.name || '') + ' ' + (cfg.description || '')).toLowerCase().includes(q))
+    : myFunnelsState.list;
+  if (!list.length) {
+    box.innerHTML = '<div class="text-sm text-slate-500">Ничего не найдено по запросу «' + escapeHtml(q) + '».</div>';
+    return;
+  }
+  box.innerHTML = list.map(cfg => myFunnelCardHtml(cfg)).join('');
+  list.forEach(cfg => {
     const resolved = myFunnelsState.resolved[cfg.id];
     const split = myFunnelsState.viewMode[cfg.id] || (cfg.split_mode === 'platform' ? 'platform' : 'sum');
     const target = document.getElementById('myFunnelViz-' + cfg.id);
     if (target && resolved) renderFunnelFromConfig(target, cfg, resolved, split);
   });
+}
+
+// Итоговая конверсия воронки (первый → последний этап с объёмом > 0), в %.
+function myFunnelOverallCr(resolved) {
+  const stages = (resolved && resolved.stages) || [];
+  if (stages.length < 2) return null;
+  const first = Number(stages[0].total) || 0;
+  const last = Number(stages[stages.length - 1].total) || 0;
+  if (first <= 0) return null;
+  return last / first * 100;
 }
 
 function myFunnelPeriodText(cfg) {
@@ -5824,18 +5907,23 @@ function myFunnelCardHtml(cfg) {
     ? platforms.map(p => escapeHtml(p.source_name || p.source_id)).join(', ')
     : 'все площадки';
   const hasManual = stages.some(s => !funnelSourceIsAuto(s.source_type));
+  const overall = myFunnelOverallCr(myFunnelsState.resolved[cfg.id]);
+  const overallBadge = overall != null
+    ? `<span class="funnel-conv-pill" title="Итоговая конверсия: первый → последний этап">Итог: ${overall.toFixed(2)}%</span>` : '';
   return `<div class="my-funnel-card">
     <div class="flex flex-wrap items-start justify-between gap-3 mb-3">
       <div class="min-w-0">
         <h4 class="text-white font-semibold">${escapeHtml(cfg.name)}</h4>
         <div class="text-xs text-slate-400 mt-1">${escapeHtml(myFunnelPeriodText(cfg))} · ${stages.length} этап(ов) · площадки: ${platNames}</div>
         ${cfg.description ? `<div class="text-xs text-slate-500 mt-1">${escapeHtml(cfg.description)}</div>` : ''}
+        ${overallBadge ? `<div class="mt-2">${overallBadge}</div>` : ''}
       </div>
       <div class="flex items-center gap-2 flex-wrap">
         <div class="my-funnel-plat-toggle" role="group" aria-label="Режим отображения">
           <button type="button" class="${split === 'sum' ? 'active' : ''}" onclick="setMyFunnelView(${cfg.id},'sum')">Свод</button>
           <button type="button" class="${split === 'platform' ? 'active' : ''}" onclick="setMyFunnelView(${cfg.id},'platform')">По площадкам</button>
         </div>
+        <button type="button" class="fb-icon-btn" onclick="openFunnelCompare(${cfg.id})" title="Сравнить воронку по разным периодам">⇄ Сравнить периоды</button>
         ${hasManual ? `<button type="button" class="fb-icon-btn" onclick="openFunnelManualPicker(${cfg.id})" title="Ручной ввод данных">📥 Данные</button>` : ''}
         <button type="button" class="fb-icon-btn" onclick="editFunnel(${cfg.id})" title="Редактировать">✎</button>
         <button type="button" class="fb-icon-btn" onclick="deleteFunnel(${cfg.id})" title="Удалить" style="color:#f87171;">🗑</button>
@@ -6144,7 +6232,194 @@ async function deleteFunnel(id) {
   await loadAndRenderMyFunnels();
 }
 
-/* ----- Ручной ввод данных этапа ----- */
+/* ----- Сравнение воронки по периодам ----- */
+const funnelCompareState = { funnelId: 0, periods: [], seq: 0 };
+
+function fcMonthBounds(delta) {
+  // Границы месяца со сдвигом delta от текущего (0 — текущий, -1 — прошлый).
+  const now = new Date();
+  const from = new Date(Date.UTC(now.getFullYear(), now.getMonth() + delta, 1));
+  const to = new Date(Date.UTC(now.getFullYear(), now.getMonth() + delta + 1, 0));
+  return { from: from.toISOString().slice(0, 10), to: to.toISOString().slice(0, 10) };
+}
+function fcMonthLabel(delta) {
+  const now = new Date();
+  const d = new Date(Date.UTC(now.getFullYear(), now.getMonth() + delta, 1));
+  return d.toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' });
+}
+
+function openFunnelCompare(id) {
+  const cfg = myFunnelsState.list.find(c => c.id === id);
+  if (!cfg) return;
+  funnelCompareState.funnelId = id;
+  funnelCompareState.periods = [];
+  funnelCompareState.seq = 0;
+  document.getElementById('funnelCompareTitle').textContent = 'Сравнение периодов — ' + cfg.name;
+  document.getElementById('fcResult').innerHTML = '';
+  fcSetError('');
+  // По умолчанию — текущий и прошлый месяц.
+  fcAddPreset('this_month');
+  fcAddPreset('prev_month');
+  const el = document.getElementById('funnelCompareModal');
+  el.classList.add('is-open');
+  document.body.style.overflow = 'hidden';
+}
+function closeFunnelCompare() {
+  const el = document.getElementById('funnelCompareModal'); if (!el) return;
+  el.classList.remove('is-open');
+  document.body.style.overflow = '';
+}
+function fcSetError(msg) {
+  const err = document.getElementById('fcError'); if (!err) return;
+  err.textContent = msg || '';
+  err.classList.toggle('hidden', !msg);
+}
+function fcAddPeriod(label = '', from = '', to = '') {
+  funnelCompareState.periods.push({ id: 'p' + (++funnelCompareState.seq), label, from, to });
+  fcRenderPeriods();
+}
+function fcAddPreset(kind) {
+  if (kind === 'this_month')  { const b = fcMonthBounds(0);  return fcAddPeriod(fcMonthLabel(0),  b.from, b.to); }
+  if (kind === 'prev_month')  { const b = fcMonthBounds(-1); return fcAddPeriod(fcMonthLabel(-1), b.from, b.to); }
+  if (kind === 'prev2_month') { const b = fcMonthBounds(-2); return fcAddPeriod(fcMonthLabel(-2), b.from, b.to); }
+  if (kind === 'funnel') {
+    const cfg = myFunnelsState.list.find(c => c.id === funnelCompareState.funnelId);
+    if (!cfg) return;
+    if (cfg.period_mode === 'rolling') {
+      const days = Math.max(1, Number(cfg.rolling_days) || 30);
+      const to = new Date().toISOString().slice(0, 10);
+      return fcAddPeriod('Период воронки', isoShift(to, -(days - 1)), to);
+    }
+    return fcAddPeriod('Период воронки', (cfg.date_from || '').slice(0, 10), (cfg.date_to || '').slice(0, 10));
+  }
+}
+function fcRemovePeriod(pid) {
+  funnelCompareState.periods = funnelCompareState.periods.filter(p => p.id !== pid);
+  fcRenderPeriods();
+}
+function fcSyncPeriodsFromDom() {
+  const box = document.getElementById('fcPeriodsBox'); if (!box) return;
+  box.querySelectorAll('[data-fc-row]').forEach(row => {
+    const pid = row.dataset.fcRow;
+    const p = funnelCompareState.periods.find(x => x.id === pid);
+    if (!p) return;
+    p.label = row.querySelector('[data-fc-label]').value;
+    p.from  = row.querySelector('[data-fc-from]').value;
+    p.to    = row.querySelector('[data-fc-to]').value;
+  });
+}
+function fcRenderPeriods() {
+  const box = document.getElementById('fcPeriodsBox'); if (!box) return;
+  if (!funnelCompareState.periods.length) {
+    box.innerHTML = '<div class="text-xs text-slate-500">Добавьте хотя бы два периода для сравнения.</div>';
+    return;
+  }
+  box.innerHTML = funnelCompareState.periods.map((p, i) => `
+    <div class="fc-period-row" data-fc-row="${p.id}">
+      <span class="fc-period-idx">${i + 1}</span>
+      <input type="text" data-fc-label placeholder="Название периода" value="${escapeHtml(p.label || '')}">
+      <input type="date" data-fc-from value="${escapeHtml(p.from || '')}">
+      <span class="text-xs text-slate-500">—</span>
+      <input type="date" data-fc-to value="${escapeHtml(p.to || '')}">
+      <button type="button" class="fb-icon-btn" onclick="fcRemovePeriod('${p.id}')" title="Убрать период" style="color:#f87171;">✕</button>
+    </div>`).join('');
+  box.querySelectorAll('[data-fc-label],[data-fc-from],[data-fc-to]').forEach(inp =>
+    inp.addEventListener('change', fcSyncPeriodsFromDom));
+}
+
+async function runFunnelCompare() {
+  fcSyncPeriodsFromDom();
+  fcSetError('');
+  const cfg = myFunnelsState.list.find(c => c.id === funnelCompareState.funnelId);
+  if (!cfg) return;
+  const periods = funnelCompareState.periods.filter(p => p.from && p.to);
+  if (periods.length < 2) { fcSetError('Задайте даты (с и по) минимум для двух периодов.'); return; }
+  const result = document.getElementById('fcResult');
+  result.innerHTML = '<div class="text-sm text-slate-500">Загрузка…</div>';
+  let resolvedList;
+  try {
+    resolvedList = await Promise.all(periods.map(async p => {
+      const j = await fetchJsonSafe(buildApiUrl({ action: 'funnel_resolve', id: cfg.id, from: p.from, to: p.to }));
+      return (j && j.status === 'success') ? j.data : null;
+    }));
+  } catch (e) {
+    fcSetError('Ошибка загрузки данных: ' + (e && e.message ? e.message : e));
+    result.innerHTML = '';
+    return;
+  }
+  renderFunnelCompare(cfg, periods, resolvedList);
+}
+
+function fcPeriodTitle(p, i) {
+  return (p.label && p.label.trim()) ? p.label.trim() : `${p.from} — ${p.to}`;
+}
+
+function renderFunnelCompare(cfg, periods, resolvedList) {
+  const result = document.getElementById('fcResult'); if (!result) return;
+  // Эталонный набор этапов берём из конфига (label + zone), значения — из каждого resolved.
+  const stageDefs = (cfg.stages || []).map(s => ({ label: s.label, zone: s.zone || 'internal' }));
+  if (!stageDefs.length) { result.innerHTML = '<div class="text-sm text-slate-500">У воронки нет этапов.</div>'; return; }
+  const cols = periods.map((p, i) => ({
+    title: fcPeriodTitle(p, i),
+    sub: `${p.from} — ${p.to}`,
+    stages: (resolvedList[i] && resolvedList[i].stages) || [],
+  }));
+  const nfmt = v => Math.round(Number(v) || 0).toLocaleString('ru-RU');
+  const stageVal = (col, idx) => Number((col.stages[idx] || {}).total) || 0;
+  const micro = (a, b) => a > 0 ? (b / a * 100) : 0;
+
+  // Таблица объёмов + пошаговых конверсий, дельта относительно первого периода.
+  let rows = '';
+  stageDefs.forEach((sd, idx) => {
+    const base = stageVal(cols[0], idx);
+    let cells = cols.map((col, ci) => {
+      const vv = stageVal(col, idx);
+      let delta = '';
+      if (ci > 0 && base > 0) {
+        const dp = (vv - base) / base * 100;
+        const cls = dp > 0.05 ? 'fc-up' : (dp < -0.05 ? 'fc-down' : '');
+        delta = `<span class="fc-delta ${cls}">${dp >= 0 ? '+' : ''}${dp.toFixed(1)}%</span>`;
+      }
+      return `<td class="fc-num">${nfmt(vv)}${delta}</td>`;
+    }).join('');
+    rows += `<tr class="fc-stage-row zone-${sd.zone === 'external' ? 'external' : 'internal'}"><td class="fc-stage-name">${escapeHtml(sd.label)}</td>${cells}</tr>`;
+    // Пошаговая конверсия к следующему этапу.
+    if (idx < stageDefs.length - 1) {
+      let crCells = cols.map(col => {
+        const a = stageVal(col, idx), b = stageVal(col, idx + 1);
+        return `<td class="fc-num fc-cr">→ ${micro(a, b).toFixed(1)}%</td>`;
+      }).join('');
+      rows += `<tr class="fc-cr-row"><td class="fc-stage-name fc-cr">шаг к «${escapeHtml(stageDefs[idx + 1].label)}»</td>${crCells}</tr>`;
+    }
+  });
+  // Итоговая конверсия (первый → последний).
+  let totalCells = cols.map(col => {
+    const cr = myFunnelOverallCr({ stages: col.stages });
+    return `<td class="fc-num fc-total">${cr != null ? cr.toFixed(2) + '%' : '—'}</td>`;
+  }).join('');
+  const header = `<tr><th class="fc-stage-name">Этап</th>${cols.map(c =>
+    `<th class="fc-num"><div>${escapeHtml(c.title)}</div><div class="fc-col-sub">${escapeHtml(c.sub)}</div></th>`).join('')}</tr>`;
+
+  // Side-by-side мини-воронки.
+  const vizCols = cols.map((col, ci) => {
+    const box = `<div class="fc-viz-col"><div class="fc-viz-title">${escapeHtml(col.title)}</div><div id="fcViz-${ci}" class="funnel-visual"></div></div>`;
+    return box;
+  }).join('');
+
+  result.innerHTML = `
+    <div class="fc-viz-grid">${vizCols}</div>
+    <div class="overflow-auto mt-4">
+      <table class="fc-table">
+        <thead>${header}</thead>
+        <tbody>${rows}<tr class="fc-total-row"><td class="fc-stage-name">Итоговая конверсия</td>${totalCells}</tr></tbody>
+      </table>
+    </div>`;
+  // Рендерим воронки (свод) в каждую колонку.
+  cols.forEach((col, ci) => {
+    const target = document.getElementById('fcViz-' + ci);
+    if (target && resolvedList[ci]) renderFunnelFromConfig(target, cfg, resolvedList[ci], 'sum');
+  });
+}
 const funnelManualState = { funnelId: 0, stageId: 0, cfg: null };
 function funnelManualError(msg) {
   const err = document.getElementById('fmError'); if (!err) return;
@@ -11765,7 +12040,6 @@ function renderRejectActiveSub() {
   switch (rejectMonState.activeSub) {
     case 'channels': loadAndRenderChannels(); break;
     case 'funnel':   loadAndRenderFunnel();   break;
-    case 'myfunnels': loadAndRenderMyFunnels(); break;
   }
 }
 

@@ -7222,6 +7222,16 @@ if ($action === 'funnel_resolve') {
     $id = (int)($_GET['id'] ?? 0);
     $cfg = loadFunnelConfig($db, $id);
     if (!$cfg) { echo json_encode(['status' => 'error', 'error' => 'funnel not found']); exit; }
+    // Необязательный override периода: позволяет резолвить одну и ту же воронку
+    // за произвольный интервал (используется сравнением периодов «Мои воронки»).
+    $ovFrom = substr(trim((string)($_GET['from'] ?? '')), 0, 10);
+    $ovTo   = substr(trim((string)($_GET['to'] ?? '')), 0, 10);
+    if ($ovFrom !== '' && $ovTo !== '') {
+        if ($ovFrom > $ovTo) { $tmp = $ovFrom; $ovFrom = $ovTo; $ovTo = $tmp; }
+        $cfg['period_mode'] = 'fixed';
+        $cfg['date_from'] = $ovFrom;
+        $cfg['date_to'] = $ovTo;
+    }
     echo json_encode(['status' => 'success', 'data' => resolveFunnelData($db, $cfg)], JSON_UNESCAPED_UNICODE);
     exit;
 }
