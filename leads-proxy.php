@@ -6848,7 +6848,7 @@ if ($action === 'channel_source_map_save') {
 
 /** Допустимые типы источника данных этапа. */
 function funnelSourceTypes() {
-    return ['ym_impressions', 'ym_clicks', 'leads_clicks', 'leads_leads', 'leads_approved', 'cpa_postback', 'manual'];
+    return ['ym_impressions', 'ym_clicks', 'bounces', 'leads_clicks', 'leads_leads', 'leads_approved', 'cpa_postback', 'manual'];
 }
 
 /** Нормализует source_type этапа к допустимому значению. */
@@ -6909,14 +6909,33 @@ function resolveFunnelData($db, $cfg) {
         }
     }
     // Я.Метрика — общий поток (не бьётся по площадкам).
-    $ym = ['ym_impressions' => 0, 'ym_clicks' => 0];
+    // Основной источник — banner_stats (та же таблица, что питает борд/дашборд).
+    // banner_impressions_cache используем как запасной источник (cron Я.Метрики),
+    // если в banner_stats за период нет данных.
+    $ym = ['ym_impressions' => 0, 'ym_clicks' => 0, 'bounces' => 0];
     if ($from !== '' && $to !== '') {
-        $stmt = $db->prepare("SELECT SUM(impressions) AS imp, SUM(clicks) AS clk
-            FROM banner_impressions_cache WHERE date BETWEEN :a AND :b");
+        $stmt = $db->prepare("SELECT COALESCE(SUM(impressions),0) AS imp, COALESCE(SUM(clicks),0) AS clk
+            FROM banner_stats WHERE substr(date,1,10) BETWEEN :a AND :b");
         $stmt->bindValue(':a', $from, SQLITE3_TEXT);
         $stmt->bindValue(':b', $to, SQLITE3_TEXT);
         $r = $stmt->execute()->fetchArray(SQLITE3_ASSOC);
         if ($r) { $ym['ym_impressions'] = (int)$r['imp']; $ym['ym_clicks'] = (int)$r['clk']; }
+        // Fallback на cron-кэш Я.Метрики, если borд-таблица пуста за период.
+        if ($ym['ym_impressions'] === 0 && $ym['ym_clicks'] === 0) {
+            $stmt = $db->prepare("SELECT COALESCE(SUM(impressions),0) AS imp, COALESCE(SUM(clicks),0) AS clk
+                FROM banner_impressions_cache WHERE date BETWEEN :a AND :b");
+            $stmt->bindValue(':a', $from, SQLITE3_TEXT);
+            $stmt->bindValue(':b', $to, SQLITE3_TEXT);
+            $r2 = $stmt->execute()->fetchArray(SQLITE3_ASSOC);
+            if ($r2) { $ym['ym_impressions'] = (int)$r2['imp']; $ym['ym_clicks'] = (int)$r2['clk']; }
+        }
+        // Отказы — из bounce_stats (в т.ч. ручной ввод по баннеру).
+        $stmt = $db->prepare("SELECT COALESCE(SUM(bounces),0) AS b
+            FROM bounce_stats WHERE substr(date,1,10) BETWEEN :a AND :b");
+        $stmt->bindValue(':a', $from, SQLITE3_TEXT);
+        $stmt->bindValue(':b', $to, SQLITE3_TEXT);
+        $rb = $stmt->execute()->fetchArray(SQLITE3_ASSOC);
+        if ($rb) { $ym['bounces'] = (int)$rb['b']; }
     }
     // Ручные данные по (stage_id, source_id).
     $manual = []; // stage_id => source_id => value
@@ -6943,7 +6962,7 @@ function resolveFunnelData($db, $cfg) {
         if ($type === 'manual') {
             $m = $manual[$stageId] ?? [];
             foreach ($m as $sid => $v) { $byPlatform[$sid] = $v; $total += $v; }
-        } elseif ($type === 'ym_impressions' || $type === 'ym_clicks') {
+        } elseif ($type === 'ym_impressions' || $type === 'ym_clicks' || $type === 'bounces') {
             $total = $ym[$type];
             $byPlatform['all'] = $total;
         } elseif ($type === 'cpa_postback') {
