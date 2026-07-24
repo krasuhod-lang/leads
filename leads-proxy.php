@@ -7041,35 +7041,71 @@ if ($action === 'funnel_config_save') {
         $stmt->execute();
         if ($id <= 0) $id = (int)$db->lastInsertRowID();
 
-        // Полная перезапись этапов и площадок (проще и надёжнее diff).
-        $del = $db->prepare('DELETE FROM funnel_config_stages WHERE funnel_id = :id');
-        $del->bindValue(':id', $id, SQLITE3_INTEGER); $del->execute();
+        // Площадки перезаписываем целиком (простой diff не нужен).
         $del = $db->prepare('DELETE FROM funnel_config_platforms WHERE funnel_id = :id');
         $del->bindValue(':id', $id, SQLITE3_INTEGER); $del->execute();
+
+        // Этапы: сохраняем стабильные id для существующих (id>0), чтобы не
+        // осиротить связанный ручной ввод в manual_stage_data. Удаляем только
+        // те этапы, которых больше нет в присланном наборе.
+        $existingIds = [];
+        $r = $db->query('SELECT id FROM funnel_config_stages WHERE funnel_id = ' . (int)$id);
+        if ($r instanceof SQLite3Result) {
+            while ($row = $r->fetchArray(SQLITE3_ASSOC)) $existingIds[(int)$row['id']] = true;
+        }
 
         // Сопоставление клиентских временных id этапов с новыми БД-id, чтобы
         // клиент мог связать ручной ввод с сохранёнными этапами.
         $stageIdMap = [];
+        $keptIds = [];
         $stages = is_array($input['stages'] ?? null) ? $input['stages'] : [];
         $pos = 0;
         $ins = $db->prepare('INSERT INTO funnel_config_stages (funnel_id, position, label, source_type, zone, note)
             VALUES (:fid, :pos, :label, :st, :zone, :note)');
+        $upd = $db->prepare('UPDATE funnel_config_stages SET position=:pos, label=:label, source_type=:st, zone=:zone, note=:note
+            WHERE id=:sid AND funnel_id=:fid');
         foreach ($stages as $st) {
             if (!is_array($st)) continue;
             $label = trim((string)($st['label'] ?? ''));
             if ($label === '') continue;
-            $ins->reset();
-            $ins->bindValue(':fid', $id, SQLITE3_INTEGER);
-            $ins->bindValue(':pos', $pos, SQLITE3_INTEGER);
-            $ins->bindValue(':label', $label, SQLITE3_TEXT);
-            $ins->bindValue(':st', normalizeFunnelSourceType($st['source_type'] ?? 'manual'), SQLITE3_TEXT);
-            $ins->bindValue(':zone', ((string)($st['zone'] ?? 'internal') === 'external') ? 'external' : 'internal', SQLITE3_TEXT);
-            $ins->bindValue(':note', (string)($st['note'] ?? ''), SQLITE3_TEXT);
-            $ins->execute();
-            $newId = (int)$db->lastInsertRowID();
+            $stId = (int)($st['id'] ?? 0);
+            $srcType = normalizeFunnelSourceType($st['source_type'] ?? 'manual');
+            $zone = ((string)($st['zone'] ?? 'internal') === 'external') ? 'external' : 'internal';
+            $note = (string)($st['note'] ?? '');
+            if ($stId > 0 && isset($existingIds[$stId])) {
+                $upd->reset();
+                $upd->bindValue(':pos', $pos, SQLITE3_INTEGER);
+                $upd->bindValue(':label', $label, SQLITE3_TEXT);
+                $upd->bindValue(':st', $srcType, SQLITE3_TEXT);
+                $upd->bindValue(':zone', $zone, SQLITE3_TEXT);
+                $upd->bindValue(':note', $note, SQLITE3_TEXT);
+                $upd->bindValue(':sid', $stId, SQLITE3_INTEGER);
+                $upd->bindValue(':fid', $id, SQLITE3_INTEGER);
+                $upd->execute();
+                $newId = $stId;
+            } else {
+                $ins->reset();
+                $ins->bindValue(':fid', $id, SQLITE3_INTEGER);
+                $ins->bindValue(':pos', $pos, SQLITE3_INTEGER);
+                $ins->bindValue(':label', $label, SQLITE3_TEXT);
+                $ins->bindValue(':st', $srcType, SQLITE3_TEXT);
+                $ins->bindValue(':zone', $zone, SQLITE3_TEXT);
+                $ins->bindValue(':note', $note, SQLITE3_TEXT);
+                $ins->execute();
+                $newId = (int)$db->lastInsertRowID();
+            }
+            $keptIds[$newId] = true;
             $clientId = (string)($st['client_id'] ?? $st['id'] ?? '');
             if ($clientId !== '') $stageIdMap[$clientId] = $newId;
             $pos++;
+        }
+        // Удаляем этапы, отсутствующие в новом наборе, и их ручные данные.
+        foreach (array_keys($existingIds) as $oldId) {
+            if (isset($keptIds[$oldId])) continue;
+            $d = $db->prepare('DELETE FROM funnel_config_stages WHERE id = :sid');
+            $d->bindValue(':sid', $oldId, SQLITE3_INTEGER); $d->execute();
+            $d = $db->prepare('DELETE FROM manual_stage_data WHERE funnel_id = :fid AND stage_id = :sid');
+            $d->bindValue(':fid', $id, SQLITE3_INTEGER); $d->bindValue(':sid', $oldId, SQLITE3_INTEGER); $d->execute();
         }
 
         $platforms = is_array($input['platforms'] ?? null) ? $input['platforms'] : [];
