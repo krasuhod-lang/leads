@@ -897,6 +897,64 @@ try {
     )');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_channel_source_map_channel ON channel_source_map(channel)');
 
+    // ------------------------------------------------------------------
+    // Конструктор пользовательских воронок (funnel builder).
+    // Пользователь собирает именованную воронку из произвольных этапов,
+    // действующую на выбранном периоде, с разбивкой по 1..N площадкам.
+    // У каждого этапа задаётся источник данных (Я.Метрика / leads.su /
+    // CPA-постбек / ручной ввод). Мобильные приложения заполняются руками.
+    // ------------------------------------------------------------------
+    // Шапка воронки: имя, описание и период (фиксированный или «скользящий»).
+    $safeExec('CREATE TABLE IF NOT EXISTS funnel_configs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        description TEXT,
+        period_mode TEXT NOT NULL DEFAULT \'fixed\',
+        date_from TEXT,
+        date_to TEXT,
+        rolling_days INTEGER NOT NULL DEFAULT 30,
+        split_mode TEXT NOT NULL DEFAULT \'sum\',
+        is_archived INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL DEFAULT 0
+    )');
+    // Этапы воронки: порядок задаётся position; source_type — источник данных.
+    $safeExec('CREATE TABLE IF NOT EXISTS funnel_config_stages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        funnel_id INTEGER NOT NULL,
+        position INTEGER NOT NULL DEFAULT 0,
+        label TEXT NOT NULL,
+        source_type TEXT NOT NULL DEFAULT \'manual\',
+        zone TEXT NOT NULL DEFAULT \'internal\',
+        note TEXT
+    )');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_funnel_config_stages_funnel ON funnel_config_stages(funnel_id, position)');
+    // Площадки, включённые в воронку, и режим их данных (auto/manual).
+    $safeExec('CREATE TABLE IF NOT EXISTS funnel_config_platforms (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        funnel_id INTEGER NOT NULL,
+        source_id TEXT NOT NULL,
+        source_name TEXT,
+        mode TEXT NOT NULL DEFAULT \'auto\',
+        UNIQUE(funnel_id, source_id)
+    )');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_funnel_config_platforms_funnel ON funnel_config_platforms(funnel_id)');
+    // Ручные данные по этапу × площадке × дню. Унифицирует ручной ввод
+    // (по образцу bounce_stats, но с привязкой к конкретной воронке/этапу).
+    $safeExec('CREATE TABLE IF NOT EXISTS manual_stage_data (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        funnel_id INTEGER NOT NULL,
+        stage_id INTEGER NOT NULL,
+        source_id TEXT NOT NULL DEFAULT \'all\',
+        date TEXT NOT NULL,
+        value INTEGER NOT NULL DEFAULT 0,
+        UNIQUE(funnel_id, stage_id, source_id, date)
+    )');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_manual_stage_data_lookup ON manual_stage_data(funnel_id, date)');
+    // Совместимость: у старых отказов появляется площадка (source_id),
+    // чтобы ручной ввод отказов не терялся при разбивке по площадкам.
+    $addColumnIfMissing('bounce_stats', 'source_id', 'TEXT NOT NULL DEFAULT \'all\'');
+
     // Гипотезы роста: хранятся на сервере/хостинге вместе с расчетной
     // оцифровкой, периодом и месяцем фильтрации.
     $safeExec('CREATE TABLE IF NOT EXISTS hypothesis_months (
@@ -6781,6 +6839,371 @@ if ($action === 'channel_source_map_save') {
         $stmt->reset();
     }
     echo json_encode(['status' => 'success', 'saved' => $saved]);
+    exit;
+}
+
+// ============================================================================
+// Конструктор пользовательских воронок (funnel builder).
+// ============================================================================
+
+/** Допустимые типы источника данных этапа. */
+function funnelSourceTypes() {
+    return ['ym_impressions', 'ym_clicks', 'leads_clicks', 'leads_leads', 'leads_approved', 'cpa_postback', 'manual'];
+}
+
+/** Нормализует source_type этапа к допустимому значению. */
+function normalizeFunnelSourceType($v) {
+    $v = (string)$v;
+    return in_array($v, funnelSourceTypes(), true) ? $v : 'manual';
+}
+
+/** Вычисляет диапазон дат [from, to] для воронки с учётом period_mode. */
+function funnelResolvePeriod($cfg) {
+    $mode = (string)($cfg['period_mode'] ?? 'fixed');
+    if ($mode === 'rolling') {
+        $days = max(1, (int)($cfg['rolling_days'] ?? 30));
+        $to = date('Y-m-d');
+        $from = date('Y-m-d', strtotime("-" . ($days - 1) . " days"));
+        return [$from, $to];
+    }
+    $from = substr((string)($cfg['date_from'] ?? ''), 0, 10);
+    $to   = substr((string)($cfg['date_to'] ?? ''), 0, 10);
+    return [$from, $to];
+}
+
+/**
+ * Собирает воронку за период с разбивкой по площадкам. Для каждого этапа
+ * возвращает total и by_platform[source_id]. Авто-источники (Я.Метрика —
+ * общий поток, leads.su — с фильтром по source_id) агрегируются из БД,
+ * ручные — из manual_stage_data.
+ */
+function resolveFunnelData($db, $cfg) {
+    list($from, $to) = funnelResolvePeriod($cfg);
+    $stages = $cfg['stages'] ?? [];
+    $platforms = $cfg['platforms'] ?? [];
+    // Список source_id, по которым разрешено бить leads.su-этапы.
+    $sourceIds = [];
+    foreach ($platforms as $p) {
+        $sid = trim((string)($p['source_id'] ?? ''));
+        if ($sid !== '') $sourceIds[$sid] = true;
+    }
+    $hasSpecificSources = !empty($sourceIds) && !isset($sourceIds['all']);
+
+    // Предзагрузка агрегатов leads.su по source_id (только когда период задан).
+    $leadsBySource = []; // source_id => [clicks, conversions, approved]
+    if ($from !== '' && $to !== '') {
+        $stmt = $db->prepare("SELECT source_id,
+                SUM(clicks) AS clicks, SUM(conversions) AS conversions, SUM(approved) AS approved
+            FROM daily_stats
+            WHERE substr(date,1,10) BETWEEN :a AND :b
+            GROUP BY source_id");
+        $stmt->bindValue(':a', $from, SQLITE3_TEXT);
+        $stmt->bindValue(':b', $to, SQLITE3_TEXT);
+        $res = $stmt->execute();
+        while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
+            $leadsBySource[(string)$row['source_id']] = [
+                'leads_clicks'   => (int)$row['clicks'],
+                'leads_leads'    => (int)$row['conversions'],
+                'leads_approved' => (int)$row['approved'],
+            ];
+        }
+    }
+    // Я.Метрика — общий поток (не бьётся по площадкам).
+    $ym = ['ym_impressions' => 0, 'ym_clicks' => 0];
+    if ($from !== '' && $to !== '') {
+        $stmt = $db->prepare("SELECT SUM(impressions) AS imp, SUM(clicks) AS clk
+            FROM banner_impressions_cache WHERE date BETWEEN :a AND :b");
+        $stmt->bindValue(':a', $from, SQLITE3_TEXT);
+        $stmt->bindValue(':b', $to, SQLITE3_TEXT);
+        $r = $stmt->execute()->fetchArray(SQLITE3_ASSOC);
+        if ($r) { $ym['ym_impressions'] = (int)$r['imp']; $ym['ym_clicks'] = (int)$r['clk']; }
+    }
+    // Ручные данные по (stage_id, source_id).
+    $manual = []; // stage_id => source_id => value
+    if ($from !== '' && $to !== '') {
+        $stmt = $db->prepare("SELECT stage_id, source_id, SUM(value) AS v
+            FROM manual_stage_data
+            WHERE funnel_id = :fid AND date BETWEEN :a AND :b
+            GROUP BY stage_id, source_id");
+        $stmt->bindValue(':fid', (int)$cfg['id'], SQLITE3_INTEGER);
+        $stmt->bindValue(':a', $from, SQLITE3_TEXT);
+        $stmt->bindValue(':b', $to, SQLITE3_TEXT);
+        $res = $stmt->execute();
+        while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
+            $manual[(int)$row['stage_id']][(string)$row['source_id']] = (int)$row['v'];
+        }
+    }
+
+    $out = [];
+    foreach ($stages as $st) {
+        $stageId = (int)($st['id'] ?? 0);
+        $type = normalizeFunnelSourceType($st['source_type'] ?? 'manual');
+        $byPlatform = [];
+        $total = 0;
+        if ($type === 'manual') {
+            $m = $manual[$stageId] ?? [];
+            foreach ($m as $sid => $v) { $byPlatform[$sid] = $v; $total += $v; }
+        } elseif ($type === 'ym_impressions' || $type === 'ym_clicks') {
+            $total = $ym[$type];
+            $byPlatform['all'] = $total;
+        } elseif ($type === 'cpa_postback') {
+            // Пока не подключены реальные постбеки — берём одобренные leads.su
+            // как ближайший прокси-источник монетизации.
+            foreach ($leadsBySource as $sid => $vals) {
+                if ($hasSpecificSources && !isset($sourceIds[$sid])) continue;
+                $byPlatform[$sid] = $vals['leads_approved'];
+                $total += $vals['leads_approved'];
+            }
+        } else { // leads_clicks / leads_leads / leads_approved
+            foreach ($leadsBySource as $sid => $vals) {
+                if ($hasSpecificSources && !isset($sourceIds[$sid])) continue;
+                $byPlatform[$sid] = $vals[$type];
+                $total += $vals[$type];
+            }
+        }
+        $out[] = [
+            'id'          => $stageId,
+            'label'       => (string)($st['label'] ?? ''),
+            'source_type' => $type,
+            'zone'        => (string)($st['zone'] ?? 'internal'),
+            'note'        => (string)($st['note'] ?? ''),
+            'total'       => $total,
+            'by_platform' => $byPlatform,
+        ];
+    }
+    return ['from' => $from, 'to' => $to, 'stages' => $out];
+}
+
+/** Читает конфиг воронки с этапами и площадками. Возвращает null, если нет. */
+function loadFunnelConfig($db, $id) {
+    $id = (int)$id;
+    if ($id <= 0) return null;
+    $stmt = $db->prepare('SELECT * FROM funnel_configs WHERE id = :id');
+    $stmt->bindValue(':id', $id, SQLITE3_INTEGER);
+    $cfg = $stmt->execute()->fetchArray(SQLITE3_ASSOC);
+    if (!$cfg) return null;
+    $cfg['stages'] = [];
+    $stmt = $db->prepare('SELECT * FROM funnel_config_stages WHERE funnel_id = :id ORDER BY position, id');
+    $stmt->bindValue(':id', $id, SQLITE3_INTEGER);
+    $res = $stmt->execute();
+    while ($r = $res->fetchArray(SQLITE3_ASSOC)) $cfg['stages'][] = $r;
+    $cfg['platforms'] = [];
+    $stmt = $db->prepare('SELECT * FROM funnel_config_platforms WHERE funnel_id = :id ORDER BY id');
+    $stmt->bindValue(':id', $id, SQLITE3_INTEGER);
+    $res = $stmt->execute();
+    while ($r = $res->fetchArray(SQLITE3_ASSOC)) $cfg['platforms'][] = $r;
+    return $cfg;
+}
+
+if ($action === 'funnel_config_list') {
+    $rows = [];
+    $res = @$db->query('SELECT * FROM funnel_configs WHERE is_archived = 0 ORDER BY updated_at DESC, id DESC');
+    if ($res instanceof SQLite3Result) {
+        while ($cfg = $res->fetchArray(SQLITE3_ASSOC)) {
+            $full = loadFunnelConfig($db, $cfg['id']);
+            if ($full) $rows[] = $full;
+        }
+    }
+    echo json_encode(['status' => 'success', 'data' => $rows], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+if ($action === 'funnel_config_save') {
+    $input = json_decode(file_get_contents('php://input'), true) ?: [];
+    $id = (int)($input['id'] ?? 0);
+    $name = trim((string)($input['name'] ?? ''));
+    if ($name === '') { echo json_encode(['status' => 'error', 'error' => 'name required']); exit; }
+    $periodMode = ((string)($input['period_mode'] ?? 'fixed') === 'rolling') ? 'rolling' : 'fixed';
+    $splitMode  = ((string)($input['split_mode'] ?? 'sum') === 'platform') ? 'platform' : 'sum';
+    $dateFrom = substr(trim((string)($input['date_from'] ?? '')), 0, 10);
+    $dateTo   = substr(trim((string)($input['date_to'] ?? '')), 0, 10);
+    $rollingDays = max(1, (int)($input['rolling_days'] ?? 30));
+    $now = time();
+    $db->exec('BEGIN');
+    try {
+        if ($id > 0) {
+            $stmt = $db->prepare('UPDATE funnel_configs SET name=:name, description=:descr, period_mode=:pm,
+                date_from=:df, date_to=:dt, rolling_days=:rd, split_mode=:sm, updated_at=:ua WHERE id=:id');
+            $stmt->bindValue(':id', $id, SQLITE3_INTEGER);
+        } else {
+            $stmt = $db->prepare('INSERT INTO funnel_configs (name, description, period_mode, date_from, date_to,
+                rolling_days, split_mode, created_at, updated_at)
+                VALUES (:name, :descr, :pm, :df, :dt, :rd, :sm, :ua, :ua)');
+        }
+        $stmt->bindValue(':name', $name, SQLITE3_TEXT);
+        $stmt->bindValue(':descr', (string)($input['description'] ?? ''), SQLITE3_TEXT);
+        $stmt->bindValue(':pm', $periodMode, SQLITE3_TEXT);
+        $stmt->bindValue(':df', $dateFrom, SQLITE3_TEXT);
+        $stmt->bindValue(':dt', $dateTo, SQLITE3_TEXT);
+        $stmt->bindValue(':rd', $rollingDays, SQLITE3_INTEGER);
+        $stmt->bindValue(':sm', $splitMode, SQLITE3_TEXT);
+        $stmt->bindValue(':ua', $now, SQLITE3_INTEGER);
+        $stmt->execute();
+        if ($id <= 0) $id = (int)$db->lastInsertRowID();
+
+        // Площадки перезаписываем целиком (простой diff не нужен).
+        $del = $db->prepare('DELETE FROM funnel_config_platforms WHERE funnel_id = :id');
+        $del->bindValue(':id', $id, SQLITE3_INTEGER); $del->execute();
+
+        // Этапы: сохраняем стабильные id для существующих (id>0), чтобы не
+        // осиротить связанный ручной ввод в manual_stage_data. Удаляем только
+        // те этапы, которых больше нет в присланном наборе.
+        $existingIds = [];
+        $r = $db->query('SELECT id FROM funnel_config_stages WHERE funnel_id = ' . (int)$id);
+        if ($r instanceof SQLite3Result) {
+            while ($row = $r->fetchArray(SQLITE3_ASSOC)) $existingIds[(int)$row['id']] = true;
+        }
+
+        // Сопоставление клиентских временных id этапов с новыми БД-id, чтобы
+        // клиент мог связать ручной ввод с сохранёнными этапами.
+        $stageIdMap = [];
+        $keptIds = [];
+        $stages = is_array($input['stages'] ?? null) ? $input['stages'] : [];
+        $pos = 0;
+        $ins = $db->prepare('INSERT INTO funnel_config_stages (funnel_id, position, label, source_type, zone, note)
+            VALUES (:fid, :pos, :label, :st, :zone, :note)');
+        $upd = $db->prepare('UPDATE funnel_config_stages SET position=:pos, label=:label, source_type=:st, zone=:zone, note=:note
+            WHERE id=:sid AND funnel_id=:fid');
+        foreach ($stages as $st) {
+            if (!is_array($st)) continue;
+            $label = trim((string)($st['label'] ?? ''));
+            if ($label === '') continue;
+            $stId = (int)($st['id'] ?? 0);
+            $srcType = normalizeFunnelSourceType($st['source_type'] ?? 'manual');
+            $zone = ((string)($st['zone'] ?? 'internal') === 'external') ? 'external' : 'internal';
+            $note = (string)($st['note'] ?? '');
+            if ($stId > 0 && isset($existingIds[$stId])) {
+                $upd->reset();
+                $upd->bindValue(':pos', $pos, SQLITE3_INTEGER);
+                $upd->bindValue(':label', $label, SQLITE3_TEXT);
+                $upd->bindValue(':st', $srcType, SQLITE3_TEXT);
+                $upd->bindValue(':zone', $zone, SQLITE3_TEXT);
+                $upd->bindValue(':note', $note, SQLITE3_TEXT);
+                $upd->bindValue(':sid', $stId, SQLITE3_INTEGER);
+                $upd->bindValue(':fid', $id, SQLITE3_INTEGER);
+                $upd->execute();
+                $newId = $stId;
+            } else {
+                $ins->reset();
+                $ins->bindValue(':fid', $id, SQLITE3_INTEGER);
+                $ins->bindValue(':pos', $pos, SQLITE3_INTEGER);
+                $ins->bindValue(':label', $label, SQLITE3_TEXT);
+                $ins->bindValue(':st', $srcType, SQLITE3_TEXT);
+                $ins->bindValue(':zone', $zone, SQLITE3_TEXT);
+                $ins->bindValue(':note', $note, SQLITE3_TEXT);
+                $ins->execute();
+                $newId = (int)$db->lastInsertRowID();
+            }
+            $keptIds[$newId] = true;
+            $clientId = (string)($st['client_id'] ?? $st['id'] ?? '');
+            if ($clientId !== '') $stageIdMap[$clientId] = $newId;
+            $pos++;
+        }
+        // Удаляем этапы, отсутствующие в новом наборе, и их ручные данные.
+        foreach (array_keys($existingIds) as $oldId) {
+            if (isset($keptIds[$oldId])) continue;
+            $d = $db->prepare('DELETE FROM funnel_config_stages WHERE id = :sid');
+            $d->bindValue(':sid', $oldId, SQLITE3_INTEGER); $d->execute();
+            $d = $db->prepare('DELETE FROM manual_stage_data WHERE funnel_id = :fid AND stage_id = :sid');
+            $d->bindValue(':fid', $id, SQLITE3_INTEGER); $d->bindValue(':sid', $oldId, SQLITE3_INTEGER); $d->execute();
+        }
+
+        $platforms = is_array($input['platforms'] ?? null) ? $input['platforms'] : [];
+        $ins = $db->prepare('INSERT OR IGNORE INTO funnel_config_platforms (funnel_id, source_id, source_name, mode)
+            VALUES (:fid, :sid, :sn, :mode)');
+        foreach ($platforms as $p) {
+            if (!is_array($p)) continue;
+            $sid = trim((string)($p['source_id'] ?? ''));
+            if ($sid === '') continue;
+            $ins->reset();
+            $ins->bindValue(':fid', $id, SQLITE3_INTEGER);
+            $ins->bindValue(':sid', $sid, SQLITE3_TEXT);
+            $ins->bindValue(':sn', (string)($p['source_name'] ?? ''), SQLITE3_TEXT);
+            $ins->bindValue(':mode', ((string)($p['mode'] ?? 'auto') === 'manual') ? 'manual' : 'auto', SQLITE3_TEXT);
+            $ins->execute();
+        }
+        $db->exec('COMMIT');
+    } catch (Throwable $e) {
+        $db->exec('ROLLBACK');
+        echo json_encode(['status' => 'error', 'error' => $e->getMessage()], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+    echo json_encode(['status' => 'success', 'id' => $id, 'stage_id_map' => $stageIdMap], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+if ($action === 'funnel_config_delete') {
+    $id = (int)($_GET['id'] ?? 0);
+    if ($id <= 0) { echo json_encode(['status' => 'error', 'error' => 'id required']); exit; }
+    foreach (['funnel_config_stages', 'funnel_config_platforms', 'manual_stage_data'] as $tbl) {
+        $stmt = $db->prepare("DELETE FROM $tbl WHERE funnel_id = :id");
+        $stmt->bindValue(':id', $id, SQLITE3_INTEGER); $stmt->execute();
+    }
+    $stmt = $db->prepare('DELETE FROM funnel_configs WHERE id = :id');
+    $stmt->bindValue(':id', $id, SQLITE3_INTEGER); $stmt->execute();
+    echo json_encode(['status' => 'success', 'deleted' => $db->changes()]);
+    exit;
+}
+
+if ($action === 'funnel_manual_save') {
+    // Батч ручного ввода по этапу × площадке × дню (по образцу save_bounces_batch).
+    $input = json_decode(file_get_contents('php://input'), true) ?: [];
+    $funnelId = (int)($input['funnel_id'] ?? 0);
+    $stageId  = (int)($input['stage_id'] ?? 0);
+    $rows = $input['rows'] ?? null;
+    if ($funnelId <= 0 || $stageId <= 0 || !is_array($rows)) {
+        echo json_encode(['status' => 'error', 'error' => 'funnel_id, stage_id и rows[] обязательны']); exit;
+    }
+    $saved = 0; $skipped = [];
+    $db->exec('BEGIN');
+    $stmt = $db->prepare('INSERT INTO manual_stage_data (funnel_id, stage_id, source_id, date, value)
+        VALUES (:fid, :sid, :src, :date, :val)
+        ON CONFLICT(funnel_id, stage_id, source_id, date) DO UPDATE SET value = excluded.value');
+    foreach ($rows as $r) {
+        if (!is_array($r)) continue;
+        $date = trim((string)($r['date'] ?? ''));
+        $src = trim((string)($r['source_id'] ?? 'all'));
+        if ($src === '') $src = 'all';
+        $val = $r['value'] ?? null;
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date) || !is_numeric($val) || (int)$val < 0) {
+            $skipped[] = $date !== '' ? $date : '(пустая дата)';
+            continue;
+        }
+        $stmt->reset();
+        $stmt->bindValue(':fid', $funnelId, SQLITE3_INTEGER);
+        $stmt->bindValue(':sid', $stageId, SQLITE3_INTEGER);
+        $stmt->bindValue(':src', $src, SQLITE3_TEXT);
+        $stmt->bindValue(':date', $date, SQLITE3_TEXT);
+        $stmt->bindValue(':val', (int)$val, SQLITE3_INTEGER);
+        $stmt->execute();
+        $saved++;
+    }
+    $db->exec('COMMIT');
+    echo json_encode(['status' => 'success', 'saved' => $saved, 'skipped' => $skipped], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+if ($action === 'funnel_manual_list') {
+    // Возвращает сохранённый ручной ввод одного этапа за период воронки.
+    $funnelId = (int)($_GET['funnel_id'] ?? 0);
+    $stageId  = (int)($_GET['stage_id'] ?? 0);
+    if ($funnelId <= 0 || $stageId <= 0) { echo json_encode(['status' => 'error', 'error' => 'funnel_id и stage_id обязательны']); exit; }
+    $stmt = $db->prepare('SELECT source_id, date, value FROM manual_stage_data
+        WHERE funnel_id = :fid AND stage_id = :sid ORDER BY date, source_id');
+    $stmt->bindValue(':fid', $funnelId, SQLITE3_INTEGER);
+    $stmt->bindValue(':sid', $stageId, SQLITE3_INTEGER);
+    $res = $stmt->execute();
+    $rows = [];
+    while ($r = $res->fetchArray(SQLITE3_ASSOC)) $rows[] = $r;
+    echo json_encode(['status' => 'success', 'data' => $rows], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+if ($action === 'funnel_resolve') {
+    $id = (int)($_GET['id'] ?? 0);
+    $cfg = loadFunnelConfig($db, $id);
+    if (!$cfg) { echo json_encode(['status' => 'error', 'error' => 'funnel not found']); exit; }
+    echo json_encode(['status' => 'success', 'data' => resolveFunnelData($db, $cfg)], JSON_UNESCAPED_UNICODE);
     exit;
 }
 

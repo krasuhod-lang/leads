@@ -965,6 +965,29 @@
       font-size: 11px;
       font-weight: 600;
     }
+    /* ----- Конструктор воронок (funnel builder) ----- */
+    .fb-section { border: 1px solid var(--border); border-radius: var(--r-card); background: var(--surface-thin); padding: 14px; margin-bottom: 14px; }
+    .fb-section-title { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--text-dim); margin-bottom: 10px; }
+    .fb-platforms { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; }
+    .fb-platform { display: flex; align-items: center; gap: 8px; border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; background: var(--surface); }
+    .fb-platform.selected { border-color: var(--accent); }
+    .fb-platform .fb-plat-name { flex: 1; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .fb-platform select { font-size: 11px; padding: 2px 4px; }
+    .fb-stage-card { border: 1px solid var(--border); border-radius: 10px; padding: 10px; background: var(--surface); }
+    .fb-stage-card.zone-external { border-left: 3px solid var(--text-faint); }
+    .fb-stage-card.zone-internal { border-left: 3px solid var(--accent); }
+    .fb-stage-head { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
+    .fb-stage-head input { flex: 1; }
+    .fb-stage-controls { display: flex; gap: 6px; flex-wrap: wrap; }
+    .fb-stage-controls select { font-size: 12px; flex: 1; min-width: 120px; }
+    .fb-icon-btn { background: none; border: 1px solid var(--border); border-radius: 6px; color: var(--text-dim); cursor: pointer; font-size: 12px; padding: 3px 7px; }
+    .fb-icon-btn:hover { color: var(--text); border-color: var(--border-strong); }
+    .my-funnel-card { border: 1px solid var(--border); border-radius: var(--r-card); background: var(--surface-thin); padding: 14px; }
+    .my-funnel-plat-toggle { display: inline-flex; gap: 4px; }
+    .my-funnel-plat-toggle button { font-size: 11px; padding: 3px 10px; border: 1px solid var(--border); background: var(--surface); color: var(--text-dim); cursor: pointer; }
+    .my-funnel-plat-toggle button:first-child { border-radius: 8px 0 0 8px; }
+    .my-funnel-plat-toggle button:last-child { border-radius: 0 8px 8px 0; }
+    .my-funnel-plat-toggle button.active { background: var(--accent-soft); color: var(--text); border-color: var(--accent); }
     .relation-chip {
       border: 1px solid var(--border);
       border-radius: var(--r-card);
@@ -1839,6 +1862,7 @@
     <div id="rejectSubTabBar" class="flex gap-1 border-b border-slate-700">
       <button class="tab-btn active" data-rsub="channels" onclick="switchRejectSubTab('channels')">Сводка по 5 каналам</button>
       <button class="tab-btn"        data-rsub="funnel"   onclick="switchRejectSubTab('funnel')">Воронка и динамика</button>
+      <button class="tab-btn"        data-rsub="myfunnels" onclick="switchRejectSubTab('myfunnels')">Мои воронки</button>
     </div>
 
     <!-- SUB-TAB 1: Channels Overview -->
@@ -1937,6 +1961,21 @@
     </div>
 
     <!-- SUB-TAB 3 (Unit Economics by CJM) removed by request -->
+
+    <!-- SUB-TAB: My Funnels (конструктор пользовательских воронок) -->
+    <div id="rsub-myfunnels" class="reject-sub space-y-6 hidden">
+      <div class="card">
+        <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+          <div>
+            <h3 class="text-white font-semibold">Мои воронки</h3>
+            <p class="text-sm text-slate-400 mt-1">Собственные воронки за произвольный период с разбивкой по площадкам. Источник каждого этапа — Я.Метрика, Leads.su или ручной ввод (мобильные приложения — только вручную).</p>
+          </div>
+          <button class="btn" type="button" onclick="openFunnelBuilder()">+ Новая воронка</button>
+        </div>
+        <div id="myFunnelsList" class="space-y-4"><!-- renderMyFunnels() --></div>
+      </div>
+    </div>
+
   </div>
 
   <!-- TAB: HYPOTHESES -->
@@ -2650,6 +2689,108 @@ CR_plan       = baseCR,   AR_plan = baseAR
     <div class="modal-footer">
       <button type="button" class="btn" style="background:transparent;border:1px solid var(--border-strong);color:var(--text-dim);" onclick="closeBannerBouncesModal()">Отмена</button>
       <button type="button" class="btn" onclick="saveBannerBounces()">Сохранить</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Модалка конструктора воронок ===== -->
+<div id="funnelBuilderModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="funnelBuilderTitle">
+  <div class="modal-box" style="max-width:1080px;">
+    <header>
+      <h3 id="funnelBuilderTitle">Новая воронка</h3>
+      <button type="button" class="close-x" onclick="closeFunnelBuilder()" aria-label="Закрыть">×</button>
+    </header>
+    <div class="modal-body">
+      <input id="fbId" type="hidden">
+      <!-- Блок 1: название + период -->
+      <div class="fb-section">
+        <div class="fb-section-title">1. Название и период</div>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div class="form-field"><label for="fbName">Название воронки <span style="color:var(--bad)">*</span></label>
+            <input id="fbName" type="text" placeholder="Напр.: Отказники — июль">
+          </div>
+          <div class="form-field"><label for="fbDescription">Описание</label>
+            <input id="fbDescription" type="text" placeholder="Короткий комментарий (необязательно)">
+          </div>
+        </div>
+        <div class="flex flex-wrap gap-4 items-end mt-2">
+          <div class="form-field" style="margin:0;">
+            <label>Тип периода</label>
+            <select id="fbPeriodMode" onchange="fbTogglePeriodMode()">
+              <option value="fixed">Фиксированный (с/по)</option>
+              <option value="rolling">Скользящий (последние N дней)</option>
+            </select>
+          </div>
+          <div id="fbFixedPeriod" class="flex gap-2 items-end">
+            <div class="form-field" style="margin:0;"><label for="fbDateFrom">С</label><input id="fbDateFrom" type="date"></div>
+            <div class="form-field" style="margin:0;"><label for="fbDateTo">По</label><input id="fbDateTo" type="date"></div>
+          </div>
+          <div id="fbRollingPeriod" class="form-field hidden" style="margin:0;">
+            <label for="fbRollingDays">Дней</label>
+            <input id="fbRollingDays" type="number" min="1" step="1" value="30" style="width:110px;">
+          </div>
+        </div>
+      </div>
+      <!-- Блок 2: площадки -->
+      <div class="fb-section">
+        <div class="fb-section-title">2. Площадки (разбивка)</div>
+        <p class="text-xs" style="color:var(--text-dim);margin-bottom:8px;">Отметьте площадки, по которым нужна разбивка. Для каждой выберите режим данных. «Мобильное приложение» и другие площадки без автозагрузки — только ручной ввод.</p>
+        <div id="fbPlatformsBox" class="fb-platforms"><!-- fbRenderPlatforms() --></div>
+      </div>
+      <!-- Блок 3: этапы -->
+      <div class="fb-section">
+        <div class="flex items-center justify-between gap-2 mb-2">
+          <div class="fb-section-title" style="margin:0;">3. Этапы воронки</div>
+          <div class="flex gap-2">
+            <button type="button" class="btn" style="background:transparent;border:1px solid var(--border-strong);color:var(--text-dim);font-size:12px;padding:4px 10px;" onclick="fbApplyPreset()">Шаблон отказников</button>
+            <button type="button" class="btn" style="font-size:12px;padding:4px 10px;" onclick="fbAddStage()">+ Этап</button>
+          </div>
+        </div>
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <div id="fbStagesBox" class="space-y-2"><!-- fbRenderStages() --></div>
+          <div>
+            <div class="text-xs font-semibold uppercase mb-2" style="color:var(--text-dim);letter-spacing:.05em;">Предпросмотр</div>
+            <div id="fbPreviewBox" class="funnel-visual"></div>
+          </div>
+        </div>
+      </div>
+      <p id="fbError" class="text-xs mt-2 hidden" style="color:var(--bad);"></p>
+    </div>
+    <div class="modal-footer">
+      <button type="button" class="btn" style="background:transparent;border:1px solid var(--border-strong);color:var(--text-dim);" onclick="closeFunnelBuilder()">Отмена</button>
+      <button type="button" class="btn" onclick="saveFunnelBuilder()">Сохранить воронку</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Модалка ручного ввода данных этапа ===== -->
+<div id="funnelManualModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="funnelManualTitle">
+  <div class="modal-box" style="max-width:640px;">
+    <header>
+      <h3 id="funnelManualTitle">Ручной ввод данных этапа</h3>
+      <button type="button" class="close-x" onclick="closeFunnelManual()" aria-label="Закрыть">×</button>
+    </header>
+    <div class="modal-body">
+      <input id="fmFunnelId" type="hidden">
+      <input id="fmStageId" type="hidden">
+      <p class="text-xs mb-2" style="color:var(--text-dim);">Введите значения по дням для выбранной площадки. Можно загрузить Excel/CSV: <strong>A — дата</strong>, <strong>B — значение</strong>.</p>
+      <div class="flex gap-2 items-end mb-3">
+        <div class="form-field" style="margin:0;flex:1;">
+          <label for="fmSource">Площадка</label>
+          <select id="fmSource" onchange="fmLoadSourceRows()"></select>
+        </div>
+        <div>
+          <label class="block text-xs mb-1" style="color:var(--text-dim);">Excel/CSV</label>
+          <input id="fmFile" type="file" accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv" class="text-xs" onchange="handleFunnelManualFile(this)">
+        </div>
+      </div>
+      <div id="fmRows" class="space-y-2" style="max-height:300px;overflow-y:auto;"></div>
+      <button type="button" class="btn mt-2" style="background:transparent;border:1px solid var(--border-strong);color:var(--text-dim);" onclick="fmAddRow()">+ Добавить день</button>
+      <p id="fmError" class="text-xs mt-2 hidden" style="color:var(--bad);"></p>
+    </div>
+    <div class="modal-footer">
+      <button type="button" class="btn" style="background:transparent;border:1px solid var(--border-strong);color:var(--text-dim);" onclick="closeFunnelManual()">Отмена</button>
+      <button type="button" class="btn" onclick="saveFunnelManual()">Сохранить</button>
     </div>
   </div>
 </div>
@@ -5603,6 +5744,530 @@ async function saveBannerBounces() {
     if (!bad.length) closeBannerBouncesModal();
   } catch (e) {
     bannerBouncesSetError('Ошибка сохранения: ' + (e && e.message ? e.message : e));
+  }
+}
+
+/* ==================== Конструктор воронок (My Funnels) ==================== */
+// Типы источника данных этапа: value → {label, auto}. auto=false — ручной ввод.
+const FUNNEL_SOURCE_TYPES = [
+  { value: 'ym_impressions', label: 'Я.Метрика — показы',    auto: true },
+  { value: 'ym_clicks',      label: 'Я.Метрика — клики',     auto: true },
+  { value: 'leads_clicks',   label: 'Leads.su — клики',      auto: true },
+  { value: 'leads_leads',    label: 'Leads.su — заявки',     auto: true },
+  { value: 'leads_approved', label: 'Leads.su — одобренные', auto: true },
+  { value: 'cpa_postback',   label: 'CPA-постбек (внешний)', auto: true },
+  { value: 'manual',         label: 'Ручной ввод',           auto: false },
+];
+function funnelSourceLabel(type) {
+  const t = FUNNEL_SOURCE_TYPES.find(s => s.value === type);
+  return t ? t.label : type;
+}
+function funnelSourceIsAuto(type) {
+  const t = FUNNEL_SOURCE_TYPES.find(s => s.value === type);
+  return t ? t.auto : false;
+}
+// Площадки без автозагрузки (мобильные приложения и т.п.) — только ручной ввод.
+function funnelIsManualOnlyPlatform(name) {
+  return /мобил|mobile|прилож|\bapp\b|пуш|push|e-?mail|рассыл/i.test(String(name || ''));
+}
+
+const funnelBuilderState = { platforms: [], stages: [], seq: 0 };
+const myFunnelsState = { list: [], resolved: {}, viewMode: {} };
+
+async function loadAndRenderMyFunnels() {
+  const box = document.getElementById('myFunnelsList');
+  if (box) box.innerHTML = '<div class="text-sm text-slate-500">Загрузка…</div>';
+  try {
+    const j = await fetchJsonSafe(buildApiUrl({ action: 'funnel_config_list' }));
+    myFunnelsState.list = (j && j.status === 'success' && Array.isArray(j.data)) ? j.data : [];
+  } catch (e) {
+    myFunnelsState.list = [];
+  }
+  await renderMyFunnels();
+}
+
+async function renderMyFunnels() {
+  const box = document.getElementById('myFunnelsList');
+  if (!box) return;
+  if (!myFunnelsState.list.length) {
+    box.innerHTML = '<div class="text-sm text-slate-500">Пока нет ни одной воронки. Нажмите «+ Новая воронка», чтобы собрать свою — за нужный период и с разбивкой по площадкам.</div>';
+    return;
+  }
+  // Резолвим значения по каждой воронке параллельно.
+  await Promise.all(myFunnelsState.list.map(async cfg => {
+    try {
+      const j = await fetchJsonSafe(buildApiUrl({ action: 'funnel_resolve', id: cfg.id }));
+      myFunnelsState.resolved[cfg.id] = (j && j.status === 'success') ? j.data : null;
+    } catch (e) { myFunnelsState.resolved[cfg.id] = null; }
+  }));
+  box.innerHTML = myFunnelsState.list.map(cfg => myFunnelCardHtml(cfg)).join('');
+  myFunnelsState.list.forEach(cfg => {
+    const resolved = myFunnelsState.resolved[cfg.id];
+    const split = myFunnelsState.viewMode[cfg.id] || (cfg.split_mode === 'platform' ? 'platform' : 'sum');
+    const target = document.getElementById('myFunnelViz-' + cfg.id);
+    if (target && resolved) renderFunnelFromConfig(target, cfg, resolved, split);
+  });
+}
+
+function myFunnelPeriodText(cfg) {
+  if (cfg.period_mode === 'rolling') return `последние ${cfg.rolling_days} дн.`;
+  if (cfg.date_from && cfg.date_to) return `${cfg.date_from} — ${cfg.date_to}`;
+  return 'период не задан';
+}
+
+function myFunnelCardHtml(cfg) {
+  const stages = cfg.stages || [];
+  const platforms = cfg.platforms || [];
+  const split = myFunnelsState.viewMode[cfg.id] || (cfg.split_mode === 'platform' ? 'platform' : 'sum');
+  const platNames = platforms.length
+    ? platforms.map(p => escapeHtml(p.source_name || p.source_id)).join(', ')
+    : 'все площадки';
+  const hasManual = stages.some(s => !funnelSourceIsAuto(s.source_type));
+  return `<div class="my-funnel-card">
+    <div class="flex flex-wrap items-start justify-between gap-3 mb-3">
+      <div class="min-w-0">
+        <h4 class="text-white font-semibold">${escapeHtml(cfg.name)}</h4>
+        <div class="text-xs text-slate-400 mt-1">${escapeHtml(myFunnelPeriodText(cfg))} · ${stages.length} этап(ов) · площадки: ${platNames}</div>
+        ${cfg.description ? `<div class="text-xs text-slate-500 mt-1">${escapeHtml(cfg.description)}</div>` : ''}
+      </div>
+      <div class="flex items-center gap-2 flex-wrap">
+        <div class="my-funnel-plat-toggle" role="group" aria-label="Режим отображения">
+          <button type="button" class="${split === 'sum' ? 'active' : ''}" onclick="setMyFunnelView(${cfg.id},'sum')">Свод</button>
+          <button type="button" class="${split === 'platform' ? 'active' : ''}" onclick="setMyFunnelView(${cfg.id},'platform')">По площадкам</button>
+        </div>
+        ${hasManual ? `<button type="button" class="fb-icon-btn" onclick="openFunnelManualPicker(${cfg.id})" title="Ручной ввод данных">📥 Данные</button>` : ''}
+        <button type="button" class="fb-icon-btn" onclick="editFunnel(${cfg.id})" title="Редактировать">✎</button>
+        <button type="button" class="fb-icon-btn" onclick="deleteFunnel(${cfg.id})" title="Удалить" style="color:#f87171;">🗑</button>
+      </div>
+    </div>
+    <div id="myFunnelViz-${cfg.id}" class="funnel-visual"></div>
+  </div>`;
+}
+
+function setMyFunnelView(id, mode) {
+  myFunnelsState.viewMode[id] = mode;
+  const cfg = myFunnelsState.list.find(c => c.id === id);
+  const resolved = myFunnelsState.resolved[id];
+  const target = document.getElementById('myFunnelViz-' + id);
+  if (cfg && resolved && target) renderFunnelFromConfig(target, cfg, resolved, mode);
+  const card = target ? target.closest('.my-funnel-card') : null;
+  if (card) card.querySelectorAll('.my-funnel-plat-toggle button').forEach(b => {
+    b.classList.toggle('active', b.textContent.trim() === (mode === 'sum' ? 'Свод' : 'По площадкам'));
+  });
+}
+
+// Карта source_id → человекочитаемое имя площадки для одной воронки.
+function funnelPlatformNameMap(cfg) {
+  const map = { all: 'Общий поток' };
+  (cfg.platforms || []).forEach(p => { map[p.source_id] = p.source_name || p.source_id; });
+  buildSourceOptions(globalRawData).forEach(o => { if (o.id && !map[o.id]) map[o.id] = o.display; });
+  return map;
+}
+
+// Универсальный рендер воронки из конфига + резолвнутых значений.
+function renderFunnelFromConfig(box, cfg, resolved, split = 'sum') {
+  if (!box) return;
+  const stages = (resolved && resolved.stages) || [];
+  if (!stages.length) { box.innerHTML = '<div class="text-sm text-slate-500">Нет этапов.</div>'; return; }
+  const platMap = funnelPlatformNameMap(cfg);
+  const max = Math.max(1, ...stages.map(s => Number(s.total) || 0));
+  const micro = (a, b) => a > 0 ? (b / a * 100) : 0;
+  const html = stages.map((s, idx) => {
+    const val = Number(s.total) || 0;
+    const width = Math.min(100, Math.max(0, val / max * 100));
+    const zoneCls = s.zone === 'external' ? 'funnel-stage--external' : 'funnel-stage--internal';
+    const badge = idx < stages.length - 1
+      ? `<div class="funnel-badge">→ ${micro(val, Number(stages[idx + 1].total) || 0).toFixed(1)}%</div>` : '';
+    let breakdown = '';
+    if (split === 'platform') {
+      const entries = Object.entries(s.by_platform || {}).filter(([, v]) => Number(v) > 0)
+        .sort((a, b) => b[1] - a[1]);
+      breakdown = entries.length
+        ? `<div class="flex flex-wrap gap-1 mt-2">${entries.map(([sid, v]) =>
+            `<span class="funnel-conv-pill muted">${escapeHtml(platMap[sid] || sid)}: ${Math.round(v).toLocaleString('ru-RU')}</span>`).join('')}</div>`
+        : '<div class="text-[10px] text-slate-500 mt-1">нет разбивки по площадкам для этого источника</div>';
+    }
+    return `<div class="funnel-stage ${zoneCls}">
+      <div class="flex justify-between gap-3 mb-2"><span>${escapeHtml(s.label)} <span class="text-[10px] text-slate-500">(${escapeHtml(funnelSourceLabel(s.source_type))})</span></span><strong>${Math.round(val).toLocaleString('ru-RU')}</strong></div>
+      <div class="funnel-stage-bar"><div class="funnel-stage-fill" style="width:${width.toFixed(1)}%"></div></div>
+      ${idx ? `<div class="text-[10px] text-slate-500 mt-1">шаг: ${micro(Number(stages[idx - 1].total) || 0, val).toFixed(1)}%</div>` : ''}
+      ${breakdown}
+    </div>${badge}`;
+  }).join('');
+  box.innerHTML = html;
+}
+
+/* ----- Билдер: открытие / состояние ----- */
+function funnelBuilderError(msg) {
+  const err = document.getElementById('fbError'); if (!err) return;
+  err.textContent = msg || '';
+  err.classList.toggle('hidden', !msg);
+}
+
+function fbBuildPlatformList(cfg) {
+  // Собираем площадки из данных Leads.su + сохранённые в конфиге (в т.ч. ручные).
+  const map = new Map();
+  buildSourceOptions(globalRawData).forEach(o => {
+    const sid = (o.id && o.id !== 'all') ? o.id : o.value;
+    if (!map.has(sid)) map.set(sid, {
+      source_id: sid, source_name: o.display, mode: 'auto', selected: false,
+      manualOnly: funnelIsManualOnlyPlatform(o.display)
+    });
+  });
+  ((cfg && cfg.platforms) || []).forEach(p => {
+    const existing = map.get(p.source_id);
+    if (existing) { existing.selected = true; existing.mode = p.mode || 'auto'; }
+    else map.set(p.source_id, {
+      source_id: p.source_id, source_name: p.source_name || p.source_id,
+      mode: p.mode || 'manual', selected: true, manualOnly: funnelIsManualOnlyPlatform(p.source_name)
+    });
+  });
+  return Array.from(map.values());
+}
+
+function openFunnelBuilder(cfg = null) {
+  const el = document.getElementById('funnelBuilderModal'); if (!el) return;
+  document.getElementById('funnelBuilderTitle').textContent = cfg ? 'Редактирование воронки' : 'Новая воронка';
+  document.getElementById('fbId').value = cfg ? cfg.id : '';
+  document.getElementById('fbName').value = cfg ? (cfg.name || '') : '';
+  document.getElementById('fbDescription').value = cfg ? (cfg.description || '') : '';
+  document.getElementById('fbPeriodMode').value = (cfg && cfg.period_mode === 'rolling') ? 'rolling' : 'fixed';
+  const period = rejectMonCurrentPeriod();
+  document.getElementById('fbDateFrom').value = (cfg && cfg.date_from) || period.from || '';
+  document.getElementById('fbDateTo').value = (cfg && cfg.date_to) || period.to || '';
+  document.getElementById('fbRollingDays').value = (cfg && cfg.rolling_days) || 30;
+  funnelBuilderState.platforms = fbBuildPlatformList(cfg);
+  funnelBuilderState.seq = 0;
+  funnelBuilderState.stages = (cfg && Array.isArray(cfg.stages) && cfg.stages.length)
+    ? cfg.stages.map(s => ({ client_id: 'db' + s.id, db_id: s.id, label: s.label, source_type: s.source_type, zone: s.zone || 'internal' }))
+    : fbPresetStages();
+  funnelBuilderError('');
+  fbTogglePeriodMode();
+  fbRenderPlatforms();
+  fbRenderStages();
+  el.classList.add('is-open');
+  document.body.style.overflow = 'hidden';
+}
+function closeFunnelBuilder() {
+  const el = document.getElementById('funnelBuilderModal'); if (!el) return;
+  el.classList.remove('is-open');
+  document.body.style.overflow = '';
+}
+function fbTogglePeriodMode() {
+  const mode = document.getElementById('fbPeriodMode').value;
+  document.getElementById('fbFixedPeriod').classList.toggle('hidden', mode === 'rolling');
+  document.getElementById('fbRollingPeriod').classList.toggle('hidden', mode !== 'rolling');
+}
+
+function fbPresetStages() {
+  funnelBuilderState.seq = 0;
+  return [
+    { label: 'Показ баннера',            source_type: 'ym_impressions', zone: 'internal' },
+    { label: 'Клик по баннеру',          source_type: 'ym_clicks',      zone: 'internal' },
+    { label: 'Клик по офферу (Leads.su)', source_type: 'leads_clicks',  zone: 'internal' },
+    { label: 'Заявка (Leads.su)',        source_type: 'leads_leads',    zone: 'external' },
+    { label: 'Одобренная заявка',        source_type: 'leads_approved', zone: 'external' },
+  ].map(s => ({ client_id: 'c' + (++funnelBuilderState.seq), ...s }));
+}
+function fbApplyPreset() {
+  funnelBuilderState.stages = fbPresetStages();
+  fbRenderStages();
+}
+
+function fbRenderPlatforms() {
+  const box = document.getElementById('fbPlatformsBox'); if (!box) return;
+  const rows = funnelBuilderState.platforms.map((p, idx) => {
+    const modeSel = p.manualOnly
+      ? `<span class="text-[10px] text-amber-400" title="Автозагрузка недоступна">только вручную</span>`
+      : `<select data-fb-plat-mode="${idx}" ${p.selected ? '' : 'disabled'}>
+           <option value="auto" ${p.mode === 'auto' ? 'selected' : ''}>Авто</option>
+           <option value="manual" ${p.mode === 'manual' ? 'selected' : ''}>Вручную</option>
+         </select>`;
+    return `<label class="fb-platform ${p.selected ? 'selected' : ''}">
+      <input type="checkbox" data-fb-plat="${idx}" ${p.selected ? 'checked' : ''}>
+      <span class="fb-plat-name" title="${escapeHtml(p.source_name)}">${escapeHtml(p.source_name)}</span>
+      ${modeSel}
+    </label>`;
+  }).join('');
+  box.innerHTML = rows + `<div class="fb-platform" style="border-style:dashed;">
+    <input id="fbCustomPlat" type="text" placeholder="+ Своя площадка (моб. прил.)" class="fb-plat-name" style="background:transparent;border:none;outline:none;color:var(--text);">
+    <button type="button" class="fb-icon-btn" onclick="fbAddCustomPlatform()">Добавить</button>
+  </div>`;
+  box.querySelectorAll('[data-fb-plat]').forEach(cb => cb.addEventListener('change', e => {
+    const i = +e.target.dataset.fbPlat;
+    funnelBuilderState.platforms[i].selected = e.target.checked;
+    fbRenderPlatforms();
+  }));
+  box.querySelectorAll('[data-fb-plat-mode]').forEach(sel => sel.addEventListener('change', e => {
+    funnelBuilderState.platforms[+e.target.dataset.fbPlatMode].mode = e.target.value;
+  }));
+}
+function fbAddCustomPlatform() {
+  const input = document.getElementById('fbCustomPlat');
+  const name = (input && input.value || '').trim();
+  if (!name) return;
+  const sid = 'manual:' + name.toLowerCase().replace(/\s+/g, '_');
+  if (funnelBuilderState.platforms.some(p => p.source_id === sid)) { funnelBuilderError('Такая площадка уже есть.'); return; }
+  funnelBuilderState.platforms.push({ source_id: sid, source_name: name, mode: 'manual', selected: true, manualOnly: true });
+  funnelBuilderError('');
+  fbRenderPlatforms();
+}
+
+function fbStageCardHtml(st, idx) {
+  const opts = FUNNEL_SOURCE_TYPES.map(t => `<option value="${t.value}" ${st.source_type === t.value ? 'selected' : ''}>${t.label}</option>`).join('');
+  return `<div class="fb-stage-card zone-${st.zone === 'external' ? 'external' : 'internal'}">
+    <div class="fb-stage-head">
+      <span class="text-xs text-slate-500">${idx + 1}.</span>
+      <input type="text" data-fb-stage-label="${idx}" value="${escapeHtml(st.label)}" placeholder="Название этапа">
+      <button type="button" class="fb-icon-btn" onclick="fbMoveStage(${idx},-1)" title="Вверх">↑</button>
+      <button type="button" class="fb-icon-btn" onclick="fbMoveStage(${idx},1)" title="Вниз">↓</button>
+      <button type="button" class="fb-icon-btn" onclick="fbDuplicateStage(${idx})" title="Дублировать">⧉</button>
+      <button type="button" class="fb-icon-btn" onclick="fbRemoveStage(${idx})" title="Удалить" style="color:#f87171;">✕</button>
+    </div>
+    <div class="fb-stage-controls">
+      <select data-fb-stage-src="${idx}">${opts}</select>
+      <select data-fb-stage-zone="${idx}">
+        <option value="internal" ${st.zone !== 'external' ? 'selected' : ''}>Наша зона</option>
+        <option value="external" ${st.zone === 'external' ? 'selected' : ''}>Зона партнёра</option>
+      </select>
+    </div>
+  </div>`;
+}
+function fbSyncStagesFromDom() {
+  const box = document.getElementById('fbStagesBox'); if (!box) return;
+  box.querySelectorAll('[data-fb-stage-label]').forEach(inp => {
+    funnelBuilderState.stages[+inp.dataset.fbStageLabel].label = inp.value;
+  });
+  box.querySelectorAll('[data-fb-stage-src]').forEach(sel => {
+    funnelBuilderState.stages[+sel.dataset.fbStageSrc].source_type = sel.value;
+  });
+  box.querySelectorAll('[data-fb-stage-zone]').forEach(sel => {
+    funnelBuilderState.stages[+sel.dataset.fbStageZone].zone = sel.value;
+  });
+}
+function fbRenderStages() {
+  const box = document.getElementById('fbStagesBox'); if (!box) return;
+  box.innerHTML = funnelBuilderState.stages.map((st, i) => fbStageCardHtml(st, i)).join('');
+  box.querySelectorAll('[data-fb-stage-label]').forEach(inp => inp.addEventListener('input', () => { fbSyncStagesFromDom(); fbUpdatePreview(); }));
+  box.querySelectorAll('[data-fb-stage-src]').forEach(sel => sel.addEventListener('change', () => { fbSyncStagesFromDom(); fbUpdatePreview(); }));
+  box.querySelectorAll('[data-fb-stage-zone]').forEach(sel => sel.addEventListener('change', () => { fbSyncStagesFromDom(); fbRenderStages(); fbUpdatePreview(); }));
+  fbUpdatePreview();
+}
+function fbAddStage() {
+  fbSyncStagesFromDom();
+  funnelBuilderState.stages.push({ client_id: 'c' + (++funnelBuilderState.seq), label: 'Новый этап', source_type: 'manual', zone: 'internal' });
+  fbRenderStages();
+}
+function fbRemoveStage(idx) {
+  fbSyncStagesFromDom();
+  funnelBuilderState.stages.splice(idx, 1);
+  fbRenderStages();
+}
+function fbDuplicateStage(idx) {
+  fbSyncStagesFromDom();
+  const s = funnelBuilderState.stages[idx];
+  funnelBuilderState.stages.splice(idx + 1, 0, { client_id: 'c' + (++funnelBuilderState.seq), label: s.label + ' (копия)', source_type: s.source_type, zone: s.zone });
+  fbRenderStages();
+}
+function fbMoveStage(idx, dir) {
+  fbSyncStagesFromDom();
+  const j = idx + dir;
+  if (j < 0 || j >= funnelBuilderState.stages.length) return;
+  const arr = funnelBuilderState.stages;
+  [arr[idx], arr[j]] = [arr[j], arr[idx]];
+  fbRenderStages();
+}
+function fbUpdatePreview() {
+  const box = document.getElementById('fbPreviewBox'); if (!box) return;
+  const stages = funnelBuilderState.stages;
+  if (!stages.length) { box.innerHTML = '<div class="text-sm text-slate-500">Добавьте этапы.</div>'; return; }
+  // В предпросмотре реальных значений ещё нет — показываем форму воронки
+  // с убывающими полосами и подписью источника.
+  box.innerHTML = stages.map((s, i) => {
+    const width = 100 - i * (70 / Math.max(1, stages.length));
+    const zoneCls = s.zone === 'external' ? 'funnel-stage--external' : 'funnel-stage--internal';
+    return `<div class="funnel-stage ${zoneCls}">
+      <div class="flex justify-between gap-3 mb-2"><span>${escapeHtml(s.label || '(без названия)')}</span><span class="text-[10px] text-slate-500">${escapeHtml(funnelSourceLabel(s.source_type))}</span></div>
+      <div class="funnel-stage-bar"><div class="funnel-stage-fill" style="width:${Math.max(12, width).toFixed(0)}%"></div></div>
+    </div>`;
+  }).join('');
+}
+
+function fbCollect() {
+  fbSyncStagesFromDom();
+  const stages = funnelBuilderState.stages
+    .map(s => ({ id: s.db_id || 0, client_id: s.client_id, label: (s.label || '').trim(), source_type: s.source_type, zone: s.zone }))
+    .filter(s => s.label !== '');
+  const platforms = funnelBuilderState.platforms.filter(p => p.selected)
+    .map(p => ({ source_id: p.source_id, source_name: p.source_name, mode: p.manualOnly ? 'manual' : p.mode }));
+  return {
+    id: +document.getElementById('fbId').value || 0,
+    name: document.getElementById('fbName').value.trim(),
+    description: document.getElementById('fbDescription').value.trim(),
+    period_mode: document.getElementById('fbPeriodMode').value,
+    date_from: document.getElementById('fbDateFrom').value,
+    date_to: document.getElementById('fbDateTo').value,
+    rolling_days: +document.getElementById('fbRollingDays').value || 30,
+    split_mode: 'sum',
+    stages, platforms,
+  };
+}
+async function saveFunnelBuilder() {
+  const payload = fbCollect();
+  if (!payload.name) { funnelBuilderError('Укажите название воронки.'); return; }
+  if (!payload.stages.length) { funnelBuilderError('Добавьте хотя бы один этап с названием.'); return; }
+  if (payload.period_mode === 'fixed' && (!payload.date_from || !payload.date_to)) {
+    funnelBuilderError('Задайте даты периода (с и по).'); return;
+  }
+  try {
+    const j = await fetchJsonSafe(buildApiUrl({ action: 'funnel_config_save' }), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+    });
+    if (!j || j.status !== 'success') { funnelBuilderError((j && j.error) || 'Ошибка сохранения.'); return; }
+    closeFunnelBuilder();
+    rejectMonState.cache = { channels: null, funnel: null, dynamics: null };
+    await loadAndRenderMyFunnels();
+  } catch (e) {
+    funnelBuilderError('Ошибка сохранения: ' + (e && e.message ? e.message : e));
+  }
+}
+function editFunnel(id) {
+  const cfg = myFunnelsState.list.find(c => c.id === id);
+  if (cfg) openFunnelBuilder(cfg);
+}
+async function deleteFunnel(id) {
+  if (!confirm('Удалить воронку и все её ручные данные? Действие необратимо.')) return;
+  try {
+    await fetchJsonSafe(buildApiUrl({ action: 'funnel_config_delete', id }), { method: 'POST' });
+  } catch (e) { /* ignore */ }
+  await loadAndRenderMyFunnels();
+}
+
+/* ----- Ручной ввод данных этапа ----- */
+const funnelManualState = { funnelId: 0, stageId: 0, cfg: null };
+function funnelManualError(msg) {
+  const err = document.getElementById('fmError'); if (!err) return;
+  err.textContent = msg || '';
+  err.classList.toggle('hidden', !msg);
+}
+// Выбор этапа для ручного ввода, если их несколько.
+function openFunnelManualPicker(funnelId) {
+  const cfg = myFunnelsState.list.find(c => c.id === funnelId);
+  if (!cfg) return;
+  const manualStages = (cfg.stages || []).filter(s => !funnelSourceIsAuto(s.source_type));
+  if (!manualStages.length) { alert('В этой воронке нет этапов с ручным вводом.'); return; }
+  let stage = manualStages[0];
+  if (manualStages.length > 1) {
+    const list = manualStages.map((s, i) => `${i + 1}. ${s.label}`).join('\n');
+    const pick = prompt('Выберите этап для ручного ввода (номер):\n' + list, '1');
+    const idx = parseInt(pick, 10) - 1;
+    if (isNaN(idx) || idx < 0 || idx >= manualStages.length) return;
+    stage = manualStages[idx];
+  }
+  openFunnelManual(funnelId, stage.id);
+}
+function openFunnelManual(funnelId, stageId) {
+  const el = document.getElementById('funnelManualModal'); if (!el) return;
+  const cfg = myFunnelsState.list.find(c => c.id === funnelId);
+  funnelManualState.funnelId = funnelId;
+  funnelManualState.stageId = stageId;
+  funnelManualState.cfg = cfg;
+  document.getElementById('fmFunnelId').value = funnelId;
+  document.getElementById('fmStageId').value = stageId;
+  const stage = cfg && (cfg.stages || []).find(s => s.id === stageId);
+  document.getElementById('funnelManualTitle').textContent = 'Ручной ввод: ' + (stage ? stage.label : 'этап');
+  // Заполняем список площадок: выбранные в воронке + «Общий поток».
+  const sel = document.getElementById('fmSource');
+  const platforms = (cfg && cfg.platforms) || [];
+  const opts = [{ source_id: 'all', source_name: 'Общий поток' }].concat(platforms);
+  sel.innerHTML = opts.map(p => `<option value="${escapeHtml(p.source_id)}">${escapeHtml(p.source_name || p.source_id)}</option>`).join('');
+  const file = document.getElementById('fmFile'); if (file) file.value = '';
+  funnelManualError('');
+  el.classList.add('is-open');
+  document.body.style.overflow = 'hidden';
+  fmLoadSourceRows();
+}
+function closeFunnelManual() {
+  const el = document.getElementById('funnelManualModal'); if (!el) return;
+  el.classList.remove('is-open');
+  document.body.style.overflow = '';
+}
+function fmRowHtml(date = '', value = '') {
+  return `<div class="fm-row flex gap-2 items-center">
+    <input type="date" class="fm-date bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm" value="${escapeHtml(date)}">
+    <input type="number" min="0" step="1" class="fm-val bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm w-28" placeholder="значение" value="${escapeHtml(String(value))}">
+    <button type="button" class="text-sm" style="color:#f87171;background:none;border:none;cursor:pointer;" title="Удалить" onclick="this.parentElement.remove()">✕</button>
+  </div>`;
+}
+function fmAddRow(date = '', value = '') {
+  const box = document.getElementById('fmRows');
+  if (box) box.insertAdjacentHTML('beforeend', fmRowHtml(date, value));
+}
+async function fmLoadSourceRows() {
+  const box = document.getElementById('fmRows'); if (!box) return;
+  const src = document.getElementById('fmSource').value || 'all';
+  box.innerHTML = '<div class="text-xs text-slate-500">Загрузка…</div>';
+  let rows = [];
+  try {
+    const j = await fetchJsonSafe(buildApiUrl({ action: 'funnel_manual_list', funnel_id: funnelManualState.funnelId, stage_id: funnelManualState.stageId }));
+    if (j && j.status === 'success' && Array.isArray(j.data)) {
+      rows = j.data.filter(r => (r.source_id || 'all') === src);
+    }
+  } catch (e) { /* ignore */ }
+  box.innerHTML = rows.map(r => fmRowHtml(r.date, r.value)).join('');
+  if (!rows.length) fmAddRow(new Date().toISOString().slice(0, 10), '');
+}
+async function handleFunnelManualFile(input) {
+  const f = input.files && input.files[0]; if (!f) return;
+  try {
+    const workbook = XLSX.read(await f.arrayBuffer(), { cellDates: true });
+    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+    const lines = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: '' });
+    const parsed = []; const errors = [];
+    for (let i = 0; i < lines.length; i++) {
+      const row = lines[i] || [];
+      if (!String(row[0]).trim() && !String(row[1]).trim()) continue;
+      if (i === 0 && /дата|date/i.test(String(row[0]))) continue;
+      const date = parseBannerBounceDate(row[0]);
+      const n = Number(String(row[1]).replace(/\s/g, '').replace(',', '.'));
+      if (!date || !Number.isFinite(n) || n < 0 || !Number.isInteger(n)) { errors.push(`строка ${i + 1}`); continue; }
+      parsed.push({ date, value: n });
+    }
+    if (parsed.length) {
+      const box = document.getElementById('fmRows');
+      if (box) box.innerHTML = parsed.map(r => fmRowHtml(r.date, r.value)).join('');
+    }
+    funnelManualError(errors.length
+      ? `Пропущены строки с ошибками (${errors.length}): ${errors.slice(0, 3).join(' | ')}${errors.length > 3 ? '…' : ''}`
+      : (parsed.length ? '' : 'В файле не найдено корректных строк: A — дата, B — значение.'));
+  } catch (e) {
+    funnelManualError(`Не удалось прочитать файл: ${e.message || 'неверный формат'}.`);
+  }
+}
+async function saveFunnelManual() {
+  const box = document.getElementById('fmRows'); if (!box) return;
+  const src = document.getElementById('fmSource').value || 'all';
+  const rows = []; const bad = [];
+  box.querySelectorAll('.fm-row').forEach(rowEl => {
+    const date = rowEl.querySelector('.fm-date')?.value || '';
+    const valRaw = rowEl.querySelector('.fm-val')?.value ?? '';
+    if (!date && valRaw === '') return;
+    const n = Number(valRaw);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(n) || n < 0 || !Number.isInteger(n)) { bad.push(date || '(без даты)'); return; }
+    rows.push({ date, value: n, source_id: src });
+  });
+  if (!rows.length) { funnelManualError('Нет корректных строк: нужны дата и целое неотрицательное число.'); return; }
+  funnelManualError(bad.length ? `Строки с ошибками пропущены: ${bad.join(', ')}` : '');
+  try {
+    const j = await fetchJsonSafe(buildApiUrl({ action: 'funnel_manual_save' }), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ funnel_id: funnelManualState.funnelId, stage_id: funnelManualState.stageId, rows })
+    });
+    if (!j || j.status !== 'success') { funnelManualError((j && j.error) || 'Ошибка сохранения.'); return; }
+    if (!bad.length) closeFunnelManual();
+    await loadAndRenderMyFunnels();
+  } catch (e) {
+    funnelManualError('Ошибка сохранения: ' + (e && e.message ? e.message : e));
   }
 }
 
@@ -11099,6 +11764,7 @@ function renderRejectActiveSub() {
   switch (rejectMonState.activeSub) {
     case 'channels': loadAndRenderChannels(); break;
     case 'funnel':   loadAndRenderFunnel();   break;
+    case 'myfunnels': loadAndRenderMyFunnels(); break;
   }
 }
 
