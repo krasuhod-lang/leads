@@ -1177,6 +1177,10 @@
     .roi-display .roi-val { font-size: 22px; font-weight: 700; color: var(--text); }
     /* Лог заметок */
     .hyp-note-entry { border-left: 2px solid var(--border-strong); padding-left: 10px; margin-bottom: 8px; }
+    .hyp-note-head  { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+    .hyp-note-actions { display: flex; gap: 4px; flex-shrink: 0; }
+    .hyp-note-actions button { background: none; border: none; cursor: pointer; font-size: 12px; line-height: 1; padding: 2px; opacity: .65; }
+    .hyp-note-actions button:hover { opacity: 1; }
     .hyp-note-date  { font-size: 10px; color: var(--text-faint); }
     .hyp-note-text  { font-size: 13px; color: var(--text); }
     /* Таблица сравнения План vs Факт внутри карточки */
@@ -10248,9 +10252,64 @@ function editHypothesis(id) {
 function renderHypNotesLog(notes) {
   const el = document.getElementById('hypNotesLog'); if (!el) return;
   if (!notes.length) { el.innerHTML = '<p class="text-xs" style="color:var(--text-faint);">Записей пока нет.</p>'; return; }
-  el.innerHTML = [...notes].reverse().map(n =>
-    `<div class="hyp-note-entry"><div class="hyp-note-date">${escapeHtml(n.date || '')}${n.author ? ' · ' + escapeHtml(n.author) : ''}</div><div class="hyp-note-text">${escapeHtml(n.text || '')}</div></div>`
+  // Индексы соответствуют исходному массиву; показываем новые записи сверху.
+  el.innerHTML = notes.map((n, i) => ({ n, i })).reverse().map(({ n, i }) =>
+    `<div class="hyp-note-entry" data-note-index="${i}">
+      <div class="hyp-note-head">
+        <div class="hyp-note-date">${escapeHtml(n.date || '')}${n.author ? ' · ' + escapeHtml(n.author) : ''}</div>
+        <div class="hyp-note-actions">
+          <button type="button" title="Редактировать" onclick="hypEditNoteInline(${i})">✏️</button>
+          <button type="button" title="Удалить" onclick="hypDeleteNoteInline(${i})">🗑</button>
+        </div>
+      </div>
+      <div class="hyp-note-text">${escapeHtml(n.text || '')}</div>
+    </div>`
   ).join('');
+}
+// Заметки, у которых сервер уже знает id гипотезы, обновляем и на бэкенде сразу.
+function hypCurrentId() { return Number(document.getElementById('hypId')?.value || 0); }
+function hypEditNoteInline(index) {
+  const notes = hypothesesState.pendingNotes || [];
+  const note = notes[index]; if (!note) return;
+  const el = document.getElementById('hypNotesLog'); if (!el) return;
+  const entry = el.querySelector(`.hyp-note-entry[data-note-index="${index}"]`); if (!entry) return;
+  entry.innerHTML = `
+    <textarea class="hyp-note-edit w-full text-sm" rows="2" style="background:var(--surface-thin);border:1px solid var(--border-strong);border-radius:var(--r-chip);padding:6px 10px;color:var(--text);">${escapeHtml(note.text || '')}</textarea>
+    <div class="hyp-note-actions mt-1">
+      <button type="button" class="btn" style="padding:4px 10px;font-size:12px;" onclick="hypSaveNoteInline(${index}, this)">Сохранить</button>
+      <button type="button" class="btn" style="padding:4px 10px;font-size:12px;background:transparent;border:1px solid var(--border-strong);color:var(--text-dim);" onclick="renderHypNotesLog(hypothesesState.pendingNotes||[])">Отмена</button>
+    </div>`;
+  entry.querySelector('.hyp-note-edit')?.focus();
+}
+async function hypSaveNoteInline(index, btn) {
+  const notes = hypothesesState.pendingNotes || [];
+  if (!notes[index]) return;
+  const entry = btn.closest('.hyp-note-entry');
+  const text = (entry?.querySelector('.hyp-note-edit')?.value || '').trim();
+  if (!text) return;
+  notes[index] = Object.assign({}, notes[index], { text });
+  const id = hypCurrentId();
+  if (id > 0) {
+    await fetchJsonSafe(buildApiUrl({ action: 'hypothesis_edit_note' }), {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ id, index, text })
+    });
+  }
+  renderHypNotesLog(notes);
+}
+async function hypDeleteNoteInline(index) {
+  const notes = hypothesesState.pendingNotes || [];
+  if (!notes[index] || !confirm('Удалить комментарий?')) return;
+  const id = hypCurrentId();
+  notes.splice(index, 1);
+  hypothesesState.pendingNotes = notes;
+  if (id > 0) {
+    await fetchJsonSafe(buildApiUrl({ action: 'hypothesis_delete_note' }), {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ id, index })
+    });
+  }
+  renderHypNotesLog(notes);
 }
 function hypAddNoteInline() {
   const input = document.getElementById('hypNewNoteText'); if (!input) return;
