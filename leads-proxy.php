@@ -5952,6 +5952,45 @@ if ($action === 'hypothesis_add_note') {
     exit;
 }
 
+if ($action === 'hypothesis_edit_note') {
+    // Обновляет текст одной записи progress_notes по индексу.
+    $input = json_decode(file_get_contents('php://input'), true) ?: [];
+    $id    = (int)($input['id'] ?? 0);
+    $index = (int)($input['index'] ?? -1);
+    $text  = trim((string)($input['text'] ?? ''));
+    if ($id <= 0 || $index < 0 || $text === '') { echo json_encode(['status'=>'error','error'=>'id, index and text required']); exit; }
+    $row = @$db->querySingle("SELECT progress_notes FROM hypotheses WHERE id = $id", false);
+    $notes = json_decode((string)($row ?: ''), true);
+    if (!is_array($notes) || !isset($notes[$index])) { echo json_encode(['status'=>'error','error'=>'note not found']); exit; }
+    $notes[$index]['text'] = $text;
+    $stmt = $db->prepare('UPDATE hypotheses SET progress_notes=:n, updated_at=:t WHERE id=:id');
+    $stmt->bindValue(':n', json_encode(array_values($notes), JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
+    $stmt->bindValue(':t', time(), SQLITE3_INTEGER);
+    $stmt->bindValue(':id', $id, SQLITE3_INTEGER);
+    $stmt->execute();
+    echo json_encode(['status' => 'success', 'notes' => array_values($notes)], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+if ($action === 'hypothesis_delete_note') {
+    // Удаляет одну запись progress_notes по индексу.
+    $input = json_decode(file_get_contents('php://input'), true) ?: [];
+    $id    = (int)($input['id'] ?? 0);
+    $index = (int)($input['index'] ?? -1);
+    if ($id <= 0 || $index < 0) { echo json_encode(['status'=>'error','error'=>'id and index required']); exit; }
+    $row = @$db->querySingle("SELECT progress_notes FROM hypotheses WHERE id = $id", false);
+    $notes = json_decode((string)($row ?: ''), true);
+    if (!is_array($notes) || !isset($notes[$index])) { echo json_encode(['status'=>'error','error'=>'note not found']); exit; }
+    array_splice($notes, $index, 1);
+    $stmt = $db->prepare('UPDATE hypotheses SET progress_notes=:n, updated_at=:t WHERE id=:id');
+    $stmt->bindValue(':n', json_encode(array_values($notes), JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
+    $stmt->bindValue(':t', time(), SQLITE3_INTEGER);
+    $stmt->bindValue(':id', $id, SQLITE3_INTEGER);
+    $stmt->execute();
+    echo json_encode(['status' => 'success', 'notes' => array_values($notes)], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
 
 // ============================================================================
 // Дашборд монетизации отказного трафика — backend-stubs (PR 1 каркаса).
