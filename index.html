@@ -2257,6 +2257,20 @@
         <button class="hyp-filter-chip" data-filter-status="failed" onclick="hypSetFilter('status','failed',this)">❌ Провал</button>
         <button class="hyp-filter-chip" data-filter-status="paused" onclick="hypSetFilter('status','paused',this)">⏸ Отложено</button>
         <button class="hyp-filter-chip ml-3" id="hypKeyFilter" onclick="hypToggleKeyFilter(this)">🚀 Только ключевые</button>
+        <button class="hyp-filter-chip" id="hypFreshFilter" onclick="hypToggleNoteFilter('fresh', this)" title="Есть комментарии за последние 7 дней">💬 Свежие комментарии</button>
+        <button class="hyp-filter-chip" id="hypStaleFilter" onclick="hypToggleNoteFilter('stale', this)" title="Нет записей в дневнике больше 14 дней">🕸 Без обновлений &gt; 14 дн.</button>
+        <button class="hyp-filter-chip" type="button" onclick="hypResetFilters()" title="Сбросить фильтры и поиск">↺ Сбросить</button>
+      </div>
+      <!-- Поиск по гипотезам и комментариям + автор записей -->
+      <div class="flex flex-wrap gap-2 items-center">
+        <input id="hypSearch" type="search" placeholder="Поиск по названию и комментариям…"
+               class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm" style="min-width:240px;"
+               oninput="hypSearchChanged(this.value)">
+        <label class="text-xs text-slate-400 inline-flex items-center gap-2">Моё имя
+          <input id="hypAuthorName" type="text" placeholder="кто пишет записи"
+                 class="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs" style="width:150px;"
+                 oninput="hypSetAuthorName(this.value)" title="Подставляется автором в записи дневника; хранится локально в браузере">
+        </label>
       </div>
     </div>
     <!-- Список карточек -->
@@ -2882,9 +2896,15 @@ CR_plan       = baseCR,   AR_plan = baseAR
           <!-- Дневник теста -->
           <div>
             <div class="text-xs font-semibold uppercase mb-2" style="color:var(--text-dim);letter-spacing:.05em;">📓 Дневник теста</div>
-            <div id="hypNotesLog" class="mb-2 space-y-1 max-h-32 overflow-y-auto"></div>
-            <div class="flex gap-2">
-              <input id="hypNewNoteText" type="text" placeholder="Добавить запись в лог..." class="flex-1 text-sm" style="background:var(--surface-thin);border:1px solid var(--border-strong);border-radius:var(--r-chip);padding:6px 10px;color:var(--text);">
+            <div id="hypNotesLog" class="mb-2 space-y-1 max-h-48 overflow-y-auto"></div>
+            <div class="flex gap-2 flex-wrap">
+              <input id="hypNewNoteText" type="text" placeholder="Добавить запись в лог..." class="flex-1 text-sm" style="background:var(--surface-thin);border:1px solid var(--border-strong);border-radius:var(--r-chip);padding:6px 10px;color:var(--text);"
+                     onkeydown="if(event.key==='Enter'){event.preventDefault();hypAddNoteInline();}">
+              <select id="hypNewNoteTag" aria-label="Тип записи" class="text-sm" style="background:var(--surface-thin);border:1px solid var(--border-strong);border-radius:var(--r-chip);padding:6px 10px;color:var(--text);">
+                <option value="comment">комментарий</option>
+                <option value="decision">решение</option>
+                <option value="fact">факт-апдейт</option>
+              </select>
               <button type="button" class="btn" style="padding:6px 12px;font-size:12px;" onclick="hypAddNoteInline()">Добавить</button>
             </div>
           </div>
@@ -2911,6 +2931,14 @@ CR_plan       = baseCR,   AR_plan = baseAR
       <div class="form-field">
         <label for="hypNoteText">Текст записи</label>
         <textarea id="hypNoteText" rows="3" placeholder="Что произошло? Промежуточные итоги, перенос сроков, изменения..."></textarea>
+      </div>
+      <div class="form-field">
+        <label for="hypNoteTag">Тип записи</label>
+        <select id="hypNoteTag">
+          <option value="comment">комментарий</option>
+          <option value="decision">решение</option>
+          <option value="fact">факт-апдейт</option>
+        </select>
       </div>
       <p id="hypNoteError" class="text-xs mt-1 hidden" style="color:var(--bad);"></p>
     </div>
@@ -12537,7 +12565,16 @@ function isoShift(iso, days) {
 let hypothesesState = {
   months: [], items: [], filterStatus: '', filterKey: false, pendingNotes: [],
   expandedIds: new Set(), renderSeq: 0,
+  // Поиск по названию/комментариям, фильтр свежести дневника и раскрытые логи.
+  search: '', noteFilter: '', notesExpanded: new Set(),
 };
+const HYP_AUTHOR_KEY = 'hypAuthorName';
+function hypAuthorName() {
+  try { return localStorage.getItem(HYP_AUTHOR_KEY) || ''; } catch (_) { return ''; }
+}
+function hypSetAuthorName(value) {
+  try { localStorage.setItem(HYP_AUTHOR_KEY, (value || '').trim()); } catch (_) { /* ignore */ }
+}
 function currentMonthKey() { return new Date().toISOString().slice(0, 7); }
 // Сдвигает YYYY-MM на delta месяцев.
 function shiftMonthKey(monthKey, delta) {
@@ -12872,10 +12909,68 @@ function hypToggleKeyFilter(btn) {
   btn.classList.toggle('active', hypothesesState.filterKey);
   renderHypList();
 }
+// Фильтры по дневнику: свежие записи (7 дн.) и «протухшие» тесты (>14 дн.).
+function hypToggleNoteFilter(kind, btn) {
+  hypothesesState.noteFilter = hypothesesState.noteFilter === kind ? '' : kind;
+  ['hypFreshFilter', 'hypStaleFilter'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.classList.toggle('active', hypothesesState.noteFilter === (id === 'hypFreshFilter' ? 'fresh' : 'stale'));
+  });
+  renderHypList();
+}
+const hypSearchChanged = debounce(value => {
+  hypothesesState.search = (value || '').trim().toLowerCase();
+  renderHypList();
+}, 250);
+function hypResetFilters() {
+  hypothesesState.filterStatus = '';
+  hypothesesState.filterKey = false;
+  hypothesesState.noteFilter = '';
+  hypothesesState.search = '';
+  const search = document.getElementById('hypSearch'); if (search) search.value = '';
+  document.querySelectorAll('#hypFilterBar .hyp-filter-chip').forEach(b => b.classList.remove('active'));
+  const all = document.querySelector('#hypFilterBar .hyp-filter-chip[data-filter-status=""]');
+  if (all) all.classList.add('active');
+  renderHypList();
+}
+// Приводим контролы фильтров к состоянию (нужно при первом рендере вкладки).
+function hypSyncFilterControls() {
+  const search = document.getElementById('hypSearch');
+  if (search && search.value !== hypothesesState.search) search.value = hypothesesState.search || '';
+  const author = document.getElementById('hypAuthorName');
+  if (author && !author.value) author.value = hypAuthorName();
+}
+// Записи дневника: массив с устойчивыми id и датой/временем.
+function hypNotes(h) {
+  return Array.isArray(h && h.progress_notes) ? h.progress_notes.filter(n => n && n.text) : [];
+}
+function hypLastNoteDate(h) {
+  const notes = hypNotes(h);
+  if (!notes.length) return null;
+  return notes.map(n => String(n.date || '')).sort().pop() || null;
+}
+function hypDaysSinceNote(h) {
+  const last = hypLastNoteDate(h);
+  if (!last) return null;
+  const diff = (Date.now() - new Date(last + 'T00:00:00').getTime()) / 86400000;
+  return Number.isFinite(diff) ? Math.floor(diff) : null;
+}
 function hypFilteredItems() {
+  const q = hypothesesState.search;
   return (hypothesesState.items || []).filter(h => {
     if (hypothesesState.filterStatus && (h.status || 'planning') !== hypothesesState.filterStatus) return false;
     if (hypothesesState.filterKey && !h.is_key) return false;
+    if (hypothesesState.noteFilter) {
+      const days = hypDaysSinceNote(h);
+      if (hypothesesState.noteFilter === 'fresh' && !(days !== null && days <= 7)) return false;
+      if (hypothesesState.noteFilter === 'stale' && !(days === null || days > 14)) return false;
+    }
+    if (q) {
+      const hay = [h.title, h.description, h.goal, h.planned_result, h.levers]
+        .concat(hypNotes(h).map(n => `${n.text} ${n.author || ''}`))
+        .join(' ').toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
     return true;
   });
 }
@@ -12900,6 +12995,171 @@ function hypToggleRowExpand(id) {
   if (el.classList.contains('hidden')) hypothesesState.expandedIds.delete(Number(id));
   else hypothesesState.expandedIds.add(Number(id));
 }
+// ------------------------- Дневник гипотезы -------------------------
+// Записи хранятся в progress_notes с устойчивыми id, поэтому редактирование
+// и удаление не «съезжают» при параллельных изменениях из другой вкладки.
+const HYP_NOTE_TAGS = { comment: 'комментарий', decision: 'решение', fact: 'факт' };
+
+function hypNoteMetaHtml(n) {
+  const when = `${escapeHtml(n.date || '')}${n.time ? ' ' + escapeHtml(n.time) : ''}`;
+  const author = n.author ? ' · ' + escapeHtml(n.author) : '';
+  const edited = n.edited_at ? ` · <span title="Изменено ${escapeHtml(n.edited_at)}">изменено</span>` : '';
+  const tag = n.tag && n.tag !== 'comment'
+    ? ` <span class="hyp-note-tag ${escapeHtml(n.tag)}">${escapeHtml(HYP_NOTE_TAGS[n.tag] || n.tag)}</span>` : '';
+  return `${when}${author}${edited}${tag}`;
+}
+// Одна запись дневника с действиями (используется в карточке и в раскрытии строки).
+function hypNoteEntryHtml(hypId, n) {
+  const noteId = Number(n.id) || 0;
+  return `<div class="hyp-note-entry${n.tag === 'decision' ? ' is-decision' : ''}" data-hyp-id="${Number(hypId)}" data-note-id="${noteId}">
+    <div class="hyp-note-head">
+      <div class="hyp-note-date">${hypNoteMetaHtml(n)}</div>
+      <div class="hyp-note-actions">
+        <button type="button" title="Редактировать" aria-label="Редактировать запись" onclick="event.stopPropagation();hypCardEditNote(${Number(hypId)},${noteId})">✏️</button>
+        <button type="button" title="Удалить" aria-label="Удалить запись" onclick="event.stopPropagation();hypCardDeleteNote(${Number(hypId)},${noteId})">🗑</button>
+      </div>
+    </div>
+    <div class="hyp-note-text">${escapeHtml(n.text || '')}</div>
+  </div>`;
+}
+// Весь дневник в карточке: по умолчанию 3 последних записи + все «решения».
+function hypNotesBlockHtml(h, notes) {
+  const hypId = Number(h.id);
+  const sorted = notes.slice().sort((a, b) =>
+    String(`${b.date || ''} ${b.time || ''}`).localeCompare(String(`${a.date || ''} ${a.time || ''}`)) ||
+    (Number(b.id) || 0) - (Number(a.id) || 0));
+  const expanded = hypothesesState.notesExpanded.has(hypId);
+  let visible = sorted;
+  if (!expanded && sorted.length > 3) {
+    const head = sorted.slice(0, 3);
+    const decisions = sorted.slice(3).filter(n => n.tag === 'decision');
+    visible = head.concat(decisions);
+  }
+  const staleDays = hypDaysSinceNote(h);
+  const staleBadge = (staleDays !== null && staleDays > 14)
+    ? `<span class="hyp-note-count is-stale" title="Последняя запись ${staleDays} дн. назад">🕸 ${staleDays} дн. без записей</span>` : '';
+  const list = sorted.length
+    ? `<div class="hyp-notes-list">${visible.map(n => hypNoteEntryHtml(hypId, n)).join('')}</div>`
+    : '<p class="text-xs" style="color:var(--text-faint);">Записей пока нет — добавьте первую.</p>';
+  const toggle = sorted.length > 3
+    ? `<button type="button" class="hyp-notes-toggle" onclick="event.stopPropagation();hypToggleNotes(${hypId})">${expanded ? 'Свернуть дневник' : `Показать все ${sorted.length}`}</button>`
+    : '';
+  return `<div class="hyp-notes-block" onclick="event.stopPropagation()">
+    <div class="flex items-center justify-between gap-2 mb-2 flex-wrap">
+      <div class="text-xs font-semibold uppercase" style="color:var(--text-dim);letter-spacing:.05em;">📓 Дневник теста · ${sorted.length}</div>
+      ${staleBadge}
+    </div>
+    ${list}
+    ${toggle}
+    <div class="hyp-note-add">
+      <input type="text" id="hypQuickNote-${hypId}" placeholder="Добавить комментарий…" aria-label="Новый комментарий"
+             onkeydown="if(event.key==='Enter'){event.preventDefault();hypCardAddNote(${hypId});}">
+      <select id="hypQuickNoteTag-${hypId}" aria-label="Тип записи">
+        <option value="comment">комментарий</option>
+        <option value="decision">решение</option>
+        <option value="fact">факт-апдейт</option>
+      </select>
+      <button type="button" class="btn" style="padding:6px 12px;font-size:12px;" onclick="hypCardAddNote(${hypId})">Добавить</button>
+    </div>
+  </div>`;
+}
+function hypToggleNotes(hypId) {
+  const id = Number(hypId);
+  if (hypothesesState.notesExpanded.has(id)) hypothesesState.notesExpanded.delete(id);
+  else hypothesesState.notesExpanded.add(id);
+  renderHypList();
+}
+function hypItemById(id) {
+  return (hypothesesState.items || []).find(x => Number(x.id) === Number(id)) || null;
+}
+// Быстрое добавление записи прямо из карточки (без открытия модалки).
+async function hypCardAddNote(hypId) {
+  const input = document.getElementById('hypQuickNote-' + hypId);
+  const tagSel = document.getElementById('hypQuickNoteTag-' + hypId);
+  const text = (input?.value || '').trim();
+  if (!text) return;
+  const tag = tagSel?.value || 'comment';
+  try {
+    const j = await fetchJsonSafe(buildApiUrl({ action: 'hypothesis_add_note' }), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: Number(hypId), text, tag, author: hypAuthorName() })
+    });
+    if (!j || j.status !== 'success') { showToast('Не удалось сохранить запись: ' + ((j && j.error) || 'ошибка'), { type: 'error' }); return; }
+    const item = hypItemById(hypId);
+    if (item) item.progress_notes = j.notes || [];
+    if (input) input.value = '';
+    renderHypList();
+    showToast('Запись добавлена в дневник.', { type: 'success' });
+  } catch (e) {
+    showToast('Ошибка сохранения записи: ' + (e && e.message ? e.message : e), { type: 'error' });
+  }
+}
+// Инлайн-редактирование записи прямо в карточке.
+function hypCardEditNote(hypId, noteId) {
+  const item = hypItemById(hypId); if (!item) return;
+  const note = hypNotes(item).find(n => Number(n.id) === Number(noteId)); if (!note) return;
+  const entry = document.querySelector(`.hyp-note-entry[data-hyp-id="${Number(hypId)}"][data-note-id="${Number(noteId)}"]`);
+  if (!entry) return;
+  entry.innerHTML = `
+    <textarea class="hyp-note-edit w-full text-sm" rows="2" data-esc-local="1"
+      style="background:var(--surface-thin);border:1px solid var(--border-strong);border-radius:var(--r-chip);padding:6px 10px;color:var(--text);">${escapeHtml(note.text || '')}</textarea>
+    <div class="hyp-note-actions mt-1">
+      <button type="button" class="btn" style="padding:4px 10px;font-size:12px;" onclick="hypCardSaveNote(${Number(hypId)},${Number(noteId)},this)">Сохранить</button>
+      <button type="button" class="btn" style="padding:4px 10px;font-size:12px;background:transparent;border:1px solid var(--border-strong);color:var(--text-dim);" onclick="renderHypList()">Отмена</button>
+    </div>`;
+  const ta = entry.querySelector('.hyp-note-edit');
+  if (ta) {
+    ta.focus();
+    ta.addEventListener('keydown', ev => { if (ev.key === 'Escape') { ev.stopPropagation(); renderHypList(); } });
+  }
+}
+async function hypCardSaveNote(hypId, noteId, btn) {
+  const text = (btn.closest('.hyp-note-entry')?.querySelector('.hyp-note-edit')?.value || '').trim();
+  if (!text) return;
+  try {
+    const j = await fetchJsonSafe(buildApiUrl({ action: 'hypothesis_edit_note' }), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: Number(hypId), note_id: Number(noteId), text })
+    });
+    if (!j || j.status !== 'success') { showToast('Не удалось изменить запись.', { type: 'error' }); return; }
+    const item = hypItemById(hypId);
+    if (item) item.progress_notes = j.notes || [];
+    renderHypList();
+  } catch (e) {
+    showToast('Ошибка изменения записи: ' + (e && e.message ? e.message : e), { type: 'error' });
+  }
+}
+// Удаление записи с возможностью отмены: из карточки запись пропадает сразу.
+function hypCardDeleteNote(hypId, noteId) {
+  const item = hypItemById(hypId); if (!item) return;
+  const notes = hypNotes(item);
+  const idx = notes.findIndex(n => Number(n.id) === Number(noteId));
+  if (idx < 0) return;
+  const removed = notes[idx];
+  item.progress_notes = notes.filter((_, i) => i !== idx);
+  renderHypList();
+  softDelete({
+    key: `hyp-note-${hypId}-${noteId}`,
+    message: 'Комментарий удалён.',
+    commit: async () => {
+      const j = await fetchJsonSafe(buildApiUrl({ action: 'hypothesis_delete_note' }), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: Number(hypId), note_id: Number(noteId) })
+      });
+      const cur = hypItemById(hypId);
+      if (cur && j && j.status === 'success') cur.progress_notes = j.notes || [];
+    },
+    undo: () => {
+      const cur = hypItemById(hypId);
+      if (!cur) return;
+      const list = hypNotes(cur);
+      list.splice(Math.min(idx, list.length), 0, removed);
+      cur.progress_notes = list;
+      renderHypList();
+    },
+  });
+}
+
 // Общие вычисления для карточки и строки гипотезы.
 function hypComputed(h) {
   const statusLabels = { planning:'🕐 Планируется', in_progress:'🔵 В работе', success:'✅ Успех', failed:'❌ Провал', paused:'⏸ Отложено' };
@@ -12960,12 +13220,9 @@ function hypComputed(h) {
     (impacts.includes('approve') ? Number(h.cr_approve_expected) : approveBase);
   const uplift = baseRate > 0 ? (expectedRate / baseRate - 1) * 100 : 0;
   const upliftLine = Math.abs(uplift) >= 0.05 ? `${uplift >= 0 ? '+' : ''}${uplift.toFixed(1)}% к воронке` : '';
-  // Лог заметок
-  const notes = Array.isArray(h.progress_notes) ? h.progress_notes : [];
-  const lastNote = notes.length ? notes[notes.length - 1] : null;
-  const notesHtml = lastNote
-    ? `<div class="hyp-note-entry"><div class="hyp-note-date">${escapeHtml(lastNote.date || '')}${notes.length > 1 ? ` (+${notes.length - 1} ещё)` : ''}</div><div class="hyp-note-text">${escapeHtml(lastNote.text || '')}</div></div>`
-    : '';
+  // Дневник теста: в карточке показываем весь лог (со свёрткой), а не последнюю запись.
+  const notes = hypNotes(h);
+  const notesHtml = hypNotesBlockHtml(h, notes);
   const keyBadge = isKey ? `<span class="text-[11px] px-2 py-0.5 rounded-full" style="background:rgba(34,197,94,.14);color:#4ade80;border:1px solid rgba(34,197,94,.3);">🚀 Ключевая</span>` : '';
   const dateRange = (h.start_date || h.end_date) ? `${h.start_date || '?'} – ${h.end_date || '?'}${days > 0 ? ` (${days} дн.)` : ''}` : '—';
   return { impacts, st, statusLabel: statusLabels[st] || st, isKey, isTask, days, visits, factN,
@@ -13075,6 +13332,13 @@ function hypCardHtml(h, c) {
 // Однострочный вид гипотезы: статус, воронка «план→факт», выборка, фокус, выручка, ROI.
 function hypRowHtml(h, c) {
   const { impacts, st, isKey, factN, fmoney, fmtRoi, expectedRoi } = c;
+  // Чип дневника: количество записей и дата последней (клик по строке раскрывает лог).
+  const noteList = hypNotes(h);
+  const lastNoteDate = hypLastNoteDate(h);
+  const staleDays = hypDaysSinceNote(h);
+  const noteChip = noteList.length
+    ? `<span class="hyp-note-count${staleDays !== null && staleDays > 14 ? ' is-stale' : ''}" title="${escapeHtml(`Записей в дневнике: ${noteList.length}${lastNoteDate ? `, последняя ${lastNoteDate}` : ''}`)}">💬 ${noteList.length}${lastNoteDate ? ` · ${escapeHtml(lastNoteDate.slice(5))}` : ''}</span>`
+    : '<span class="hyp-note-count" title="Записей в дневнике нет">💬 0</span>';
   const rowCls = st === 'success' ? 'hyp-row--success' : st === 'failed' ? 'hyp-row--failed' : st === 'in_progress' ? 'hyp-row--testing' : 'hyp-row--neutral';
   const shortStatus = { planning:'🕐 План', in_progress:'🔵 Тест', success:'✅ Успех', failed:'❌ Провал', paused:'⏸ Пауза' };
   const p = v => Number.isFinite(Number(v)) && Number(v) > 0 ? (Number(v) * 100).toFixed(2) + '%' : '—';
@@ -13126,7 +13390,7 @@ function hypRowHtml(h, c) {
     return `<div class="hyp-row-wrap">
   <div class="hyp-row ${rowCls}" onclick="hypToggleRowExpand(${id})" title="Нажмите, чтобы раскрыть детали">
     <div><span class="hyp-status hyp-status-${escapeHtml(st)}">${escapeHtml(shortStatus[st] || st)}</span></div>
-    <div class="hyp-row-title" title="${escapeHtml(h.title)}">${isKey ? '🚀 ' : ''}${escapeHtml(h.title)}</div>
+    <div class="hyp-row-title" title="${escapeHtml(h.title)}">${isKey ? '🚀 ' : ''}${escapeHtml(h.title)}<br>${noteChip}</div>
     <div><span class="hyp-cell-label">Тип</span><br><b>Задача без оцифровки</b></div>
     <div>—</div><div>—</div><div>—</div><div>—</div>
     <div><span class="hyp-sig hyp-sig-nodata">Не требуется</span></div>
@@ -13143,7 +13407,7 @@ function hypRowHtml(h, c) {
   return `<div class="hyp-row-wrap">
   <div class="hyp-row ${rowCls}" onclick="hypToggleRowExpand(${id})" title="Нажмите, чтобы раскрыть детали">
     <div><span class="hyp-status hyp-status-${escapeHtml(st)}">${escapeHtml(shortStatus[st] || st)}</span></div>
-    <div class="hyp-row-title" title="${escapeHtml(h.title)}">${isKey ? '🚀 ' : ''}${escapeHtml(h.title)}</div>
+    <div class="hyp-row-title" title="${escapeHtml(h.title)}">${isKey ? '🚀 ' : ''}${escapeHtml(h.title)}<br>${noteChip}</div>
     <div>${chain}</div>
     <div title="${escapeHtml(sampleTip)}"><div class="hyp-cell-label">Выборка${manual ? ' (ручная)' : ''}</div><b>${sampleVal > 0 ? Math.ceil(sampleVal).toLocaleString('ru-RU') : '—'}</b></div>
     <div class="hyp-cell-impacted" title="Фокусная метрика гипотезы"><div class="hyp-cell-label">🎯 ${escapeHtml(c.focusLabel)}</div>${pfPair(c.focusPlan, c.focusFact, c.focusGood)}</div>
@@ -13167,7 +13431,14 @@ function renderHypList() {
   const items = hypFilteredItems();
   const cnt = document.getElementById('hypCount');
   if (cnt) cnt.textContent = `${items.length} из ${(hypothesesState.items || []).length} шт.`;
-  if (!items.length) { list.className = ''; list.innerHTML = '<p class="text-sm" style="color:var(--text-faint);">Нет гипотез по выбранным фильтрам.</p>'; return; }
+  if (!items.length) {
+    list.className = '';
+    const hasItems = (hypothesesState.items || []).length > 0;
+    list.innerHTML = hasItems
+      ? emptyStateHtml({ icon: '🔍', title: 'Ничего не найдено', text: 'Ни одна гипотеза не подходит под выбранные фильтры и поиск.', actionLabel: 'Сбросить фильтры', onAction: 'hypResetFilters()' })
+      : emptyStateHtml({ icon: '🧪', title: 'Гипотез пока нет', text: 'Заведите первую гипотезу или задачу на выбранный месяц.', actionLabel: '+ Новая гипотеза', onAction: 'openHypModal(0)' });
+    return;
+  }
   if (hypViewMode() === 'cards') {
     list.className = 'grid grid-cols-1 xl:grid-cols-2 gap-4';
     list.innerHTML = items.map(h => hypCardHtml(h, hypComputed(h))).join('');
@@ -13181,6 +13452,9 @@ function renderHypList() {
 async function renderHypothesesTab() {
   if (!document.getElementById('tab-hypotheses')) return;
   const renderSeq = ++hypothesesState.renderSeq;
+  hypSyncFilterControls();
+  const listEl = document.getElementById('hypList');
+  if (listEl && !(hypothesesState.items || []).length) { listEl.className = ''; listEl.innerHTML = skeletonHtml(3, 96); }
   await loadHypothesisMonths();
   const month = document.getElementById('hypMonthFilter')?.value || currentMonthKey();
   const j = await fetchJsonSafe(buildApiUrl({ action: 'hypotheses_list', month_key: month }));
@@ -13313,14 +13587,14 @@ function editHypothesis(id) {
 function renderHypNotesLog(notes) {
   const el = document.getElementById('hypNotesLog'); if (!el) return;
   if (!notes.length) { el.innerHTML = '<p class="text-xs" style="color:var(--text-faint);">Записей пока нет.</p>'; return; }
-  // Индексы соответствуют исходному массиву; показываем новые записи сверху.
-  el.innerHTML = notes.map((n, i) => ({ n, i })).reverse().map(({ n, i }) =>
-    `<div class="hyp-note-entry" data-note-index="${i}">
+  // Адресуем записи по устойчивому id, новые — сверху.
+  el.innerHTML = notes.slice().reverse().map(n =>
+    `<div class="hyp-note-entry${n.tag === 'decision' ? ' is-decision' : ''}" data-note-id="${Number(n.id) || 0}">
       <div class="hyp-note-head">
-        <div class="hyp-note-date">${escapeHtml(n.date || '')}${n.author ? ' · ' + escapeHtml(n.author) : ''}</div>
+        <div class="hyp-note-date">${hypNoteMetaHtml(n)}</div>
         <div class="hyp-note-actions">
-          <button type="button" title="Редактировать" onclick="hypEditNoteInline(${i})">✏️</button>
-          <button type="button" title="Удалить" onclick="hypDeleteNoteInline(${i})">🗑</button>
+          <button type="button" title="Редактировать" aria-label="Редактировать запись" onclick="hypEditNoteInline(${Number(n.id) || 0})">✏️</button>
+          <button type="button" title="Удалить" aria-label="Удалить запись" onclick="hypDeleteNoteInline(${Number(n.id) || 0})">🗑</button>
         </div>
       </div>
       <div class="hyp-note-text">${escapeHtml(n.text || '')}</div>
@@ -13329,57 +13603,87 @@ function renderHypNotesLog(notes) {
 }
 // Заметки, у которых сервер уже знает id гипотезы, обновляем и на бэкенде сразу.
 function hypCurrentId() { return Number(document.getElementById('hypId')?.value || 0); }
-function hypEditNoteInline(index) {
+function hypPendingNoteIndex(noteId) {
+  return (hypothesesState.pendingNotes || []).findIndex(n => Number(n.id) === Number(noteId));
+}
+function hypEditNoteInline(noteId) {
   const notes = hypothesesState.pendingNotes || [];
+  const index = hypPendingNoteIndex(noteId);
   const note = notes[index]; if (!note) return;
   const el = document.getElementById('hypNotesLog'); if (!el) return;
-  const entry = el.querySelector(`.hyp-note-entry[data-note-index="${index}"]`); if (!entry) return;
+  const entry = el.querySelector(`.hyp-note-entry[data-note-id="${Number(noteId)}"]`); if (!entry) return;
   entry.innerHTML = `
-    <textarea class="hyp-note-edit w-full text-sm" rows="2" style="background:var(--surface-thin);border:1px solid var(--border-strong);border-radius:var(--r-chip);padding:6px 10px;color:var(--text);">${escapeHtml(note.text || '')}</textarea>
+    <textarea class="hyp-note-edit w-full text-sm" rows="2" data-esc-local="1" style="background:var(--surface-thin);border:1px solid var(--border-strong);border-radius:var(--r-chip);padding:6px 10px;color:var(--text);">${escapeHtml(note.text || '')}</textarea>
     <div class="hyp-note-actions mt-1">
-      <button type="button" class="btn" style="padding:4px 10px;font-size:12px;" onclick="hypSaveNoteInline(${index}, this)">Сохранить</button>
+      <select class="hyp-note-edit-tag" aria-label="Тип записи" style="background:var(--surface-thin);border:1px solid var(--border-strong);border-radius:var(--r-chip);padding:4px 8px;color:var(--text);font-size:12px;">
+        ${Object.entries(HYP_NOTE_TAGS).map(([k, label]) => `<option value="${k}"${(note.tag || 'comment') === k ? ' selected' : ''}>${label}</option>`).join('')}
+      </select>
+      <button type="button" class="btn" style="padding:4px 10px;font-size:12px;" onclick="hypSaveNoteInline(${Number(noteId)}, this)">Сохранить</button>
       <button type="button" class="btn" style="padding:4px 10px;font-size:12px;background:transparent;border:1px solid var(--border-strong);color:var(--text-dim);" onclick="renderHypNotesLog(hypothesesState.pendingNotes||[])">Отмена</button>
     </div>`;
   entry.querySelector('.hyp-note-edit')?.focus();
 }
-async function hypSaveNoteInline(index, btn) {
+async function hypSaveNoteInline(noteId, btn) {
   const notes = hypothesesState.pendingNotes || [];
-  if (!notes[index]) return;
+  const index = hypPendingNoteIndex(noteId);
+  if (index < 0) return;
   const entry = btn.closest('.hyp-note-entry');
   const text = (entry?.querySelector('.hyp-note-edit')?.value || '').trim();
+  const tag = entry?.querySelector('.hyp-note-edit-tag')?.value || notes[index].tag || 'comment';
   if (!text) return;
-  notes[index] = Object.assign({}, notes[index], { text });
+  notes[index] = Object.assign({}, notes[index], { text, tag, edited_at: new Date().toISOString().slice(0, 16).replace('T', ' ') });
   const id = hypCurrentId();
   if (id > 0) {
-    await fetchJsonSafe(buildApiUrl({ action: 'hypothesis_edit_note' }), {
+    const j = await fetchJsonSafe(buildApiUrl({ action: 'hypothesis_edit_note' }), {
       method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ id, index, text })
+      body: JSON.stringify({ id, note_id: Number(noteId), text, tag })
     });
+    if (j && j.status === 'success' && Array.isArray(j.notes)) {
+      hypothesesState.pendingNotes = j.notes;
+      hypSyncItemNotes(id, j.notes);
+      renderHypNotesLog(j.notes);
+      return;
+    }
   }
   renderHypNotesLog(notes);
 }
-async function hypDeleteNoteInline(index) {
+async function hypDeleteNoteInline(noteId) {
   const notes = hypothesesState.pendingNotes || [];
-  if (!notes[index] || !confirm('Удалить комментарий?')) return;
+  const index = hypPendingNoteIndex(noteId);
+  if (index < 0 || !confirm('Удалить комментарий?')) return;
   const id = hypCurrentId();
   notes.splice(index, 1);
   hypothesesState.pendingNotes = notes;
   if (id > 0) {
-    await fetchJsonSafe(buildApiUrl({ action: 'hypothesis_delete_note' }), {
+    const j = await fetchJsonSafe(buildApiUrl({ action: 'hypothesis_delete_note' }), {
       method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ id, index })
+      body: JSON.stringify({ id, note_id: Number(noteId) })
     });
+    if (j && j.status === 'success' && Array.isArray(j.notes)) hypothesesState.pendingNotes = j.notes;
+    hypSyncItemNotes(id, hypothesesState.pendingNotes);
   }
-  renderHypNotesLog(notes);
+  renderHypNotesLog(hypothesesState.pendingNotes);
 }
 function hypAddNoteInline() {
   const input = document.getElementById('hypNewNoteText'); if (!input) return;
   const text = input.value.trim(); if (!text) return;
-  const note = { date: new Date().toISOString().slice(0,10), text, author: '' };
-  hypothesesState.pendingNotes = hypothesesState.pendingNotes || [];
-  hypothesesState.pendingNotes.push(note);
-  renderHypNotesLog(hypothesesState.pendingNotes);
+  const tag = document.getElementById('hypNewNoteTag')?.value || 'comment';
+  const now = new Date();
+  const notes = hypothesesState.pendingNotes = hypothesesState.pendingNotes || [];
+  const nextId = notes.reduce((m, n) => Math.max(m, Number(n.id) || 0), 0) + 1;
+  notes.push({
+    id: nextId,
+    date: now.toISOString().slice(0, 10),
+    time: now.toTimeString().slice(0, 5),
+    text, tag, author: hypAuthorName(), edited_at: '',
+  });
+  renderHypNotesLog(notes);
   input.value = '';
+}
+// Синхронизируем дневник в списке гипотез, чтобы карточки не требовали перезагрузки.
+function hypSyncItemNotes(hypId, notes) {
+  const item = hypItemById(hypId);
+  if (item) { item.progress_notes = Array.isArray(notes) ? notes : []; renderHypList(); }
 }
 
 // --- Сохранение гипотезы ---
@@ -13437,10 +13741,25 @@ async function saveHypothesis() {
   document.getElementById('hypMonthFilter').value = payload.month_key;
   await renderHypothesesTab();
 }
-async function deleteHypothesis(id) {
-  if (!id || !confirm('Удалить гипотезу?')) return;
-  await fetchJsonSafe(buildApiUrl({ action: 'hypothesis_delete', id }));
-  await renderHypothesesTab();
+function deleteHypothesis(id) {
+  if (!id) return;
+  const idx = (hypothesesState.items || []).findIndex(x => Number(x.id) === Number(id));
+  if (idx < 0) return;
+  const removed = hypothesesState.items[idx];
+  hypothesesState.items = hypothesesState.items.filter((_, i) => i !== idx);
+  renderHypList();
+  softDelete({
+    key: `hypothesis-${id}`,
+    message: `«${removed.title || 'Гипотеза'}» удалена.`,
+    commit: async () => {
+      await fetchJsonSafe(buildApiUrl({ action: 'hypothesis_delete', id }));
+      await renderHypothesesTab();
+    },
+    undo: () => {
+      hypothesesState.items.splice(Math.min(idx, hypothesesState.items.length), 0, removed);
+      renderHypList();
+    },
+  });
 }
 
 // --- Быстрая заметка (из карточки) ---
@@ -13463,12 +13782,14 @@ async function saveHypNote() {
   const text = (document.getElementById('hypNoteText')?.value || '').trim();
   const err = document.getElementById('hypNoteError');
   if (!id || !text) { if (err) { err.textContent = 'Заполните текст записи.'; err.classList.remove('hidden'); } return; }
+  const tag = document.getElementById('hypNoteTag')?.value || 'comment';
   const j = await fetchJsonSafe(buildApiUrl({ action: 'hypothesis_add_note' }), {
     method: 'POST', headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({ id, text })
+    body: JSON.stringify({ id, text, tag, author: hypAuthorName() })
   });
   if (j.status !== 'success') { if (err) { err.textContent = 'Ошибка: ' + (j.error || 'unknown'); err.classList.remove('hidden'); } return; }
   closeHypNoteModal();
+  showToast('Запись добавлена в дневник.', { type: 'success' });
   await renderHypothesesTab();
 }
 
