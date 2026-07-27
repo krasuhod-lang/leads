@@ -951,6 +951,19 @@ try {
         UNIQUE(funnel_id, stage_id, source_id, date)
     )');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_manual_stage_data_lookup ON manual_stage_data(funnel_id, date)');
+    // Закрепление воронки в списке «Мои воронки» (избранное — всегда сверху).
+    $addColumnIfMissing('funnel_configs', 'is_pinned', 'INTEGER NOT NULL DEFAULT 0');
+    // Именованные пресеты сравнения: набор периодов/настроек одной воронки.
+    $safeExec('CREATE TABLE IF NOT EXISTS funnel_compare_presets (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        funnel_id INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        payload TEXT NOT NULL DEFAULT \'{}\',
+        created_at INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL DEFAULT 0,
+        UNIQUE(funnel_id, name)
+    )');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_funnel_compare_presets_funnel ON funnel_compare_presets(funnel_id)');
     // Совместимость: у старых отказов появляется площадка (source_id),
     // чтобы ручной ввод отказов не терялся при разбивке по площадкам.
     $addColumnIfMissing('bounce_stats', 'source_id', 'TEXT NOT NULL DEFAULT \'all\'');
@@ -6890,10 +6903,11 @@ function resolveFunnelData($db, $cfg) {
     $hasSpecificSources = !empty($sourceIds) && !isset($sourceIds['all']);
 
     // Предзагрузка агрегатов leads.su по source_id (только когда период задан).
-    $leadsBySource = []; // source_id => [clicks, conversions, approved]
+    $leadsBySource = []; // source_id => [clicks, conversions, approved, revenue]
     if ($from !== '' && $to !== '') {
         $stmt = $db->prepare("SELECT source_id,
-                SUM(clicks) AS clicks, SUM(conversions) AS conversions, SUM(approved) AS approved
+                SUM(clicks) AS clicks, SUM(conversions) AS conversions, SUM(approved) AS approved,
+                SUM(revenue) AS revenue
             FROM daily_stats
             WHERE substr(date,1,10) BETWEEN :a AND :b
             GROUP BY source_id");
@@ -6905,6 +6919,7 @@ function resolveFunnelData($db, $cfg) {
                 'leads_clicks'   => (int)$row['clicks'],
                 'leads_leads'    => (int)$row['conversions'],
                 'leads_approved' => (int)$row['approved'],
+                'revenue'        => (float)$row['revenue'],
             ];
         }
     }
@@ -6939,6 +6954,7 @@ function resolveFunnelData($db, $cfg) {
     }
     // Ручные данные по (stage_id, source_id).
     $manual = []; // stage_id => source_id => value
+    $manualDays = []; // stage_id => количество дней с заполненными данными
     if ($from !== '' && $to !== '') {
         $stmt = $db->prepare("SELECT stage_id, source_id, SUM(value) AS v
             FROM manual_stage_data
@@ -6950,6 +6966,26 @@ function resolveFunnelData($db, $cfg) {
         $res = $stmt->execute();
         while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
             $manual[(int)$row['stage_id']][(string)$row['source_id']] = (int)$row['v'];
+        }
+        // Покрытие ручного ввода днями — для бейджа «нужно заполнить N дней».
+        $stmt = $db->prepare("SELECT stage_id, COUNT(DISTINCT date) AS d
+            FROM manual_stage_data
+            WHERE funnel_id = :fid AND date BETWEEN :a AND :b
+            GROUP BY stage_id");
+        $stmt->bindValue(':fid', (int)$cfg['id'], SQLITE3_INTEGER);
+        $stmt->bindValue(':a', $from, SQLITE3_TEXT);
+        $stmt->bindValue(':b', $to, SQLITE3_TEXT);
+        $res = $stmt->execute();
+        while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
+            $manualDays[(int)$row['stage_id']] = (int)$row['d'];
+        }
+    }
+    // Длина периода в днях (нужна для нормализации и бейджей покрытия).
+    $periodDays = 0;
+    if ($from !== '' && $to !== '') {
+        $ts1 = strtotime($from); $ts2 = strtotime($to);
+        if ($ts1 !== false && $ts2 !== false && $ts2 >= $ts1) {
+            $periodDays = (int)floor(($ts2 - $ts1) / 86400) + 1;
         }
     }
 
@@ -6988,9 +7024,28 @@ function resolveFunnelData($db, $cfg) {
             'note'        => (string)($st['note'] ?? ''),
             'total'       => $total,
             'by_platform' => $byPlatform,
+            // Покрытие данными: для ручных этапов — сколько дней периода заполнено.
+            'is_manual'   => ($type === 'manual'),
+            'filled_days' => ($type === 'manual') ? (int)($manualDays[$stageId] ?? 0) : $periodDays,
         ];
     }
-    return ['from' => $from, 'to' => $to, 'stages' => $out];
+    // Деньги воронки за тот же период и по тем же площадкам: выручка leads.su,
+    // а из неё — EPC (на клик), доход на заявку и средний чек (на одобрение).
+    $money = ['revenue' => 0.0, 'clicks' => 0, 'leads' => 0, 'approved' => 0,
+              'epc' => 0.0, 'rev_per_lead' => 0.0, 'avg_check' => 0.0, 'revenue_per_day' => 0.0];
+    foreach ($leadsBySource as $sid => $vals) {
+        if ($hasSpecificSources && !isset($sourceIds[$sid])) continue;
+        $money['revenue']  += (float)($vals['revenue'] ?? 0);
+        $money['clicks']   += (int)$vals['leads_clicks'];
+        $money['leads']    += (int)$vals['leads_leads'];
+        $money['approved'] += (int)$vals['leads_approved'];
+    }
+    if ($money['clicks'] > 0)   $money['epc'] = $money['revenue'] / $money['clicks'];
+    if ($money['leads'] > 0)    $money['rev_per_lead'] = $money['revenue'] / $money['leads'];
+    if ($money['approved'] > 0) $money['avg_check'] = $money['revenue'] / $money['approved'];
+    if ($periodDays > 0)        $money['revenue_per_day'] = $money['revenue'] / $periodDays;
+
+    return ['from' => $from, 'to' => $to, 'days' => $periodDays, 'stages' => $out, 'money' => $money];
 }
 
 /** Читает конфиг воронки с этапами и площадками. Возвращает null, если нет. */
@@ -7016,7 +7071,7 @@ function loadFunnelConfig($db, $id) {
 
 if ($action === 'funnel_config_list') {
     $rows = [];
-    $res = @$db->query('SELECT * FROM funnel_configs WHERE is_archived = 0 ORDER BY updated_at DESC, id DESC');
+    $res = @$db->query('SELECT * FROM funnel_configs WHERE is_archived = 0 ORDER BY is_pinned DESC, updated_at DESC, id DESC');
     if ($res instanceof SQLite3Result) {
         while ($cfg = $res->fetchArray(SQLITE3_ASSOC)) {
             $full = loadFunnelConfig($db, $cfg['id']);
@@ -7151,10 +7206,71 @@ if ($action === 'funnel_config_save') {
     exit;
 }
 
+if ($action === 'funnel_config_pin') {
+    // Закрепление/открепление воронки в списке «Мои воронки».
+    $id = (int)($_GET['id'] ?? 0);
+    if ($id <= 0) { echo json_encode(['status' => 'error', 'error' => 'id required']); exit; }
+    $pinned = filter_var($_GET['pinned'] ?? '0', FILTER_VALIDATE_BOOLEAN) ? 1 : 0;
+    $stmt = $db->prepare('UPDATE funnel_configs SET is_pinned = :p WHERE id = :id');
+    $stmt->bindValue(':p', $pinned, SQLITE3_INTEGER);
+    $stmt->bindValue(':id', $id, SQLITE3_INTEGER);
+    $stmt->execute();
+    echo json_encode(['status' => 'success', 'id' => $id, 'is_pinned' => $pinned]);
+    exit;
+}
+
+if ($action === 'funnel_compare_preset_list') {
+    // Сохранённые наборы периодов сравнения для воронки.
+    $funnelId = (int)($_GET['funnel_id'] ?? 0);
+    if ($funnelId <= 0) { echo json_encode(['status' => 'error', 'error' => 'funnel_id required']); exit; }
+    $stmt = $db->prepare('SELECT id, name, payload, updated_at FROM funnel_compare_presets
+        WHERE funnel_id = :fid ORDER BY name');
+    $stmt->bindValue(':fid', $funnelId, SQLITE3_INTEGER);
+    $res = $stmt->execute();
+    $rows = [];
+    while ($r = $res->fetchArray(SQLITE3_ASSOC)) {
+        $r['payload'] = json_decode((string)$r['payload'], true) ?: [];
+        $rows[] = $r;
+    }
+    echo json_encode(['status' => 'success', 'data' => $rows], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+if ($action === 'funnel_compare_preset_save') {
+    $input = json_decode(file_get_contents('php://input'), true) ?: [];
+    $funnelId = (int)($input['funnel_id'] ?? 0);
+    $name = trim((string)($input['name'] ?? ''));
+    if ($funnelId <= 0 || $name === '') {
+        echo json_encode(['status' => 'error', 'error' => 'funnel_id и name обязательны']); exit;
+    }
+    $payload = json_encode($input['payload'] ?? [], JSON_UNESCAPED_UNICODE);
+    $now = time();
+    $stmt = $db->prepare('INSERT INTO funnel_compare_presets (funnel_id, name, payload, created_at, updated_at)
+        VALUES (:fid, :name, :payload, :now, :now)
+        ON CONFLICT(funnel_id, name) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at');
+    $stmt->bindValue(':fid', $funnelId, SQLITE3_INTEGER);
+    $stmt->bindValue(':name', $name, SQLITE3_TEXT);
+    $stmt->bindValue(':payload', $payload, SQLITE3_TEXT);
+    $stmt->bindValue(':now', $now, SQLITE3_INTEGER);
+    $stmt->execute();
+    echo json_encode(['status' => 'success'], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+if ($action === 'funnel_compare_preset_delete') {
+    $id = (int)($_GET['id'] ?? 0);
+    if ($id <= 0) { echo json_encode(['status' => 'error', 'error' => 'id required']); exit; }
+    $stmt = $db->prepare('DELETE FROM funnel_compare_presets WHERE id = :id');
+    $stmt->bindValue(':id', $id, SQLITE3_INTEGER);
+    $stmt->execute();
+    echo json_encode(['status' => 'success', 'deleted' => $db->changes()]);
+    exit;
+}
+
 if ($action === 'funnel_config_delete') {
     $id = (int)($_GET['id'] ?? 0);
     if ($id <= 0) { echo json_encode(['status' => 'error', 'error' => 'id required']); exit; }
-    foreach (['funnel_config_stages', 'funnel_config_platforms', 'manual_stage_data'] as $tbl) {
+    foreach (['funnel_config_stages', 'funnel_config_platforms', 'manual_stage_data', 'funnel_compare_presets'] as $tbl) {
         $stmt = $db->prepare("DELETE FROM $tbl WHERE funnel_id = :id");
         $stmt->bindValue(':id', $id, SQLITE3_INTEGER); $stmt->execute();
     }
