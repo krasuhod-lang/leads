@@ -951,6 +951,10 @@ try {
         UNIQUE(funnel_id, stage_id, source_id, date)
     )');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_manual_stage_data_lookup ON manual_stage_data(funnel_id, date)');
+    // Метаданные ручного ввода: когда обновлено и каким способом введено
+    // (day — по дням, period — раскладка значения за период, import — файл).
+    $addColumnIfMissing('manual_stage_data', 'updated_at', 'INTEGER NOT NULL DEFAULT 0');
+    $addColumnIfMissing('manual_stage_data', 'entry_source', "TEXT NOT NULL DEFAULT 'day'");
     // Закрепление воронки в списке «Мои воронки» (избранное — всегда сверху).
     $addColumnIfMissing('funnel_configs', 'is_pinned', 'INTEGER NOT NULL DEFAULT 0');
     // Именованные пресеты сравнения: набор периодов/настроек одной воронки.
@@ -5894,7 +5898,7 @@ if ($action === 'hypotheses_list') {
             unset($r['funnel_json']);
             $r['impacts'] = json_decode((string)($r['impact_json'] ?? ''), true) ?: [];
             unset($r['impact_json']);
-            $r['progress_notes'] = json_decode((string)($r['progress_notes'] ?? ''), true) ?: [];
+            $r['progress_notes'] = hypNormalizeNotes(json_decode((string)($r['progress_notes'] ?? ''), true));
             $r['is_key'] = (int)($r['is_key'] ?? 0);
             $rows[] = $r;
         }
@@ -5946,7 +5950,7 @@ if ($action === 'hypothesis_save') {
         $stmt->bindValue(':impact_json', json_encode($impacts, JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
         // progress_notes: клиент отправляет массив; если отсутствует — оставляем NULL.
         if (isset($input['progress_notes']) && is_array($input['progress_notes'])) {
-            $stmt->bindValue(':progress_notes', json_encode($input['progress_notes'], JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
+            $stmt->bindValue(':progress_notes', json_encode(hypNormalizeNotes($input['progress_notes']), JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
         } else {
             $stmt->bindValue(':progress_notes', null, SQLITE3_NULL);
         }
@@ -6000,19 +6004,74 @@ if ($action === 'hypothesis_delete') {
     exit;
 }
 
+/**
+ * Нормализует дневник гипотезы: проставляет устойчивые id (индексы «съезжают»
+ * при параллельном редактировании), приводит поля к единому виду.
+ */
+function hypNormalizeNotes($notes)
+{
+    if (!is_array($notes)) return [];
+    $maxId = 0;
+    foreach ($notes as $n) {
+        if (is_array($n) && isset($n['id']) && (int)$n['id'] > $maxId) $maxId = (int)$n['id'];
+    }
+    $out = [];
+    foreach ($notes as $n) {
+        if (is_string($n)) $n = ['text' => $n];
+        if (!is_array($n)) continue;
+        $text = trim((string)($n['text'] ?? ''));
+        if ($text === '') continue;
+        $id = isset($n['id']) ? (int)$n['id'] : 0;
+        if ($id <= 0) { $maxId++; $id = $maxId; }
+        $tag = (string)($n['tag'] ?? 'comment');
+        if (!in_array($tag, ['comment', 'decision', 'fact'], true)) $tag = 'comment';
+        $out[] = [
+            'id'         => $id,
+            'date'       => (string)($n['date'] ?? date('Y-m-d')),
+            'time'       => (string)($n['time'] ?? ''),
+            'text'       => $text,
+            'author'     => trim((string)($n['author'] ?? '')),
+            'tag'        => $tag,
+            'edited_at'  => (string)($n['edited_at'] ?? ''),
+        ];
+    }
+    return $out;
+}
+
+/** Ищет запись дневника по note_id, с откатом на индекс массива. */
+function hypFindNoteIndex(array $notes, $noteId, $index)
+{
+    $noteId = (int)$noteId;
+    if ($noteId > 0) {
+        foreach ($notes as $i => $n) {
+            if ((int)($n['id'] ?? 0) === $noteId) return $i;
+        }
+        return -1;
+    }
+    $index = (int)$index;
+    return ($index >= 0 && isset($notes[$index])) ? $index : -1;
+}
+
 if ($action === 'hypothesis_add_note') {
-    // Добавляет одну запись в progress_notes гипотезы (дата + текст + автор).
+    // Добавляет одну запись в progress_notes гипотезы (дата + текст + автор + тег).
     $input = json_decode(file_get_contents('php://input'), true) ?: [];
     $id   = (int)($input['id'] ?? 0);
     $text = trim((string)($input['text'] ?? ''));
     if ($id <= 0 || $text === '') { echo json_encode(['status'=>'error','error'=>'id and text required']); exit; }
     $row = @$db->querySingle("SELECT progress_notes FROM hypotheses WHERE id = $id", false);
-    $notes = json_decode((string)($row ?: ''), true);
-    if (!is_array($notes)) $notes = [];
+    $notes = hypNormalizeNotes(json_decode((string)($row ?: ''), true));
+    $maxId = 0;
+    foreach ($notes as $n) { if ((int)$n['id'] > $maxId) $maxId = (int)$n['id']; }
+    $tag = (string)($input['tag'] ?? 'comment');
+    if (!in_array($tag, ['comment', 'decision', 'fact'], true)) $tag = 'comment';
     $notes[] = [
+        'id'     => $maxId + 1,
         'date'   => date('Y-m-d'),
+        'time'   => date('H:i'),
         'text'   => $text,
         'author' => trim((string)($input['author'] ?? '')),
+        'tag'    => $tag,
+        'edited_at' => '',
     ];
     $stmt = $db->prepare('UPDATE hypotheses SET progress_notes=:n, updated_at=:t WHERE id=:id');
     $stmt->bindValue(':n', json_encode($notes, JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
@@ -6024,16 +6083,21 @@ if ($action === 'hypothesis_add_note') {
 }
 
 if ($action === 'hypothesis_edit_note') {
-    // Обновляет текст одной записи progress_notes по индексу.
+    // Обновляет текст одной записи progress_notes по note_id (или по индексу — legacy).
     $input = json_decode(file_get_contents('php://input'), true) ?: [];
     $id    = (int)($input['id'] ?? 0);
-    $index = (int)($input['index'] ?? -1);
     $text  = trim((string)($input['text'] ?? ''));
-    if ($id <= 0 || $index < 0 || $text === '') { echo json_encode(['status'=>'error','error'=>'id, index and text required']); exit; }
+    if ($id <= 0 || $text === '') { echo json_encode(['status'=>'error','error'=>'id and text required']); exit; }
     $row = @$db->querySingle("SELECT progress_notes FROM hypotheses WHERE id = $id", false);
-    $notes = json_decode((string)($row ?: ''), true);
-    if (!is_array($notes) || !isset($notes[$index])) { echo json_encode(['status'=>'error','error'=>'note not found']); exit; }
-    $notes[$index]['text'] = $text;
+    $notes = hypNormalizeNotes(json_decode((string)($row ?: ''), true));
+    $idx = hypFindNoteIndex($notes, $input['note_id'] ?? 0, $input['index'] ?? -1);
+    if ($idx < 0) { echo json_encode(['status'=>'error','error'=>'note not found']); exit; }
+    $notes[$idx]['text'] = $text;
+    $notes[$idx]['edited_at'] = date('Y-m-d H:i');
+    if (isset($input['tag'])) {
+        $tag = (string)$input['tag'];
+        if (in_array($tag, ['comment', 'decision', 'fact'], true)) $notes[$idx]['tag'] = $tag;
+    }
     $stmt = $db->prepare('UPDATE hypotheses SET progress_notes=:n, updated_at=:t WHERE id=:id');
     $stmt->bindValue(':n', json_encode(array_values($notes), JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
     $stmt->bindValue(':t', time(), SQLITE3_INTEGER);
@@ -6044,15 +6108,15 @@ if ($action === 'hypothesis_edit_note') {
 }
 
 if ($action === 'hypothesis_delete_note') {
-    // Удаляет одну запись progress_notes по индексу.
+    // Удаляет одну запись progress_notes по note_id (или по индексу — legacy).
     $input = json_decode(file_get_contents('php://input'), true) ?: [];
     $id    = (int)($input['id'] ?? 0);
-    $index = (int)($input['index'] ?? -1);
-    if ($id <= 0 || $index < 0) { echo json_encode(['status'=>'error','error'=>'id and index required']); exit; }
+    if ($id <= 0) { echo json_encode(['status'=>'error','error'=>'id required']); exit; }
     $row = @$db->querySingle("SELECT progress_notes FROM hypotheses WHERE id = $id", false);
-    $notes = json_decode((string)($row ?: ''), true);
-    if (!is_array($notes) || !isset($notes[$index])) { echo json_encode(['status'=>'error','error'=>'note not found']); exit; }
-    array_splice($notes, $index, 1);
+    $notes = hypNormalizeNotes(json_decode((string)($row ?: ''), true));
+    $idx = hypFindNoteIndex($notes, $input['note_id'] ?? 0, $input['index'] ?? -1);
+    if ($idx < 0) { echo json_encode(['status'=>'error','error'=>'note not found']); exit; }
+    array_splice($notes, $idx, 1);
     $stmt = $db->prepare('UPDATE hypotheses SET progress_notes=:n, updated_at=:t WHERE id=:id');
     $stmt->bindValue(':n', json_encode(array_values($notes), JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
     $stmt->bindValue(':t', time(), SQLITE3_INTEGER);
@@ -7280,57 +7344,225 @@ if ($action === 'funnel_config_delete') {
     exit;
 }
 
+/**
+ * Раскладывает одно значение за период по дням.
+ * $spread: even — равномерно по всем дням (остаток к последнему дню),
+ *          weekdays — равномерно по будним дням, last — целиком на последний день.
+ * Возвращает список ['date' => 'Y-m-d', 'value' => int]; при ошибке — пустой массив.
+ */
+function spreadManualPeriod($from, $to, $total, $spread = 'even')
+{
+    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $from) || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $to)) return [];
+    $ts1 = strtotime($from); $ts2 = strtotime($to);
+    if ($ts1 === false || $ts2 === false || $ts2 < $ts1) return [];
+    $total = (int)round((float)$total);
+    if ($total < 0) return [];
+    $days = (int)floor(($ts2 - $ts1) / 86400) + 1;
+    if ($days > 1100) return []; // защита от абсурдных диапазонов (>3 лет)
+    if ($spread === 'last') return [['date' => $to, 'value' => $total]];
+    $dates = [];
+    for ($i = 0; $i < $days; $i++) {
+        $d = date('Y-m-d', $ts1 + $i * 86400);
+        if ($spread === 'weekdays' && (int)date('N', strtotime($d)) > 5) continue;
+        $dates[] = $d;
+    }
+    if (!$dates) return [];
+    $n = count($dates);
+    $base = intdiv($total, $n);
+    $rest = $total - $base * $n;
+    $out = [];
+    foreach ($dates as $i => $d) {
+        $out[] = ['date' => $d, 'value' => $base + ($i === $n - 1 ? $rest : 0)];
+    }
+    return $out;
+}
+
 if ($action === 'funnel_manual_save') {
     // Батч ручного ввода по этапу × площадке × дню (по образцу save_bounces_batch).
+    // Поддерживает режим записи mode=replace|add и раскладку значения за период
+    // period={date_from,date_to,total,spread}.
     $input = json_decode(file_get_contents('php://input'), true) ?: [];
     $funnelId = (int)($input['funnel_id'] ?? 0);
     $stageId  = (int)($input['stage_id'] ?? 0);
+    $mode = ($input['mode'] ?? 'replace') === 'add' ? 'add' : 'replace';
+    $entrySource = (string)($input['entry_source'] ?? 'day');
+    if (!in_array($entrySource, ['day', 'period', 'import'], true)) $entrySource = 'day';
+    $defaultSource = trim((string)($input['source_id'] ?? 'all'));
+    if ($defaultSource === '') $defaultSource = 'all';
     $rows = $input['rows'] ?? null;
-    if ($funnelId <= 0 || $stageId <= 0 || !is_array($rows)) {
-        echo json_encode(['status' => 'error', 'error' => 'funnel_id, stage_id и rows[] обязательны']); exit;
+    $period = $input['period'] ?? null;
+    if ($funnelId <= 0 || $stageId <= 0) {
+        echo json_encode(['status' => 'error', 'error' => 'funnel_id и stage_id обязательны']); exit;
     }
-    $saved = 0; $skipped = [];
+    if (is_array($period)) {
+        $spreadRows = spreadManualPeriod(
+            trim((string)($period['date_from'] ?? '')),
+            trim((string)($period['date_to'] ?? '')),
+            $period['total'] ?? 0,
+            (string)($period['spread'] ?? 'even')
+        );
+        if (!$spreadRows) {
+            echo json_encode(['status' => 'error', 'error' => 'Некорректный период или значение для раскладки'], JSON_UNESCAPED_UNICODE); exit;
+        }
+        $rows = array_map(function ($r) use ($defaultSource) {
+            return ['date' => $r['date'], 'value' => $r['value'], 'source_id' => $defaultSource];
+        }, $spreadRows);
+        $entrySource = 'period';
+    }
+    if (!is_array($rows)) {
+        echo json_encode(['status' => 'error', 'error' => 'rows[] или period обязательны']); exit;
+    }
+    $saved = 0; $added = 0; $updated = 0; $skipped = []; $sum = 0;
+    $minDate = null; $maxDate = null;
+    $now = time();
     $db->exec('BEGIN');
-    $stmt = $db->prepare('INSERT INTO manual_stage_data (funnel_id, stage_id, source_id, date, value)
-        VALUES (:fid, :sid, :src, :date, :val)
-        ON CONFLICT(funnel_id, stage_id, source_id, date) DO UPDATE SET value = excluded.value');
+    $sel = $db->prepare('SELECT value FROM manual_stage_data
+        WHERE funnel_id = :fid AND stage_id = :sid AND source_id = :src AND date = :date');
+    $stmt = $db->prepare('INSERT INTO manual_stage_data (funnel_id, stage_id, source_id, date, value, updated_at, entry_source)
+        VALUES (:fid, :sid, :src, :date, :val, :upd, :es)
+        ON CONFLICT(funnel_id, stage_id, source_id, date) DO UPDATE SET
+            value = excluded.value, updated_at = excluded.updated_at, entry_source = excluded.entry_source');
     foreach ($rows as $r) {
         if (!is_array($r)) continue;
         $date = trim((string)($r['date'] ?? ''));
-        $src = trim((string)($r['source_id'] ?? 'all'));
+        $src = trim((string)($r['source_id'] ?? $defaultSource));
         if ($src === '') $src = 'all';
         $val = $r['value'] ?? null;
         if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date) || !is_numeric($val) || (int)$val < 0) {
             $skipped[] = $date !== '' ? $date : '(пустая дата)';
             continue;
         }
+        $val = (int)$val;
+        $sel->reset();
+        $sel->bindValue(':fid', $funnelId, SQLITE3_INTEGER);
+        $sel->bindValue(':sid', $stageId, SQLITE3_INTEGER);
+        $sel->bindValue(':src', $src, SQLITE3_TEXT);
+        $sel->bindValue(':date', $date, SQLITE3_TEXT);
+        $prev = $sel->execute()->fetchArray(SQLITE3_ASSOC);
+        $exists = $prev !== false;
+        $next = ($mode === 'add' && $exists) ? (int)$prev['value'] + $val : $val;
         $stmt->reset();
         $stmt->bindValue(':fid', $funnelId, SQLITE3_INTEGER);
         $stmt->bindValue(':sid', $stageId, SQLITE3_INTEGER);
         $stmt->bindValue(':src', $src, SQLITE3_TEXT);
         $stmt->bindValue(':date', $date, SQLITE3_TEXT);
-        $stmt->bindValue(':val', (int)$val, SQLITE3_INTEGER);
+        $stmt->bindValue(':val', $next, SQLITE3_INTEGER);
+        $stmt->bindValue(':upd', $now, SQLITE3_INTEGER);
+        $stmt->bindValue(':es', $entrySource, SQLITE3_TEXT);
         $stmt->execute();
-        $saved++;
+        $saved++; $sum += $next;
+        if ($exists) $updated++; else $added++;
+        if ($minDate === null || $date < $minDate) $minDate = $date;
+        if ($maxDate === null || $date > $maxDate) $maxDate = $date;
     }
     $db->exec('COMMIT');
-    echo json_encode(['status' => 'success', 'saved' => $saved, 'skipped' => $skipped], JSON_UNESCAPED_UNICODE);
+    echo json_encode([
+        'status'  => 'success',
+        'saved'   => $saved,
+        'added'   => $added,
+        'updated' => $updated,
+        'sum'     => $sum,
+        'date_from' => $minDate,
+        'date_to'   => $maxDate,
+        'mode'    => $mode,
+        'skipped' => $skipped,
+    ], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+if ($action === 'funnel_manual_delete') {
+    // Удаление ручных данных: по списку дат либо по периоду (этап + площадка).
+    $input = json_decode(file_get_contents('php://input'), true) ?: [];
+    $funnelId = (int)($input['funnel_id'] ?? 0);
+    $stageId  = (int)($input['stage_id'] ?? 0);
+    if ($funnelId <= 0 || $stageId <= 0) {
+        echo json_encode(['status' => 'error', 'error' => 'funnel_id и stage_id обязательны']); exit;
+    }
+    $allSources = !empty($input['all_sources']);
+    $src = trim((string)($input['source_id'] ?? 'all'));
+    if ($src === '') $src = 'all';
+    $dates = $input['dates'] ?? null;
+    $from = trim((string)($input['date_from'] ?? ''));
+    $to   = trim((string)($input['date_to'] ?? ''));
+    $where = 'funnel_id = :fid AND stage_id = :sid';
+    if (!$allSources) $where .= ' AND source_id = :src';
+    $deleted = 0;
+    if (is_array($dates) && $dates) {
+        $db->exec('BEGIN');
+        $stmt = $db->prepare("DELETE FROM manual_stage_data WHERE $where AND date = :date");
+        foreach ($dates as $d) {
+            $d = trim((string)$d);
+            if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $d)) continue;
+            $stmt->reset();
+            $stmt->bindValue(':fid', $funnelId, SQLITE3_INTEGER);
+            $stmt->bindValue(':sid', $stageId, SQLITE3_INTEGER);
+            if (!$allSources) $stmt->bindValue(':src', $src, SQLITE3_TEXT);
+            $stmt->bindValue(':date', $d, SQLITE3_TEXT);
+            $stmt->execute();
+            $deleted += $db->changes();
+        }
+        $db->exec('COMMIT');
+    } elseif (preg_match('/^\d{4}-\d{2}-\d{2}$/', $from) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $to)) {
+        $stmt = $db->prepare("DELETE FROM manual_stage_data WHERE $where AND date BETWEEN :a AND :b");
+        $stmt->bindValue(':fid', $funnelId, SQLITE3_INTEGER);
+        $stmt->bindValue(':sid', $stageId, SQLITE3_INTEGER);
+        if (!$allSources) $stmt->bindValue(':src', $src, SQLITE3_TEXT);
+        $stmt->bindValue(':a', $from, SQLITE3_TEXT);
+        $stmt->bindValue(':b', $to, SQLITE3_TEXT);
+        $stmt->execute();
+        $deleted = $db->changes();
+    } else {
+        echo json_encode(['status' => 'error', 'error' => 'Нужен dates[] или корректный период date_from/date_to'], JSON_UNESCAPED_UNICODE); exit;
+    }
+    echo json_encode(['status' => 'success', 'deleted' => $deleted], JSON_UNESCAPED_UNICODE);
     exit;
 }
 
 if ($action === 'funnel_manual_list') {
-    // Возвращает сохранённый ручной ввод одного этапа за период воронки.
+    // Возвращает сохранённый ручной ввод одного этапа (опционально за период)
+    // вместе с агрегатами: сумма, число дней, первая/последняя дата.
     $funnelId = (int)($_GET['funnel_id'] ?? 0);
     $stageId  = (int)($_GET['stage_id'] ?? 0);
     if ($funnelId <= 0 || $stageId <= 0) { echo json_encode(['status' => 'error', 'error' => 'funnel_id и stage_id обязательны']); exit; }
-    $stmt = $db->prepare('SELECT source_id, date, value FROM manual_stage_data
-        WHERE funnel_id = :fid AND stage_id = :sid ORDER BY date, source_id');
+    $from = trim((string)($_GET['date_from'] ?? ''));
+    $to   = trim((string)($_GET['date_to'] ?? ''));
+    $useRange = preg_match('/^\d{4}-\d{2}-\d{2}$/', $from) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $to);
+    $sql = 'SELECT source_id, date, value, updated_at, entry_source FROM manual_stage_data
+        WHERE funnel_id = :fid AND stage_id = :sid';
+    if ($useRange) $sql .= ' AND date BETWEEN :a AND :b';
+    $sql .= ' ORDER BY date, source_id';
+    $stmt = $db->prepare($sql);
     $stmt->bindValue(':fid', $funnelId, SQLITE3_INTEGER);
     $stmt->bindValue(':sid', $stageId, SQLITE3_INTEGER);
+    if ($useRange) {
+        $stmt->bindValue(':a', $from, SQLITE3_TEXT);
+        $stmt->bindValue(':b', $to, SQLITE3_TEXT);
+    }
     $res = $stmt->execute();
     $rows = [];
-    while ($r = $res->fetchArray(SQLITE3_ASSOC)) $rows[] = $r;
-    echo json_encode(['status' => 'success', 'data' => $rows], JSON_UNESCAPED_UNICODE);
+    $bySource = [];
+    while ($r = $res->fetchArray(SQLITE3_ASSOC)) {
+        $rows[] = $r;
+        $sid = (string)$r['source_id'];
+        if (!isset($bySource[$sid])) $bySource[$sid] = ['sum' => 0, 'days' => 0, 'date_from' => null, 'date_to' => null];
+        $bySource[$sid]['sum'] += (int)$r['value'];
+        $bySource[$sid]['days']++;
+        if ($bySource[$sid]['date_from'] === null || $r['date'] < $bySource[$sid]['date_from']) $bySource[$sid]['date_from'] = $r['date'];
+        if ($bySource[$sid]['date_to'] === null || $r['date'] > $bySource[$sid]['date_to']) $bySource[$sid]['date_to'] = $r['date'];
+    }
+    $totals = ['sum' => 0, 'days' => 0, 'date_from' => null, 'date_to' => null];
+    foreach ($bySource as $agg) {
+        $totals['sum'] += $agg['sum'];
+        if ($totals['date_from'] === null || $agg['date_from'] < $totals['date_from']) $totals['date_from'] = $agg['date_from'];
+        if ($totals['date_to'] === null || $agg['date_to'] > $totals['date_to']) $totals['date_to'] = $agg['date_to'];
+    }
+    $totals['days'] = count(array_unique(array_map(function ($r) { return $r['date']; }, $rows)));
+    echo json_encode([
+        'status' => 'success',
+        'data' => $rows,
+        'totals' => $totals,
+        'by_source' => $bySource,
+    ], JSON_UNESCAPED_UNICODE);
     exit;
 }
 

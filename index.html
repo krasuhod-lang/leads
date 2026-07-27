@@ -1017,6 +1017,117 @@
     .mf-money .mf-metric strong { display: block; font-size: 13px; color: var(--text); font-feature-settings: "tnum" 1, "lnum" 1; }
     .mf-skeleton { height: 92px; border-radius: var(--r-card); border: 1px solid var(--border); background: var(--surface-thin); opacity: .6; animation: mfPulse 1.2s ease-in-out infinite; }
     @keyframes mfPulse { 0%,100% { opacity: .35; } 50% { opacity: .7; } }
+
+    /* ----- Тосты (единая обратная связь) ----- */
+    .toast-host {
+      position: fixed; right: 16px; bottom: 16px; z-index: 3000;
+      display: flex; flex-direction: column; gap: 8px; max-width: min(420px, calc(100vw - 32px));
+      pointer-events: none;
+    }
+    .toast {
+      pointer-events: auto; display: flex; align-items: flex-start; gap: 10px;
+      background: var(--surface-solid); border: 1px solid var(--border-strong);
+      border-left: 3px solid var(--accent); border-radius: var(--r-card);
+      box-shadow: var(--shadow-pop); padding: 10px 12px; color: var(--text); font-size: 13px;
+      animation: toastIn .18s ease-out;
+    }
+    .toast.is-leaving { opacity: 0; transform: translateY(6px); transition: opacity .16s, transform .16s; }
+    .toast--success { border-left-color: var(--ok); }
+    .toast--error   { border-left-color: var(--bad); }
+    .toast--warn    { border-left-color: var(--warn); }
+    .toast-text { flex: 1; line-height: 1.4; }
+    .toast-actions { display: flex; align-items: center; gap: 4px; }
+    .toast-action {
+      background: transparent; border: 1px solid var(--border-strong); color: var(--accent);
+      border-radius: var(--r-chip); padding: 4px 10px; font-size: 12px; cursor: pointer; min-height: 28px;
+    }
+    .toast-action:hover { background: var(--surface-thin); }
+    .toast-close { background: none; border: 0; color: var(--text-dim); font-size: 16px; cursor: pointer; padding: 2px 6px; line-height: 1; }
+    .toast-close:hover { color: var(--text); }
+    @keyframes toastIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+    @media (max-width: 640px) { .toast-host { left: 12px; right: 12px; bottom: 12px; max-width: none; } }
+
+    /* ----- Единое пустое состояние ----- */
+    .empty-state {
+      display: flex; flex-direction: column; align-items: center; gap: 6px; text-align: center;
+      padding: 22px 16px; border: 1px dashed var(--border-strong); border-radius: var(--r-card);
+      background: var(--surface-thin); color: var(--text-dim);
+    }
+    .empty-state-icon { font-size: 26px; line-height: 1; }
+    .empty-state-title { color: var(--text); font-weight: 600; font-size: 14px; }
+    .empty-state-hint { font-size: 12px; color: var(--text-dim); max-width: 520px; }
+    .empty-state-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; margin-top: 4px; }
+
+    /* ----- Модалка ручного ввода данных этапа ----- */
+    .fm-tabs { display: inline-flex; gap: 2px; background: var(--surface-thin); border: 1px solid var(--border); border-radius: var(--r-chip); padding: 2px; }
+    .fm-tabs button {
+      background: transparent; border: 0; color: var(--text-dim); cursor: pointer;
+      padding: 6px 12px; border-radius: calc(var(--r-chip) - 2px); font-size: 12px; min-height: 32px;
+    }
+    .fm-tabs button.active { background: var(--accent); color: #fff; }
+    .fm-panel { display: none; }
+    .fm-panel.active { display: block; }
+    .fm-presets { display: flex; flex-wrap: wrap; gap: 6px; }
+    .fm-preset {
+      background: var(--surface-thin); border: 1px solid var(--border); color: var(--text-dim);
+      border-radius: 999px; padding: 4px 10px; font-size: 11px; cursor: pointer; min-height: 28px;
+    }
+    .fm-preset:hover { color: var(--text); border-color: var(--border-strong); }
+    .fm-summary { font-size: 12px; color: var(--text-dim); }
+    .fm-summary b { color: var(--text); }
+    .fm-preview {
+      border: 1px solid var(--border); border-radius: var(--r-chip); background: var(--surface-thin);
+      padding: 10px 12px; font-size: 12px; color: var(--text-dim); line-height: 1.5;
+    }
+    .fm-preview b { color: var(--text); }
+    .fm-dropzone {
+      border: 1px dashed var(--border-strong); border-radius: var(--r-card); background: var(--surface-thin);
+      padding: 18px; text-align: center; color: var(--text-dim); font-size: 13px; cursor: pointer;
+    }
+    .fm-dropzone.is-drag { border-color: var(--accent); color: var(--text); background: var(--accent-soft); }
+    .fm-import-table { width: 100%; font-size: 12px; border-collapse: collapse; }
+    .fm-import-table th, .fm-import-table td { padding: 4px 6px; border-bottom: 1px solid var(--border); text-align: left; }
+    .fm-import-table th { color: var(--text-dim); font-weight: 500; }
+    .fm-import-table td.num { text-align: right; font-feature-settings: "tnum" 1; }
+    .fm-import-table tr.is-bad td { color: var(--bad); }
+    .fm-cal { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; }
+    .fm-cal button {
+      aspect-ratio: 1 / 1; border-radius: 4px; border: 1px solid var(--border); background: var(--surface-thin);
+      color: var(--text-faint); font-size: 10px; cursor: pointer; padding: 0; min-height: 22px;
+    }
+    .fm-cal button.filled { background: rgba(48,209,88,.22); border-color: rgba(48,209,88,.45); color: var(--text); }
+    .fm-cal button.zero   { background: rgba(255,159,10,.16); border-color: rgba(255,159,10,.35); color: var(--text-dim); }
+    .fm-cal button.empty  { background: var(--surface-thin); }
+    .fm-cal-legend { display: flex; gap: 10px; font-size: 11px; color: var(--text-dim); flex-wrap: wrap; }
+    .fm-cal-legend i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; margin-right: 4px; vertical-align: -1px; }
+    .fm-row input.fm-date, .fm-row input.fm-val { min-height: 34px; }
+    .fm-row button { min-width: 32px; min-height: 32px; }
+    .fm-bulk { display: flex; flex-wrap: wrap; gap: 6px; }
+    .fm-bulk button {
+      background: transparent; border: 1px solid var(--border-strong); color: var(--text-dim);
+      border-radius: var(--r-chip); padding: 4px 10px; font-size: 11px; cursor: pointer; min-height: 30px;
+    }
+    .fm-bulk button:hover { color: var(--text); }
+
+    /* ----- Дневник гипотезы в карточке ----- */
+    .hyp-notes-block { border-top: 1px solid var(--border); padding-top: 8px; margin-top: 4px; }
+    .hyp-notes-list { display: flex; flex-direction: column; gap: 6px; max-height: 260px; overflow-y: auto; }
+    .hyp-note-tag {
+      font-size: 10px; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--border);
+      color: var(--text-dim); background: var(--surface-thin);
+    }
+    .hyp-note-tag.decision { color: var(--ok); border-color: rgba(48,209,88,.4); background: rgba(48,209,88,.12); }
+    .hyp-note-tag.fact { color: var(--c-clicks); border-color: rgba(56,189,248,.4); background: rgba(56,189,248,.12); }
+    .hyp-note-entry.is-decision { border-left: 2px solid var(--ok); padding-left: 8px; }
+    .hyp-note-add { display: flex; gap: 6px; margin-top: 8px; }
+    .hyp-note-add input { flex: 1; background: var(--surface-thin); border: 1px solid var(--border-strong); border-radius: var(--r-chip); padding: 6px 10px; color: var(--text); font-size: 12px; }
+    .hyp-note-add select { background: var(--surface-thin); border: 1px solid var(--border-strong); border-radius: var(--r-chip); padding: 6px 8px; color: var(--text-dim); font-size: 11px; }
+    .hyp-notes-toggle { background: none; border: 0; color: var(--accent); font-size: 12px; cursor: pointer; padding: 2px 0; }
+    .hyp-note-count {
+      display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--text-dim);
+      border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px; background: var(--surface-thin);
+    }
+    .hyp-note-count.is-stale { color: var(--warn); border-color: rgba(255,159,10,.35); }
     /* Потери / узкое место внутри визуализации воронки */
     .funnel-stage--bottleneck { border-color: rgba(255,69,58,.55); box-shadow: inset 0 0 0 1px rgba(255,69,58,.18); }
     .funnel-loss { font-size: 10px; color: var(--text-dim); margin-top: 4px; }
@@ -2146,6 +2257,20 @@
         <button class="hyp-filter-chip" data-filter-status="failed" onclick="hypSetFilter('status','failed',this)">❌ Провал</button>
         <button class="hyp-filter-chip" data-filter-status="paused" onclick="hypSetFilter('status','paused',this)">⏸ Отложено</button>
         <button class="hyp-filter-chip ml-3" id="hypKeyFilter" onclick="hypToggleKeyFilter(this)">🚀 Только ключевые</button>
+        <button class="hyp-filter-chip" id="hypFreshFilter" onclick="hypToggleNoteFilter('fresh', this)" title="Есть комментарии за последние 7 дней">💬 Свежие комментарии</button>
+        <button class="hyp-filter-chip" id="hypStaleFilter" onclick="hypToggleNoteFilter('stale', this)" title="Нет записей в дневнике больше 14 дней">🕸 Без обновлений &gt; 14 дн.</button>
+        <button class="hyp-filter-chip" type="button" onclick="hypResetFilters()" title="Сбросить фильтры и поиск">↺ Сбросить</button>
+      </div>
+      <!-- Поиск по гипотезам и комментариям + автор записей -->
+      <div class="flex flex-wrap gap-2 items-center">
+        <input id="hypSearch" type="search" placeholder="Поиск по названию и комментариям…"
+               class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm" style="min-width:240px;"
+               oninput="hypSearchChanged(this.value)">
+        <label class="text-xs text-slate-400 inline-flex items-center gap-2">Моё имя
+          <input id="hypAuthorName" type="text" placeholder="кто пишет записи"
+                 class="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs" style="width:150px;"
+                 oninput="hypSetAuthorName(this.value)" title="Подставляется автором в записи дневника; хранится локально в браузере">
+        </label>
       </div>
     </div>
     <!-- Список карточек -->
@@ -2771,9 +2896,15 @@ CR_plan       = baseCR,   AR_plan = baseAR
           <!-- Дневник теста -->
           <div>
             <div class="text-xs font-semibold uppercase mb-2" style="color:var(--text-dim);letter-spacing:.05em;">📓 Дневник теста</div>
-            <div id="hypNotesLog" class="mb-2 space-y-1 max-h-32 overflow-y-auto"></div>
-            <div class="flex gap-2">
-              <input id="hypNewNoteText" type="text" placeholder="Добавить запись в лог..." class="flex-1 text-sm" style="background:var(--surface-thin);border:1px solid var(--border-strong);border-radius:var(--r-chip);padding:6px 10px;color:var(--text);">
+            <div id="hypNotesLog" class="mb-2 space-y-1 max-h-48 overflow-y-auto"></div>
+            <div class="flex gap-2 flex-wrap">
+              <input id="hypNewNoteText" type="text" placeholder="Добавить запись в лог..." class="flex-1 text-sm" style="background:var(--surface-thin);border:1px solid var(--border-strong);border-radius:var(--r-chip);padding:6px 10px;color:var(--text);"
+                     onkeydown="if(event.key==='Enter'){event.preventDefault();hypAddNoteInline();}">
+              <select id="hypNewNoteTag" aria-label="Тип записи" class="text-sm" style="background:var(--surface-thin);border:1px solid var(--border-strong);border-radius:var(--r-chip);padding:6px 10px;color:var(--text);">
+                <option value="comment">комментарий</option>
+                <option value="decision">решение</option>
+                <option value="fact">факт-апдейт</option>
+              </select>
               <button type="button" class="btn" style="padding:6px 12px;font-size:12px;" onclick="hypAddNoteInline()">Добавить</button>
             </div>
           </div>
@@ -2800,6 +2931,14 @@ CR_plan       = baseCR,   AR_plan = baseAR
       <div class="form-field">
         <label for="hypNoteText">Текст записи</label>
         <textarea id="hypNoteText" rows="3" placeholder="Что произошло? Промежуточные итоги, перенос сроков, изменения..."></textarea>
+      </div>
+      <div class="form-field">
+        <label for="hypNoteTag">Тип записи</label>
+        <select id="hypNoteTag">
+          <option value="comment">комментарий</option>
+          <option value="decision">решение</option>
+          <option value="fact">факт-апдейт</option>
+        </select>
       </div>
       <p id="hypNoteError" class="text-xs mt-1 hidden" style="color:var(--bad);"></p>
     </div>
@@ -2913,7 +3052,7 @@ CR_plan       = baseCR,   AR_plan = baseAR
 
 <!-- ===== Модалка ручного ввода данных этапа ===== -->
 <div id="funnelManualModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="funnelManualTitle">
-  <div class="modal-box" style="max-width:640px;">
+  <div class="modal-box" style="max-width:780px;">
     <header>
       <h3 id="funnelManualTitle">Ручной ввод данных этапа</h3>
       <button type="button" class="close-x" onclick="closeFunnelManual()" aria-label="Закрыть">×</button>
@@ -2921,24 +3060,120 @@ CR_plan       = baseCR,   AR_plan = baseAR
     <div class="modal-body">
       <input id="fmFunnelId" type="hidden">
       <input id="fmStageId" type="hidden">
-      <p class="text-xs mb-2" style="color:var(--text-dim);">Введите значения по дням для выбранной площадки. Можно загрузить Excel/CSV: <strong>A — дата</strong>, <strong>B — значение</strong>.</p>
-      <div class="flex gap-2 items-end mb-3">
-        <div class="form-field" style="margin:0;flex:1;">
-          <label for="fmSource">Площадка</label>
-          <select id="fmSource" onchange="fmLoadSourceRows()"></select>
+
+      <!-- Этап и площадка -->
+      <div class="flex gap-2 flex-wrap items-end mb-3">
+        <div class="form-field" style="margin:0;flex:1;min-width:220px;">
+          <label for="fmStage">Этап</label>
+          <select id="fmStage" onchange="fmChangeStage(this.value)"></select>
         </div>
-        <div>
-          <label class="block text-xs mb-1" style="color:var(--text-dim);">Excel/CSV</label>
-          <input id="fmFile" type="file" accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv" class="text-xs" onchange="handleFunnelManualFile(this)">
+        <div class="form-field" style="margin:0;flex:1;min-width:180px;">
+          <label for="fmSource">Площадка</label>
+          <select id="fmSource" onchange="fmChangeSource()"></select>
         </div>
       </div>
-      <div id="fmRows" class="space-y-2" style="max-height:300px;overflow-y:auto;"></div>
-      <button type="button" class="btn mt-2" style="background:transparent;border:1px solid var(--border-strong);color:var(--text-dim);" onclick="fmAddRow()">+ Добавить день</button>
-      <p id="fmError" class="text-xs mt-2 hidden" style="color:var(--bad);"></p>
+
+      <!-- Период -->
+      <div class="flex gap-2 flex-wrap items-end mb-2">
+        <div class="form-field" style="margin:0;">
+          <label for="fmFrom">Период с</label>
+          <input id="fmFrom" type="date" onchange="fmPeriodChanged()">
+        </div>
+        <div class="form-field" style="margin:0;">
+          <label for="fmTo">по</label>
+          <input id="fmTo" type="date" onchange="fmPeriodChanged()">
+        </div>
+        <div class="fm-presets mb-3">
+          <button type="button" class="fm-preset" onclick="fmApplyPreset('funnel')">Период воронки</button>
+          <button type="button" class="fm-preset" onclick="fmApplyPreset('this_month')">Текущий месяц</button>
+          <button type="button" class="fm-preset" onclick="fmApplyPreset('prev_month')">Прошлый месяц</button>
+          <button type="button" class="fm-preset" onclick="fmApplyPreset('last7')">7 дней</button>
+          <button type="button" class="fm-preset" onclick="fmApplyPreset('last30')">30 дней</button>
+        </div>
+      </div>
+
+      <!-- Способ ввода + режим записи -->
+      <div class="flex gap-3 flex-wrap items-center mb-3">
+        <div class="fm-tabs" id="fmModeTabs" role="group" aria-label="Способ ввода">
+          <button type="button" data-fm-mode="days" onclick="fmSetMode('days')">По дням</button>
+          <button type="button" data-fm-mode="period" onclick="fmSetMode('period')">За период</button>
+          <button type="button" data-fm-mode="import" onclick="fmSetMode('import')">Файл</button>
+        </div>
+        <div class="fm-tabs" id="fmWriteTabs" role="group" aria-label="Режим записи">
+          <button type="button" data-fm-write="replace" onclick="fmSetWriteMode('replace')" title="Перезаписать значения за указанные даты">Заменить значения</button>
+          <button type="button" data-fm-write="add" onclick="fmSetWriteMode('add')" title="Прибавить к уже сохранённым значениям">Прибавить к существующим</button>
+        </div>
+      </div>
+
+      <!-- Панель: по дням -->
+      <div class="fm-panel" id="fmPanelDays">
+        <div class="fm-bulk mb-2">
+          <button type="button" onclick="fmAddRow()">+ Добавить день</button>
+          <button type="button" onclick="fmFillGapsWithZeros()" title="Добавить нули для незаполненных дней периода">Заполнить пропуски нулями</button>
+          <button type="button" onclick="fmSortRows()" title="Отсортировать строки по дате">Сортировать по дате</button>
+          <button type="button" onclick="fmClearPeriod()" title="Удалить все данные этапа за период на сервере" style="color:var(--bad);">Очистить период</button>
+        </div>
+        <p class="text-[11px] mb-2" style="color:var(--text-faint);">Можно вставить две колонки из Excel прямо сюда (Ctrl+V): дата и значение.</p>
+        <div id="fmRows" class="space-y-2" style="max-height:260px;overflow-y:auto;" tabindex="0"></div>
+      </div>
+
+      <!-- Панель: значение за период -->
+      <div class="fm-panel" id="fmPanelPeriod">
+        <div class="flex gap-2 flex-wrap items-end mb-3">
+          <div class="form-field" style="margin:0;">
+            <label for="fmPeriodTotal">Значение за период</label>
+            <input id="fmPeriodTotal" type="number" min="0" step="1" placeholder="например 12000" oninput="fmRenderPeriodPreview()">
+          </div>
+          <div class="form-field" style="margin:0;min-width:230px;">
+            <label for="fmPeriodSpread">Как разложить по дням</label>
+            <select id="fmPeriodSpread" onchange="fmRenderPeriodPreview()">
+              <option value="even">Равномерно по всем дням</option>
+              <option value="weekdays">Равномерно по будним дням</option>
+              <option value="last">Целиком на последний день</option>
+            </select>
+          </div>
+        </div>
+        <div class="fm-preview" id="fmPeriodPreview" aria-live="polite">Укажите период и значение — покажем раскладку по дням.</div>
+      </div>
+
+      <!-- Панель: импорт файла -->
+      <div class="fm-panel" id="fmPanelImport">
+        <div class="fm-dropzone mb-2" id="fmDropzone" onclick="document.getElementById('fmFile').click()" role="button" tabindex="0">
+          Перетащите файл сюда или нажмите, чтобы выбрать<br>
+          <span class="text-[11px]" style="color:var(--text-faint);">Excel/CSV из двух колонок: <b>A — дата</b>, <b>B — значение</b>. Поддерживаются форматы даты 2026-07-01, 01.07.2026, 01/07/2026 и месяц 07.2026.</span>
+          <input id="fmFile" type="file" class="hidden" accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv" onchange="handleFunnelManualFile(this)">
+        </div>
+        <div class="flex gap-2 flex-wrap items-center mb-2">
+          <button type="button" class="fm-preset" onclick="fmDownloadTemplate('xlsx')">⬇ Шаблон XLSX</button>
+          <button type="button" class="fm-preset" onclick="fmDownloadTemplate('csv')">⬇ Шаблон CSV</button>
+          <label class="text-xs inline-flex items-center gap-2" style="color:var(--text-dim);">
+            <input id="fmImportReplacePeriod" type="checkbox"> Заменить весь период файла (удалить даты, которых нет в файле)
+          </label>
+        </div>
+        <div id="fmImportPreview" class="fm-preview" aria-live="polite">Файл ещё не загружен.</div>
+      </div>
+
+      <!-- Покрытие периода данными -->
+      <details class="mt-3" id="fmCoverageBox">
+        <summary class="text-xs cursor-pointer" style="color:var(--text-dim);">Покрытие периода данными</summary>
+        <div class="mt-2">
+          <div class="fm-cal-legend mb-2">
+            <span><i style="background:rgba(48,209,88,.22);border:1px solid rgba(48,209,88,.45);"></i>заполнен</span>
+            <span><i style="background:rgba(255,159,10,.16);border:1px solid rgba(255,159,10,.35);"></i>ноль</span>
+            <span><i style="background:var(--surface-thin);border:1px solid var(--border);"></i>пусто</span>
+          </div>
+          <div class="fm-cal" id="fmCalendar"></div>
+        </div>
+      </details>
+
+      <p id="fmError" class="text-xs mt-2 hidden" style="color:var(--bad);" role="alert"></p>
     </div>
-    <div class="modal-footer">
-      <button type="button" class="btn" style="background:transparent;border:1px solid var(--border-strong);color:var(--text-dim);" onclick="closeFunnelManual()">Отмена</button>
-      <button type="button" class="btn" onclick="saveFunnelManual()">Сохранить</button>
+    <div class="modal-footer" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+      <div class="fm-summary" id="fmSummary" aria-live="polite"></div>
+      <div class="flex gap-2">
+        <button type="button" class="btn" style="background:transparent;border:1px solid var(--border-strong);color:var(--text-dim);" onclick="closeFunnelManual()">Отмена</button>
+        <button type="button" class="btn" onclick="saveFunnelManual()">Сохранить</button>
+      </div>
     </div>
   </div>
 </div>
@@ -3463,6 +3698,207 @@ async function fetchJsonSafe(url, opts = {}) {
   }
   if (!res.ok) throw new Error((json && (json.error || json.message || json.details)) || `HTTP ${res.status}`);
   return json;
+}
+
+/* ============================ Общий UX-слой ============================
+   Тосты, пустые состояния, поведение модалок и отложенное удаление
+   с возможностью отмены — используются всеми разделами борда. */
+
+let toastSeq = 0;
+const toastTimers = new Map();
+
+function toastHost() {
+  let host = document.getElementById('toastHost');
+  if (!host) {
+    host = document.createElement('div');
+    host.id = 'toastHost';
+    host.className = 'toast-host';
+    host.setAttribute('aria-live', 'polite');
+    host.setAttribute('aria-atomic', 'false');
+    document.body.appendChild(host);
+  }
+  return host;
+}
+
+/**
+ * Единый тост. opts: { type: info|success|error|warn, timeout, actionLabel, onAction }.
+ * Возвращает id тоста — его можно закрыть через dismissToast(id).
+ */
+function showToast(message, opts = {}) {
+  const host = toastHost();
+  const id = 'toast-' + (++toastSeq);
+  const type = opts.type || 'info';
+  const timeout = Number.isFinite(opts.timeout) ? opts.timeout : (type === 'error' ? 8000 : 4500);
+  const icon = { success: '✅', error: '⚠️', warn: '⚠️', info: 'ℹ️' }[type] || 'ℹ️';
+  const el = document.createElement('div');
+  el.className = `toast toast--${type}`;
+  el.id = id;
+  el.setAttribute('role', type === 'error' ? 'alert' : 'status');
+  el.innerHTML = `<span class="toast-icon" aria-hidden="true">${icon}</span>
+    <div class="toast-text">${escapeHtml(message)}</div>
+    <div class="toast-actions">
+      ${opts.actionLabel ? `<button type="button" class="toast-action">${escapeHtml(opts.actionLabel)}</button>` : ''}
+      <button type="button" class="toast-close" aria-label="Закрыть уведомление">×</button>
+    </div>`;
+  el.querySelector('.toast-close')?.addEventListener('click', () => dismissToast(id));
+  const actionBtn = el.querySelector('.toast-action');
+  if (actionBtn) actionBtn.addEventListener('click', () => {
+    dismissToast(id);
+    try { opts.onAction && opts.onAction(); } catch (e) { console.warn('toast action failed', e); }
+  });
+  host.appendChild(el);
+  if (timeout > 0) toastTimers.set(id, setTimeout(() => dismissToast(id), timeout));
+  return id;
+}
+function dismissToast(id) {
+  const t = toastTimers.get(id);
+  if (t) { clearTimeout(t); toastTimers.delete(id); }
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.classList.add('is-leaving');
+  setTimeout(() => el.remove(), 180);
+}
+
+/**
+ * Единое пустое состояние: иконка + причина + необязательное действие.
+ * actionHtml — готовая разметка кнопки (со своим onclick), чтобы вызывающий
+ * код сам решал, что делать: расширить период, заполнить вручную и т.п.
+ */
+function emptyStateHtml(icon, title, hint = '', actionHtml = '') {
+  return `<div class="empty-state">
+    <div class="empty-state-icon" aria-hidden="true">${icon}</div>
+    <div class="empty-state-title">${escapeHtml(title)}</div>
+    ${hint ? `<div class="empty-state-hint">${escapeHtml(hint)}</div>` : ''}
+    ${actionHtml ? `<div class="empty-state-actions">${actionHtml}</div>` : ''}
+  </div>`;
+}
+
+/** Скелетон-заглушка на время загрузки раздела. */
+function skeletonHtml(count = 3, height = 92) {
+  return `<div class="space-y-3">${`<div class="mf-skeleton" style="height:${height}px"></div>`.repeat(count)}</div>`;
+}
+
+const FOCUSABLE_SELECTOR = 'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+/** Все открытые модалки в порядке появления в DOM. */
+function openModals() {
+  return Array.from(document.querySelectorAll('.modal-backdrop.is-open, .glossary-overlay.is-open'));
+}
+/** Закрывает модалку её же кнопкой «×», чтобы отработала штатная логика закрытия. */
+function closeModalEl(el) {
+  if (!el) return;
+  const closeBtn = el.querySelector('header .close-x, .close-x');
+  if (closeBtn) { closeBtn.click(); return; }
+  el.classList.remove('is-open');
+  if (!openModals().length) document.body.style.overflow = '';
+}
+
+// Esc, клик по фону, ловушка фокуса и возврат фокуса — для всех модалок сразу.
+function initModalUx() {
+  document.addEventListener('keydown', (ev) => {
+    const modals = openModals();
+    if (!modals.length) return;
+    const top = modals[modals.length - 1];
+    if (ev.key === 'Escape') {
+      // Внутри инлайн-редакторов Esc обрабатывается локально.
+      if (ev.target instanceof HTMLElement && ev.target.dataset.escLocal === '1') return;
+      ev.preventDefault();
+      closeModalEl(top);
+      return;
+    }
+    if (ev.key !== 'Tab') return;
+    const items = Array.from(top.querySelectorAll(FOCUSABLE_SELECTOR))
+      .filter(el => el.offsetParent !== null || el === document.activeElement);
+    if (!items.length) return;
+    const first = items[0];
+    const last = items[items.length - 1];
+    if (ev.shiftKey && document.activeElement === first) { ev.preventDefault(); last.focus(); }
+    else if (!ev.shiftKey && document.activeElement === last) { ev.preventDefault(); first.focus(); }
+    else if (!top.contains(document.activeElement)) { ev.preventDefault(); first.focus(); }
+  });
+  document.addEventListener('mousedown', (ev) => {
+    const t = ev.target;
+    if (!(t instanceof HTMLElement)) return;
+    if (!t.classList.contains('modal-backdrop') && !t.classList.contains('glossary-overlay')) return;
+    if (!t.classList.contains('is-open')) return;
+    closeModalEl(t);
+  });
+  // Открытие/закрытие ловим через изменение класса — не трогая каждую openX().
+  const observer = new MutationObserver(muts => {
+    muts.forEach(m => {
+      const el = m.target;
+      if (!(el instanceof HTMLElement)) return;
+      const isOpen = el.classList.contains('is-open');
+      const wasOpen = el.dataset.uxOpen === '1';
+      if (isOpen === wasOpen) return;
+      el.dataset.uxOpen = isOpen ? '1' : '0';
+      if (isOpen) {
+        modalOpenerStack.push(document.activeElement instanceof HTMLElement ? document.activeElement : null);
+        document.body.style.overflow = 'hidden';
+        setTimeout(() => {
+          if (el.contains(document.activeElement)) return;
+          const target = el.querySelector('[data-autofocus]') ||
+            Array.from(el.querySelectorAll(FOCUSABLE_SELECTOR)).find(n => !n.classList.contains('close-x'));
+          if (target) try { target.focus(); } catch (_) { /* ignore */ }
+        }, 30);
+      } else {
+        const opener = modalOpenerStack.pop();
+        if (!openModals().length) document.body.style.overflow = '';
+        if (opener && document.body.contains(opener)) try { opener.focus(); } catch (_) { /* ignore */ }
+      }
+    });
+  });
+  document.querySelectorAll('.modal-backdrop, .glossary-overlay').forEach(el => {
+    el.dataset.uxOpen = el.classList.contains('is-open') ? '1' : '0';
+    observer.observe(el, { attributes: true, attributeFilter: ['class'] });
+  });
+}
+const modalOpenerStack = [];
+
+/**
+ * Удаление с возможностью отмены: элемент сразу пропадает из интерфейса,
+ * фактическое удаление на сервере откладывается на время показа тоста.
+ */
+const pendingSoftDeletes = new Map();
+function softDelete({ key, message, commit, undo, timeout = 6000 }) {
+  const id = key || ('sd-' + Date.now() + Math.random().toString(16).slice(2));
+  const run = async () => {
+    if (!pendingSoftDeletes.has(id)) return;
+    const entry = pendingSoftDeletes.get(id);
+    pendingSoftDeletes.delete(id);
+    clearTimeout(entry.timer);
+    try { await commit(); }
+    catch (e) { showToast('Не удалось удалить: ' + (e && e.message ? e.message : e), { type: 'error' }); try { undo && undo(); } catch (_) {} }
+  };
+  const timer = setTimeout(run, timeout);
+  pendingSoftDeletes.set(id, { timer, commit: run });
+  showToast(message, {
+    type: 'info',
+    timeout,
+    actionLabel: 'Отменить',
+    onAction: () => {
+      const entry = pendingSoftDeletes.get(id);
+      if (!entry) return;
+      clearTimeout(entry.timer);
+      pendingSoftDeletes.delete(id);
+      try { undo && undo(); } catch (e) { console.warn('undo failed', e); }
+    }
+  });
+  return id;
+}
+// Не теряем отложенные удаления при уходе со страницы.
+window.addEventListener('beforeunload', () => {
+  pendingSoftDeletes.forEach(entry => { clearTimeout(entry.timer); try { entry.commit(); } catch (_) { /* ignore */ } });
+  pendingSoftDeletes.clear();
+});
+
+/** Простой debounce для фильтров и поисковых полей. */
+function debounce(fn, wait = 250) {
+  let t = null;
+  return function (...args) {
+    clearTimeout(t);
+    t = setTimeout(() => fn.apply(this, args), wait);
+  };
 }
 
 function setDataSource(source, error = '') {
@@ -6061,6 +6497,12 @@ function mfSetFilter(value) {
     b.classList.toggle('active', (b.dataset.mfFilter || '') === myFunnelsState.filter));
   renderMyFunnels();
 }
+// Сброс поиска и всех фильтров списка воронок (кнопка из пустого состояния).
+function mfResetFilters() {
+  const search = document.getElementById('myFunnelsSearch'); if (search) search.value = '';
+  const plat = document.getElementById('myFunnelsPlatformFilter'); if (plat) plat.value = '';
+  mfSetFilter('');
+}
 function mfToggleExpand(id) {
   if (myFunnelsState.expanded.has(id)) myFunnelsState.expanded.delete(id);
   else myFunnelsState.expanded.add(id);
@@ -6153,7 +6595,9 @@ function renderMyFunnels() {
     ? 'обновлено в ' + new Date(myFunnelsState.refreshedAt).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
     : '';
   if (!myFunnelsState.list.length) {
-    box.innerHTML = '<div class="text-sm text-slate-500">Пока нет ни одной воронки. Нажмите «+ Новая воронка», чтобы собрать свою — за нужный период и с разбивкой по площадкам.</div>';
+    box.innerHTML = emptyStateHtml('🧩', 'Пока нет ни одной воронки',
+      'Соберите свою воронку за нужный период и с разбивкой по площадкам: источник каждого этапа — Я.Метрика, Leads.su или ручной ввод.',
+      '<button type="button" class="btn" onclick="openFunnelBuilder()">+ Новая воронка</button>');
     return;
   }
   const q = (document.getElementById('myFunnelsSearch')?.value || '').trim().toLowerCase();
@@ -6168,7 +6612,9 @@ function renderMyFunnels() {
   else if (f === 'nodata') list = list.filter(cfg => !myFunnelHasData(myFunnelsState.resolved[cfg.id]));
   list = mfSortList(list);
   if (!list.length) {
-    box.innerHTML = '<div class="text-sm text-slate-500">Ничего не найдено по текущим фильтрам.</div>';
+    box.innerHTML = emptyStateHtml('🔍', 'Ничего не найдено по текущим фильтрам',
+      'Попробуйте сбросить фильтры или изменить поисковый запрос.',
+      '<button type="button" class="btn" style="background:transparent;border:1px solid var(--border-strong);color:var(--text-dim);" onclick="mfResetFilters()">Сбросить фильтры</button>');
     return;
   }
   box.innerHTML = list.map(cfg => myFunnelCardHtml(cfg)).join('');
@@ -6245,7 +6691,9 @@ function myFunnelCardHtml(cfg) {
   if (hasManual) badges.push('<span class="mf-badge">частично вручную</span>');
   const gaps = myFunnelGaps(cfg, resolved);
   gaps.forEach(g => badges.push(
-    `<button type="button" class="mf-badge warn" onclick="openFunnelManual(${cfg.id}, ${g.stage.id})" title="Открыть ручной ввод этапа «${escapeHtml(g.stage.label)}»">«${escapeHtml(g.stage.label)}»: заполнить ${g.missing} дн.</button>`));
+    `<button type="button" class="mf-badge warn" onclick="openFunnelManual(${cfg.id}, ${g.stage.id})" title="Открыть ручной ввод этапа «${escapeHtml(g.stage.label)}» за период воронки">«${escapeHtml(g.stage.label)}»: заполнить ${g.missing} дн.</button>`));
+  // Счётчик незаполненных дней на кнопке ручного ввода.
+  const gapDays = gaps.reduce((s, g) => s + g.missing, 0);
 
   const details = expanded
     ? `<div id="myFunnelViz-${cfg.id}" class="funnel-visual"></div>`
@@ -6269,7 +6717,7 @@ function myFunnelCardHtml(cfg) {
           <button type="button" data-mode="platform" class="${split === 'platform' ? 'active' : ''}" onclick="setMyFunnelView(${cfg.id},'platform')">По площадкам</button>
         </div>` : ''}
         <button type="button" class="fb-icon-btn" onclick="openFunnelCompare(${cfg.id})" title="Сравнить воронку по периодам, площадкам или с другой воронкой">⇄ Сравнить</button>
-        ${hasManual ? `<button type="button" class="fb-icon-btn" onclick="openFunnelManualPicker(${cfg.id})" title="Ручной ввод данных">📥 Данные</button>` : ''}
+        ${hasManual ? `<button type="button" class="fb-icon-btn" onclick="openFunnelManualPicker(${cfg.id})" title="${gapDays ? `Ручной ввод: не заполнено ${gapDays} дн.` : 'Ручной ввод данных'}">📥 Данные${gapDays ? ` <span class="mf-badge warn" style="padding:0 6px;">${gapDays}</span>` : ''}</button>` : ''}
         <button type="button" class="fb-icon-btn" onclick="refreshMyFunnel(${cfg.id})" title="Обновить данные воронки">⟳</button>
         <button type="button" class="fb-icon-btn" onclick="duplicateFunnel(${cfg.id})" title="Дублировать воронку">⧉</button>
         <button type="button" class="fb-icon-btn" onclick="editFunnel(${cfg.id})" title="Редактировать">✎</button>
@@ -6739,14 +7187,29 @@ function editFunnel(id) {
   const cfg = myFunnelsState.list.find(c => c.id === id);
   if (cfg) openFunnelBuilder(cfg);
 }
-async function deleteFunnel(id) {
-  const cfg = myFunnelsState.list.find(c => c.id === id);
-  const name = cfg ? cfg.name : '';
-  if (!confirm(`Удалить воронку «${name}» и все её ручные данные? Действие необратимо.`)) return;
-  try {
-    await fetchJsonSafe(buildApiUrl({ action: 'funnel_config_delete', id }), { method: 'POST' });
-  } catch (e) { /* ignore */ }
-  await loadAndRenderMyFunnels();
+// Удаление воронки: карточка исчезает сразу, реальное удаление — после тоста
+// (пока тост виден, действие можно отменить).
+function deleteFunnel(id) {
+  const idx = myFunnelsState.list.findIndex(c => c.id === id);
+  if (idx < 0) return;
+  const cfg = myFunnelsState.list[idx];
+  const name = cfg.name || '';
+  if (!confirm(`Удалить воронку «${name}» и все её ручные данные?`)) return;
+  myFunnelsState.list.splice(idx, 1);
+  renderMyFunnels();
+  softDelete({
+    key: 'funnel-' + id,
+    message: `Воронка «${name}» удалена.`,
+    commit: async () => {
+      await fetchJsonSafe(buildApiUrl({ action: 'funnel_config_delete', id }), { method: 'POST' });
+      await loadAndRenderMyFunnels();
+    },
+    undo: () => {
+      myFunnelsState.list.splice(Math.min(idx, myFunnelsState.list.length), 0, cfg);
+      renderMyFunnels();
+      showToast(`Удаление воронки «${name}» отменено.`, { type: 'info' });
+    },
+  });
 }
 
 /* ----- Сравнение воронок: периоды / площадки / разные воронки ----- */
@@ -7591,128 +8054,642 @@ function fcRestoreFromHash() {
   return true;
 }
 
-const funnelManualState = { funnelId: 0, stageId: 0, cfg: null };
+// ===================== Ручной ввод данных этапа воронки =====================
+// Три способа ввода: по дням, одно значение за период (с раскладкой) и файл
+// из двух колонок. Режим записи — «заменить» или «прибавить к существующим».
+const funnelManualState = {
+  funnelId: 0, stageId: 0, cfg: null,
+  mode: 'days', writeMode: 'replace', source: 'all',
+  from: '', to: '',
+  serverRows: [],          // сохранённые строки этапа за период (все площадки)
+  deletedDates: new Set(), // даты, удалённые в редакторе — применяются при сохранении
+  importRows: [], importIssues: [], importWarnings: [], importFileName: '',
+};
+
 function funnelManualError(msg) {
   const err = document.getElementById('fmError'); if (!err) return;
   err.textContent = msg || '';
   err.classList.toggle('hidden', !msg);
 }
-// Выбор этапа для ручного ввода, если их несколько.
+
+function fmToday() { return new Date().toISOString().slice(0, 10); }
+function fmShiftDate(date, days) {
+  const d = new Date(date + 'T00:00:00');
+  d.setDate(d.getDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+function fmDateList(from, to) {
+  const out = [];
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || to < from) return out;
+  let cur = from;
+  let guard = 0;
+  while (cur <= to && guard++ < 1200) { out.push(cur); cur = fmShiftDate(cur, 1); }
+  return out;
+}
+// Раскладка значения по дням — та же логика, что и на сервере (остаток к последнему дню).
+function fmSpread(from, to, total, spread) {
+  const all = fmDateList(from, to);
+  if (!all.length || !Number.isFinite(total) || total < 0) return [];
+  if (spread === 'last') return [{ date: to, value: Math.round(total) }];
+  const dates = spread === 'weekdays'
+    ? all.filter(d => { const wd = new Date(d + 'T00:00:00').getDay(); return wd >= 1 && wd <= 5; })
+    : all;
+  if (!dates.length) return [];
+  const t = Math.round(total);
+  const base = Math.floor(t / dates.length);
+  const rest = t - base * dates.length;
+  return dates.map((d, i) => ({ date: d, value: base + (i === dates.length - 1 ? rest : 0) }));
+}
+
+// Ручные этапы воронки (для выпадающего списка «Этап»).
+function fmManualStages(cfg) {
+  return ((cfg && cfg.stages) || []).filter(s => !funnelSourceIsAuto(s.source_type));
+}
+
+// Период по умолчанию — период самой воронки (rolling или фиксированный).
+function fmDefaultPeriod(cfg) {
+  const resolved = myFunnelsState.resolved[cfg && cfg.id];
+  if (resolved && resolved.from && resolved.to) return { from: resolved.from, to: resolved.to };
+  if (cfg && cfg.period_mode === 'rolling') {
+    const days = Math.max(1, Number(cfg.rolling_days) || 30);
+    return { from: fmShiftDate(fmToday(), -(days - 1)), to: fmToday() };
+  }
+  if (cfg && cfg.date_from && cfg.date_to) return { from: cfg.date_from, to: cfg.date_to };
+  return { from: fmShiftDate(fmToday(), -29), to: fmToday() };
+}
+
+// Точка входа с карточки: модалка сама даёт выбрать этап.
 function openFunnelManualPicker(funnelId) {
   const cfg = myFunnelsState.list.find(c => c.id === funnelId);
   if (!cfg) return;
-  const manualStages = (cfg.stages || []).filter(s => !funnelSourceIsAuto(s.source_type));
-  if (!manualStages.length) { alert('В этой воронке нет этапов с ручным вводом.'); return; }
-  let stage = manualStages[0];
-  if (manualStages.length > 1) {
-    const list = manualStages.map((s, i) => `${i + 1}. ${s.label}`).join('\n');
-    const pick = prompt('Выберите этап для ручного ввода (номер):\n' + list, '1');
-    const idx = parseInt(pick, 10) - 1;
-    if (isNaN(idx) || idx < 0 || idx >= manualStages.length) return;
-    stage = manualStages[idx];
-  }
-  openFunnelManual(funnelId, stage.id);
+  const manualStages = fmManualStages(cfg);
+  if (!manualStages.length) { showToast('В этой воронке нет этапов с ручным вводом.', { type: 'warn' }); return; }
+  openFunnelManual(funnelId, manualStages[0].id);
 }
-function openFunnelManual(funnelId, stageId) {
+
+function openFunnelManual(funnelId, stageId, opts = {}) {
   const el = document.getElementById('funnelManualModal'); if (!el) return;
   const cfg = myFunnelsState.list.find(c => c.id === funnelId);
-  funnelManualState.funnelId = funnelId;
-  funnelManualState.stageId = stageId;
-  funnelManualState.cfg = cfg;
+  if (!cfg) return;
+  const st = funnelManualState;
+  st.funnelId = funnelId;
+  st.cfg = cfg;
+  const manualStages = fmManualStages(cfg);
+  st.stageId = stageId || (manualStages[0] && manualStages[0].id) || 0;
+  st.mode = 'days';
+  st.writeMode = 'replace';
+  st.deletedDates = new Set();
+  st.importRows = []; st.importIssues = []; st.importFileName = '';
+  const period = fmDefaultPeriod(cfg);
+  st.from = opts.from || period.from;
+  st.to = opts.to || period.to;
   document.getElementById('fmFunnelId').value = funnelId;
-  document.getElementById('fmStageId').value = stageId;
-  const stage = cfg && (cfg.stages || []).find(s => s.id === stageId);
-  document.getElementById('funnelManualTitle').textContent = 'Ручной ввод: ' + (stage ? stage.label : 'этап');
-  // Заполняем список площадок: выбранные в воронке + «Общий поток».
-  const sel = document.getElementById('fmSource');
-  const platforms = (cfg && cfg.platforms) || [];
-  const opts = [{ source_id: 'all', source_name: 'Общий поток' }].concat(platforms);
-  sel.innerHTML = opts.map(p => `<option value="${escapeHtml(p.source_id)}">${escapeHtml(p.source_name || p.source_id)}</option>`).join('');
+  document.getElementById('fmStageId').value = st.stageId;
+  document.getElementById('fmFrom').value = st.from;
+  document.getElementById('fmTo').value = st.to;
+  const totalInput = document.getElementById('fmPeriodTotal'); if (totalInput) totalInput.value = '';
+  const replaceChk = document.getElementById('fmImportReplacePeriod'); if (replaceChk) replaceChk.checked = false;
   const file = document.getElementById('fmFile'); if (file) file.value = '';
+  fmRenderStageOptions();
+  fmRenderSourceOptions();
+  fmSetMode('days');
+  fmSetWriteMode('replace');
+  fmRenderImportPreview();
   funnelManualError('');
   el.classList.add('is-open');
   document.body.style.overflow = 'hidden';
-  fmLoadSourceRows();
+  fmBindDropzone();
+  fmLoadRows();
 }
+
 function closeFunnelManual() {
   const el = document.getElementById('funnelManualModal'); if (!el) return;
   el.classList.remove('is-open');
   document.body.style.overflow = '';
 }
+
+// --- Списки этапов и площадок ---
+function fmStageTitle(stage) {
+  const resolved = myFunnelsState.resolved[funnelManualState.funnelId];
+  const info = ((resolved && resolved.stages) || []).find(s => Number(s.id) === Number(stage.id));
+  const days = Number(resolved && resolved.days) || 0;
+  const bits = [stage.label];
+  if (info) {
+    bits.push(`заполнено ${Number(info.filled_days) || 0}/${days} дн.`);
+    bits.push(`сумма ${Math.round(Number(info.total) || 0).toLocaleString('ru-RU')}`);
+  }
+  return bits.join(' · ');
+}
+function fmRenderStageOptions() {
+  const sel = document.getElementById('fmStage'); if (!sel) return;
+  const stages = fmManualStages(funnelManualState.cfg);
+  sel.innerHTML = stages.map(s =>
+    `<option value="${Number(s.id)}">${escapeHtml(fmStageTitle(s))}</option>`).join('');
+  sel.value = String(funnelManualState.stageId);
+  const stage = stages.find(s => Number(s.id) === Number(funnelManualState.stageId));
+  const title = document.getElementById('funnelManualTitle');
+  if (title) title.textContent = 'Ручной ввод: ' + (stage ? stage.label : 'этап');
+}
+function fmRenderSourceOptions() {
+  const sel = document.getElementById('fmSource'); if (!sel) return;
+  const platforms = (funnelManualState.cfg && funnelManualState.cfg.platforms) || [];
+  const opts = [{ source_id: 'all', source_name: 'Общий поток' }].concat(platforms);
+  sel.innerHTML = opts.map(p =>
+    `<option value="${escapeHtml(p.source_id)}">${escapeHtml(p.source_name || p.source_id)}</option>`).join('');
+  if (!opts.some(p => p.source_id === funnelManualState.source)) funnelManualState.source = opts[0].source_id;
+  sel.value = funnelManualState.source;
+}
+function fmChangeStage(stageId) {
+  funnelManualState.stageId = Number(stageId) || 0;
+  funnelManualState.deletedDates = new Set();
+  document.getElementById('fmStageId').value = funnelManualState.stageId;
+  fmRenderStageOptions();
+  fmLoadRows();
+}
+function fmChangeSource() {
+  funnelManualState.source = document.getElementById('fmSource')?.value || 'all';
+  funnelManualState.deletedDates = new Set();
+  fmRenderRows();
+}
+function fmPeriodChanged() {
+  const from = document.getElementById('fmFrom')?.value || '';
+  const to = document.getElementById('fmTo')?.value || '';
+  if (from && to && to < from) { funnelManualError('Дата «по» раньше даты «с».'); return; }
+  funnelManualError('');
+  funnelManualState.from = from;
+  funnelManualState.to = to;
+  fmLoadRows();
+}
+function fmApplyPreset(kind) {
+  const cfg = funnelManualState.cfg;
+  const today = fmToday();
+  let from = '', to = '';
+  if (kind === 'funnel') { const p = fmDefaultPeriod(cfg); from = p.from; to = p.to; }
+  else if (kind === 'this_month') { from = today.slice(0, 8) + '01'; to = today; }
+  else if (kind === 'prev_month') {
+    const d = new Date(today + 'T00:00:00');
+    const first = new Date(d.getFullYear(), d.getMonth() - 1, 1);
+    const last = new Date(d.getFullYear(), d.getMonth(), 0);
+    from = toLocalISODate(first); to = toLocalISODate(last);
+  }
+  else if (kind === 'last7') { from = fmShiftDate(today, -6); to = today; }
+  else if (kind === 'last30') { from = fmShiftDate(today, -29); to = today; }
+  if (!from || !to) return;
+  funnelManualState.from = from; funnelManualState.to = to;
+  document.getElementById('fmFrom').value = from;
+  document.getElementById('fmTo').value = to;
+  fmLoadRows();
+}
+
+// --- Переключатели режимов ---
+function fmSetMode(mode) {
+  funnelManualState.mode = ['days', 'period', 'import'].includes(mode) ? mode : 'days';
+  document.querySelectorAll('#fmModeTabs button').forEach(b =>
+    b.classList.toggle('active', b.dataset.fmMode === funnelManualState.mode));
+  document.getElementById('fmPanelDays')?.classList.toggle('active', funnelManualState.mode === 'days');
+  document.getElementById('fmPanelPeriod')?.classList.toggle('active', funnelManualState.mode === 'period');
+  document.getElementById('fmPanelImport')?.classList.toggle('active', funnelManualState.mode === 'import');
+  if (funnelManualState.mode === 'period') fmRenderPeriodPreview();
+  fmRenderSummary();
+}
+function fmSetWriteMode(mode) {
+  funnelManualState.writeMode = mode === 'add' ? 'add' : 'replace';
+  document.querySelectorAll('#fmWriteTabs button').forEach(b =>
+    b.classList.toggle('active', b.dataset.fmWrite === funnelManualState.writeMode));
+  if (funnelManualState.mode === 'period') fmRenderPeriodPreview();
+  fmRenderSummary();
+}
+
+// --- Загрузка и отрисовка строк ---
+async function fmLoadRows() {
+  const box = document.getElementById('fmRows'); if (!box) return;
+  const st = funnelManualState;
+  box.innerHTML = '<div class="text-xs" style="color:var(--text-faint);">Загрузка…</div>';
+  try {
+    const params = { action: 'funnel_manual_list', funnel_id: st.funnelId, stage_id: st.stageId };
+    if (st.from && st.to) { params.date_from = st.from; params.date_to = st.to; }
+    const j = await fetchJsonSafe(buildApiUrl(params));
+    st.serverRows = (j && j.status === 'success' && Array.isArray(j.data)) ? j.data : [];
+  } catch (e) {
+    st.serverRows = [];
+    funnelManualError('Не удалось загрузить сохранённые данные: ' + (e && e.message ? e.message : e));
+  }
+  fmRenderRows();
+}
+
 function fmRowHtml(date = '', value = '') {
   return `<div class="fm-row flex gap-2 items-center">
-    <input type="date" class="fm-date bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm" value="${escapeHtml(date)}">
-    <input type="number" min="0" step="1" class="fm-val bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm w-28" placeholder="значение" value="${escapeHtml(String(value))}">
-    <button type="button" class="text-sm" style="color:#f87171;background:none;border:none;cursor:pointer;" title="Удалить" onclick="this.parentElement.remove()">✕</button>
+    <input type="date" class="fm-date bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm" value="${escapeHtml(date)}" onchange="fmRenderSummary()">
+    <input type="number" min="0" step="1" class="fm-val bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm w-28" placeholder="значение" value="${escapeHtml(String(value))}" oninput="fmRenderSummary()">
+    <button type="button" class="text-sm" style="color:#f87171;background:none;border:none;cursor:pointer;" title="Удалить строку" aria-label="Удалить строку" onclick="fmRemoveRow(this)">✕</button>
   </div>`;
 }
 function fmAddRow(date = '', value = '') {
   const box = document.getElementById('fmRows');
-  if (box) box.insertAdjacentHTML('beforeend', fmRowHtml(date, value));
+  if (!box) return;
+  box.insertAdjacentHTML('beforeend', fmRowHtml(date || funnelManualState.to || fmToday(), value));
+  fmRenderSummary();
 }
-async function fmLoadSourceRows() {
+// Удаление строки: если дата была сохранена, помечаем её к удалению на сервере.
+function fmRemoveRow(btn) {
+  const row = btn.closest('.fm-row'); if (!row) return;
+  const date = row.querySelector('.fm-date')?.value || '';
+  const st = funnelManualState;
+  const existed = st.serverRows.some(r => r.date === date && (r.source_id || 'all') === st.source);
+  if (existed && date) st.deletedDates.add(date);
+  row.remove();
+  fmRenderSummary();
+  fmRenderCalendar();
+}
+function fmRenderRows() {
   const box = document.getElementById('fmRows'); if (!box) return;
-  const src = document.getElementById('fmSource').value || 'all';
-  box.innerHTML = '<div class="text-xs text-slate-500">Загрузка…</div>';
-  let rows = [];
-  try {
-    const j = await fetchJsonSafe(buildApiUrl({ action: 'funnel_manual_list', funnel_id: funnelManualState.funnelId, stage_id: funnelManualState.stageId }));
-    if (j && j.status === 'success' && Array.isArray(j.data)) {
-      rows = j.data.filter(r => (r.source_id || 'all') === src);
-    }
-  } catch (e) { /* ignore */ }
-  box.innerHTML = rows.map(r => fmRowHtml(r.date, r.value)).join('');
-  if (!rows.length) fmAddRow(new Date().toISOString().slice(0, 10), '');
+  const st = funnelManualState;
+  const rows = st.serverRows
+    .filter(r => (r.source_id || 'all') === st.source && !st.deletedDates.has(r.date))
+    .sort((a, b) => String(a.date).localeCompare(String(b.date)));
+  box.innerHTML = rows.length
+    ? rows.map(r => fmRowHtml(r.date, r.value)).join('')
+    : fmRowHtml(st.to || fmToday(), '');
+  fmRenderSummary();
+  fmRenderCalendar();
 }
-async function handleFunnelManualFile(input) {
-  const f = input.files && input.files[0]; if (!f) return;
+function fmSortRows() {
+  const rows = fmCollectRows().rows.sort((a, b) => a.date.localeCompare(b.date));
+  const box = document.getElementById('fmRows'); if (!box) return;
+  box.innerHTML = rows.length ? rows.map(r => fmRowHtml(r.date, r.value)).join('') : fmRowHtml(funnelManualState.to || fmToday(), '');
+  fmRenderSummary();
+}
+// Заполняет нулями дни периода, которых нет в редакторе.
+function fmFillGapsWithZeros() {
+  const st = funnelManualState;
+  const days = fmDateList(st.from, st.to);
+  if (!days.length) { funnelManualError('Сначала задайте корректный период.'); return; }
+  const have = new Set(fmCollectRows().rows.map(r => r.date));
+  const missing = days.filter(d => !have.has(d));
+  if (!missing.length) { showToast('Пропусков в периоде нет.', { type: 'info' }); return; }
+  missing.forEach(d => fmAddRow(d, 0));
+  fmSortRows();
+  showToast(`Добавлено ${missing.length} дн. с нулями — не забудьте сохранить.`, { type: 'info' });
+}
+// Полная очистка периода на сервере (с возможностью отмены до фактического удаления).
+async function fmClearPeriod() {
+  const st = funnelManualState;
+  if (!st.from || !st.to) { funnelManualError('Сначала задайте корректный период.'); return; }
+  if (!confirm(`Удалить все данные этапа за ${st.from} — ${st.to} по выбранной площадке?`)) return;
   try {
-    const workbook = XLSX.read(await f.arrayBuffer(), { cellDates: true });
-    const sheet = workbook.Sheets[workbook.SheetNames[0]];
-    const lines = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: '' });
-    const parsed = []; const errors = [];
-    for (let i = 0; i < lines.length; i++) {
-      const row = lines[i] || [];
-      if (!String(row[0]).trim() && !String(row[1]).trim()) continue;
-      if (i === 0 && /дата|date/i.test(String(row[0]))) continue;
-      const date = parseBannerBounceDate(row[0]);
-      const n = Number(String(row[1]).replace(/\s/g, '').replace(',', '.'));
-      if (!date || !Number.isFinite(n) || n < 0 || !Number.isInteger(n)) { errors.push(`строка ${i + 1}`); continue; }
-      parsed.push({ date, value: n });
-    }
-    if (parsed.length) {
-      const box = document.getElementById('fmRows');
-      if (box) box.innerHTML = parsed.map(r => fmRowHtml(r.date, r.value)).join('');
-    }
-    funnelManualError(errors.length
-      ? `Пропущены строки с ошибками (${errors.length}): ${errors.slice(0, 3).join(' | ')}${errors.length > 3 ? '…' : ''}`
-      : (parsed.length ? '' : 'В файле не найдено корректных строк: A — дата, B — значение.'));
+    const j = await fetchJsonSafe(buildApiUrl({ action: 'funnel_manual_delete' }), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ funnel_id: st.funnelId, stage_id: st.stageId, source_id: st.source, date_from: st.from, date_to: st.to })
+    });
+    if (!j || j.status !== 'success') { funnelManualError((j && j.error) || 'Не удалось очистить период.'); return; }
+    showToast(`Удалено записей: ${j.deleted || 0}.`, { type: 'success' });
+    st.deletedDates = new Set();
+    await fmLoadRows();
+    await refreshMyFunnel(st.funnelId);
   } catch (e) {
-    funnelManualError(`Не удалось прочитать файл: ${e.message || 'неверный формат'}.`);
+    funnelManualError('Ошибка удаления: ' + (e && e.message ? e.message : e));
   }
 }
-async function saveFunnelManual() {
-  const box = document.getElementById('fmRows'); if (!box) return;
-  const src = document.getElementById('fmSource').value || 'all';
+// Собирает строки редактора; невалидные попадают в bad.
+function fmCollectRows() {
+  const box = document.getElementById('fmRows');
   const rows = []; const bad = [];
+  if (!box) return { rows, bad };
   box.querySelectorAll('.fm-row').forEach(rowEl => {
     const date = rowEl.querySelector('.fm-date')?.value || '';
     const valRaw = rowEl.querySelector('.fm-val')?.value ?? '';
     if (!date && valRaw === '') return;
     const n = Number(valRaw);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(n) || n < 0 || !Number.isInteger(n)) { bad.push(date || '(без даты)'); return; }
-    rows.push({ date, value: n, source_id: src });
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(n) || n < 0) { bad.push(date || '(без даты)'); return; }
+    rows.push({ date, value: Math.round(n), source_id: funnelManualState.source });
   });
-  if (!rows.length) { funnelManualError('Нет корректных строк: нужны дата и целое неотрицательное число.'); return; }
-  funnelManualError(bad.length ? `Строки с ошибками пропущены: ${bad.join(', ')}` : '');
+  return { rows, bad };
+}
+// Подвал модалки: сколько строк, сумма и что произойдёт при сохранении.
+function fmRenderSummary() {
+  const el = document.getElementById('fmSummary'); if (!el) return;
+  const st = funnelManualState;
+  const existing = new Set(st.serverRows.filter(r => (r.source_id || 'all') === st.source).map(r => r.date));
+  let rows = [];
+  if (st.mode === 'days') rows = fmCollectRows().rows;
+  else if (st.mode === 'import') rows = st.importRows;
+  else {
+    const total = Number(document.getElementById('fmPeriodTotal')?.value);
+    const spread = document.getElementById('fmPeriodSpread')?.value || 'even';
+    rows = Number.isFinite(total) && total >= 0 ? fmSpread(st.from, st.to, total, spread) : [];
+  }
+  const sum = rows.reduce((s, r) => s + (Number(r.value) || 0), 0);
+  const upd = rows.filter(r => existing.has(r.date)).length;
+  const add = rows.length - upd;
+  const del = st.mode === 'days' ? st.deletedDates.size : 0;
+  const modeTxt = st.writeMode === 'add' ? 'прибавим к текущим' : 'перезапишем';
+  el.innerHTML = rows.length || del
+    ? `Строк: <b>${rows.length}</b> · сумма: <b>${sum.toLocaleString('ru-RU')}</b> · ${modeTxt}: <b>${upd}</b> дат, добавим: <b>${add}</b>${del ? ` · удалим: <b>${del}</b>` : ''}`
+    : 'Данных для сохранения пока нет.';
+}
+// Мини-календарь покрытия периода данными.
+function fmRenderCalendar() {
+  const box = document.getElementById('fmCalendar'); if (!box) return;
+  const st = funnelManualState;
+  const days = fmDateList(st.from, st.to);
+  if (!days.length) { box.innerHTML = '<div class="text-xs" style="color:var(--text-faint);">Период не задан.</div>'; return; }
+  const byDate = new Map();
+  st.serverRows.filter(r => (r.source_id || 'all') === st.source).forEach(r => byDate.set(r.date, Number(r.value) || 0));
+  box.innerHTML = days.map(d => {
+    const has = byDate.has(d) && !st.deletedDates.has(d);
+    const val = byDate.get(d) || 0;
+    const cls = !has ? 'empty' : (val > 0 ? 'filled' : 'zero');
+    return `<button type="button" class="${cls}" title="${d}: ${has ? val.toLocaleString('ru-RU') : 'нет данных'}" onclick="fmFocusDate('${d}')">${d.slice(8)}</button>`;
+  }).join('');
+}
+// Клик по дню календаря: фокус на строку этой даты (или создание новой).
+function fmFocusDate(date) {
+  if (funnelManualState.mode !== 'days') fmSetMode('days');
+  const box = document.getElementById('fmRows'); if (!box) return;
+  let target = null;
+  box.querySelectorAll('.fm-row').forEach(row => {
+    if ((row.querySelector('.fm-date')?.value || '') === date) target = row;
+  });
+  if (!target) {
+    funnelManualState.deletedDates.delete(date);
+    fmAddRow(date, '');
+    target = box.lastElementChild;
+  }
+  const input = target && target.querySelector('.fm-val');
+  if (input) { input.focus(); input.select(); }
+}
+
+// --- Разбор чисел и дат при импорте ---
+function fmParseNumber(raw) {
+  if (typeof raw === 'number') return Number.isFinite(raw) ? raw : null;
+  const s = String(raw ?? '').replace(/\u00a0|\s/g, '').replace(',', '.');
+  if (!s) return null;
+  const n = Number(s);
+  return Number.isFinite(n) ? n : null;
+}
+// Возвращает { date } для дня либо { month: 'YYYY-MM' } для месячной строки.
+function fmParseDateCell(raw) {
+  const day = parseBannerBounceDate(raw);
+  if (day) return { date: day };
+  const v = String(raw ?? '').trim();
+  let m = v.match(/^(\d{1,2})[\/.](\d{1,2})[\/.](\d{4})$/);
+  if (m) {
+    const dd = Number(m[1]); const mm = Number(m[2]);
+    if (dd >= 1 && dd <= 31 && mm >= 1 && mm <= 12) {
+      return { date: `${m[3]}-${String(mm).padStart(2, '0')}-${String(dd).padStart(2, '0')}` };
+    }
+  }
+  m = v.match(/^(\d{4})-(\d{1,2})$/);
+  if (m && Number(m[2]) >= 1 && Number(m[2]) <= 12) return { month: `${m[1]}-${String(Number(m[2])).padStart(2, '0')}` };
+  m = v.match(/^(\d{1,2})[.\/](\d{4})$/);
+  if (m && Number(m[1]) >= 1 && Number(m[1]) <= 12) return { month: `${m[2]}-${String(Number(m[1])).padStart(2, '0')}` };
+  return null;
+}
+function fmMonthRange(month) {
+  const from = month + '-01';
+  const d = new Date(Number(month.slice(0, 4)), Number(month.slice(5, 7)), 0);
+  return { from, to: toLocalISODate(d) };
+}
+const FM_DATE_HEADERS = /^(дата|date|день|day|период|period|месяц|month)$/i;
+const FM_VALUE_HEADERS = /^(значение|value|кол-?во|количество|count|показатель|amount|qty)$/i;
+/**
+ * Разбор двухколоночной таблицы: строки → { rows, issues, warnings }.
+ * Месячные строки раскладываются по дням месяца, дубли дат суммируются.
+ */
+function fmParseTable(matrix) {
+  const rows = []; const issues = []; const warnings = [];
+  let rounded = 0;
+  const byDate = new Map();
+  matrix.forEach((row, i) => {
+    const a = row && row[0]; const b = row && row[1];
+    if (!String(a ?? '').trim() && !String(b ?? '').trim()) return;
+    if (i === 0 && (FM_DATE_HEADERS.test(String(a ?? '').trim()) || FM_VALUE_HEADERS.test(String(b ?? '').trim()))) return;
+    const parsed = fmParseDateCell(a);
+    const num = fmParseNumber(b);
+    if (!parsed) { issues.push({ line: i + 1, reason: `не распознана дата «${String(a ?? '').slice(0, 24)}»` }); return; }
+    if (num === null || num < 0) { issues.push({ line: i + 1, reason: `не распознано значение «${String(b ?? '').slice(0, 24)}»` }); return; }
+    let value = num;
+    if (!Number.isInteger(value)) { value = Math.round(value); rounded++; }
+    if (parsed.month) {
+      const range = fmMonthRange(parsed.month);
+      fmSpread(range.from, range.to, value, 'even').forEach(r => {
+        byDate.set(r.date, (byDate.get(r.date) || 0) + r.value);
+      });
+      warnings.push(`строка ${i + 1}: месяц ${parsed.month} разложен по дням`);
+      return;
+    }
+    if (byDate.has(parsed.date)) warnings.push(`дата ${parsed.date} встречается несколько раз — значения просуммированы`);
+    byDate.set(parsed.date, (byDate.get(parsed.date) || 0) + value);
+  });
+  if (rounded) warnings.push(`округлено дробных значений: ${rounded}`);
+  Array.from(byDate.keys()).sort().forEach(d => rows.push({ date: d, value: byDate.get(d) }));
+  return { rows, issues, warnings: Array.from(new Set(warnings)) };
+}
+
+// Чтение файла: CSV разбираем сами (`,` / `;` / таб), остальное — через XLSX.
+async function fmReadFileMatrix(file) {
+  const isCsv = /\.csv$/i.test(file.name) || file.type === 'text/csv';
+  if (isCsv) {
+    const text = (await file.text()).replace(/^\uFEFF/, '');
+    const lines = text.split(/\r?\n/);
+    const sample = lines.slice(0, 5).join('\n');
+    const counts = { ';': (sample.match(/;/g) || []).length, '\t': (sample.match(/\t/g) || []).length, ',': (sample.match(/,/g) || []).length };
+    const sep = Object.keys(counts).reduce((a, b) => (counts[b] > counts[a] ? b : a), ';');
+    return lines.map(l => l.split(sep).map(c => c.trim().replace(/^"|"$/g, '')));
+  }
+  const workbook = XLSX.read(await file.arrayBuffer(), { cellDates: true });
+  const sheet = workbook.Sheets[workbook.SheetNames[0]];
+  return XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: '' });
+}
+
+async function handleFunnelManualFile(input) {
+  const f = input.files && input.files[0]; if (!f) return;
+  await fmImportFile(f);
+  input.value = '';
+}
+async function fmImportFile(file) {
+  const st = funnelManualState;
+  funnelManualError('');
   try {
+    const matrix = await fmReadFileMatrix(file);
+    const parsed = fmParseTable(matrix);
+    st.importRows = parsed.rows.map(r => Object.assign({}, r, { source_id: st.source }));
+    st.importIssues = parsed.issues;
+    st.importWarnings = parsed.warnings;
+    st.importFileName = file.name;
+    fmSetMode('import');
+    fmRenderImportPreview();
+    if (!parsed.rows.length) funnelManualError('В файле не найдено корректных строк: A — дата, B — значение.');
+  } catch (e) {
+    funnelManualError(`Не удалось прочитать файл: ${e && e.message ? e.message : 'неверный формат'}.`);
+  }
+}
+function fmBindDropzone() {
+  const zone = document.getElementById('fmDropzone');
+  if (!zone || zone.dataset.bound === '1') return;
+  zone.dataset.bound = '1';
+  ['dragenter', 'dragover'].forEach(ev => zone.addEventListener(ev, e => {
+    e.preventDefault(); zone.classList.add('is-drag');
+  }));
+  ['dragleave', 'drop'].forEach(ev => zone.addEventListener(ev, e => {
+    e.preventDefault(); zone.classList.remove('is-drag');
+  }));
+  zone.addEventListener('drop', e => {
+    const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    if (file) fmImportFile(file);
+  });
+  zone.addEventListener('keydown', e => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); document.getElementById('fmFile')?.click(); }
+  });
+  // Вставка двух колонок из Excel прямо в редактор строк.
+  const rowsBox = document.getElementById('fmRows');
+  if (rowsBox && rowsBox.dataset.bound !== '1') {
+    rowsBox.dataset.bound = '1';
+    rowsBox.addEventListener('paste', e => {
+      const text = (e.clipboardData || window.clipboardData)?.getData('text') || '';
+      if (!/[\t;,]/.test(text) && !/\n/.test(text)) return;
+      e.preventDefault();
+      const matrix = text.split(/\r?\n/).map(l => l.split(/\t|;/));
+      const parsed = fmParseTable(matrix);
+      if (!parsed.rows.length) { funnelManualError('В буфере обмена не найдено пар «дата — значение».'); return; }
+      const box = document.getElementById('fmRows');
+      box.innerHTML = parsed.rows.map(r => fmRowHtml(r.date, r.value)).join('');
+      fmRenderSummary();
+      showToast(`Вставлено строк: ${parsed.rows.length}.`, { type: 'success' });
+    });
+  }
+}
+function fmRenderImportPreview() {
+  const box = document.getElementById('fmImportPreview'); if (!box) return;
+  const st = funnelManualState;
+  if (!st.importRows.length && !st.importIssues.length) {
+    box.textContent = 'Файл ещё не загружен.';
+    fmRenderSummary();
+    return;
+  }
+  const existing = new Set(st.serverRows.filter(r => (r.source_id || 'all') === st.source).map(r => r.date));
+  const upd = st.importRows.filter(r => existing.has(r.date)).length;
+  const add = st.importRows.length - upd;
+  const sum = st.importRows.reduce((s, r) => s + r.value, 0);
+  const head = `<div class="mb-2"><b>${escapeHtml(st.importFileName || 'файл')}</b>: строк <b>${st.importRows.length}</b>
+    (обновится <b>${upd}</b>, новых <b>${add}</b>), сумма <b>${sum.toLocaleString('ru-RU')}</b>${st.importIssues.length ? `, с ошибками <b style="color:var(--bad)">${st.importIssues.length}</b>` : ''}</div>`;
+  const preview = st.importRows.slice(0, 12).map(r =>
+    `<tr><td>${escapeHtml(r.date)}</td><td class="num">${r.value.toLocaleString('ru-RU')}</td></tr>`).join('');
+  const table = st.importRows.length
+    ? `<table class="fm-import-table"><thead><tr><th>Дата</th><th class="num">Значение</th></tr></thead><tbody>${preview}</tbody></table>
+       ${st.importRows.length > 12 ? `<div class="text-[11px] mt-1" style="color:var(--text-faint);">…и ещё ${st.importRows.length - 12} строк</div>` : ''}`
+    : '';
+  const issues = st.importIssues.length
+    ? `<div class="mt-2" style="color:var(--bad);">Пропущены строки: ${st.importIssues.slice(0, 5).map(i => `№${i.line} — ${escapeHtml(i.reason)}`).join('; ')}${st.importIssues.length > 5 ? ` и ещё ${st.importIssues.length - 5}` : ''}</div>`
+    : '';
+  const warns = (st.importWarnings || []).length
+    ? `<div class="mt-2" style="color:var(--warn);">${(st.importWarnings || []).slice(0, 4).map(w => escapeHtml(w)).join('; ')}</div>`
+    : '';
+  box.innerHTML = head + table + issues + warns;
+  fmRenderSummary();
+}
+// Шаблон файла: две колонки с примером.
+function fmDownloadTemplate(kind) {
+  const today = fmToday();
+  const aoa = [['Дата', 'Значение'], [today, 100], [fmShiftDate(today, -1), 120], [fmShiftDate(today, -2), 95]];
+  if (kind === 'xlsx' && window.XLSX) {
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Данные');
+    XLSX.writeFile(wb, 'shablon-ruchnoy-vvod.xlsx');
+    return;
+  }
+  const csv = '\uFEFF' + aoa.map(r => r.join(';')).join('\r\n');
+  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
+  const a = document.createElement('a');
+  a.href = url; a.download = 'shablon-ruchnoy-vvod.csv';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function fmRenderPeriodPreview() {
+  const box = document.getElementById('fmPeriodPreview'); if (!box) return;
+  const st = funnelManualState;
+  const total = Number(document.getElementById('fmPeriodTotal')?.value);
+  const spread = document.getElementById('fmPeriodSpread')?.value || 'even';
+  if (!st.from || !st.to || st.to < st.from) { box.textContent = 'Задайте корректный период.'; fmRenderSummary(); return; }
+  if (!Number.isFinite(total) || total < 0) { box.textContent = 'Укажите значение за период — покажем раскладку по дням.'; fmRenderSummary(); return; }
+  const rows = fmSpread(st.from, st.to, total, spread);
+  if (!rows.length) { box.textContent = 'В выбранном периоде нет подходящих дней.'; fmRenderSummary(); return; }
+  const existing = new Set(st.serverRows.filter(r => (r.source_id || 'all') === st.source).map(r => r.date));
+  const upd = rows.filter(r => existing.has(r.date)).length;
+  const perDay = rows[0].value;
+  const lastVal = rows[rows.length - 1].value;
+  const sum = rows.reduce((s, r) => s + r.value, 0);
+  box.innerHTML = `Затронуто дней: <b>${rows.length}</b> (${escapeHtml(rows[0].date)} — ${escapeHtml(rows[rows.length - 1].date)}).
+    На день: <b>${perDay.toLocaleString('ru-RU')}</b>${lastVal !== perDay ? `, последний день: <b>${lastVal.toLocaleString('ru-RU')}</b> (остаток)` : ''}.
+    Сумма раскладки: <b>${sum.toLocaleString('ru-RU')}</b>.
+    ${st.writeMode === 'add' ? 'Значения будут <b>прибавлены</b> к существующим' : 'Существующие значения будут <b>перезаписаны</b>'}:
+    обновится <b>${upd}</b> дат, добавится <b>${rows.length - upd}</b>.`;
+  fmRenderSummary();
+}
+
+// --- Сохранение ---
+async function saveFunnelManual() {
+  const st = funnelManualState;
+  funnelManualError('');
+  if (!st.funnelId || !st.stageId) { funnelManualError('Не выбран этап.'); return; }
+  let payload = null; let bad = [];
+  if (st.mode === 'days') {
+    const collected = fmCollectRows();
+    bad = collected.bad;
+    if (!collected.rows.length && !st.deletedDates.size) {
+      funnelManualError('Нет корректных строк: нужны дата и неотрицательное число.'); return;
+    }
+    payload = { rows: collected.rows, entry_source: 'day' };
+  } else if (st.mode === 'period') {
+    const total = Number(document.getElementById('fmPeriodTotal')?.value);
+    const spread = document.getElementById('fmPeriodSpread')?.value || 'even';
+    if (!st.from || !st.to || st.to < st.from) { funnelManualError('Задайте корректный период.'); return; }
+    if (!Number.isFinite(total) || total < 0) { funnelManualError('Укажите неотрицательное значение за период.'); return; }
+    payload = { period: { date_from: st.from, date_to: st.to, total: Math.round(total), spread } };
+  } else {
+    if (!st.importRows.length) { funnelManualError('Сначала загрузите файл с данными.'); return; }
+    payload = { rows: st.importRows, entry_source: 'import' };
+  }
+  const body = Object.assign({
+    funnel_id: st.funnelId, stage_id: st.stageId,
+    source_id: st.source, mode: st.writeMode,
+  }, payload);
+  try {
+    // 1) Удаления: строки, убранные в редакторе, либо «заменить весь период файла».
+    const replacePeriod = st.mode === 'import' && document.getElementById('fmImportReplacePeriod')?.checked;
+    if (st.mode === 'days' && st.deletedDates.size) {
+      await fetchJsonSafe(buildApiUrl({ action: 'funnel_manual_delete' }), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ funnel_id: st.funnelId, stage_id: st.stageId, source_id: st.source, dates: Array.from(st.deletedDates) })
+      });
+    }
+    if (replacePeriod && st.importRows.length) {
+      const dates = st.importRows.map(r => r.date).sort();
+      await fetchJsonSafe(buildApiUrl({ action: 'funnel_manual_delete' }), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ funnel_id: st.funnelId, stage_id: st.stageId, source_id: st.source, date_from: dates[0], date_to: dates[dates.length - 1] })
+      });
+    }
+    // 2) Сохранение значений.
     const j = await fetchJsonSafe(buildApiUrl({ action: 'funnel_manual_save' }), {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ funnel_id: funnelManualState.funnelId, stage_id: funnelManualState.stageId, rows })
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
     });
     if (!j || j.status !== 'success') { funnelManualError((j && j.error) || 'Ошибка сохранения.'); return; }
-    if (!bad.length) closeFunnelManual();
-    await loadAndRenderMyFunnels();
+    const skipped = Array.isArray(j.skipped) ? j.skipped.length : 0;
+    const periodTxt = j.date_from && j.date_to ? ` за ${j.date_from} — ${j.date_to}` : '';
+    showToast(`Сохранено ${j.saved || 0} строк${periodTxt}: обновлено ${j.updated || 0}, добавлено ${j.added || 0}` +
+      `${skipped ? `, пропущено ${skipped}` : ''}${bad.length ? `, с ошибками в форме ${bad.length}` : ''}.`,
+      { type: skipped || bad.length ? 'warn' : 'success' });
+    st.deletedDates = new Set();
+    st.importRows = []; st.importIssues = []; st.importWarnings = [];
+    st.importFileName = '';
+    fmRenderImportPreview();
+    await fmLoadRows();
+    await refreshMyFunnel(st.funnelId);
+    if (!bad.length && !skipped) closeFunnelManual();
+    else funnelManualError(bad.length ? `Строки с ошибками пропущены: ${bad.join(', ')}` : `Сервер пропустил строки: ${(j.skipped || []).slice(0, 5).join(', ')}`);
   } catch (e) {
     funnelManualError('Ошибка сохранения: ' + (e && e.message ? e.message : e));
   }
@@ -11588,7 +12565,16 @@ function isoShift(iso, days) {
 let hypothesesState = {
   months: [], items: [], filterStatus: '', filterKey: false, pendingNotes: [],
   expandedIds: new Set(), renderSeq: 0,
+  // Поиск по названию/комментариям, фильтр свежести дневника и раскрытые логи.
+  search: '', noteFilter: '', notesExpanded: new Set(),
 };
+const HYP_AUTHOR_KEY = 'hypAuthorName';
+function hypAuthorName() {
+  try { return localStorage.getItem(HYP_AUTHOR_KEY) || ''; } catch (_) { return ''; }
+}
+function hypSetAuthorName(value) {
+  try { localStorage.setItem(HYP_AUTHOR_KEY, (value || '').trim()); } catch (_) { /* ignore */ }
+}
 function currentMonthKey() { return new Date().toISOString().slice(0, 7); }
 // Сдвигает YYYY-MM на delta месяцев.
 function shiftMonthKey(monthKey, delta) {
@@ -11923,10 +12909,68 @@ function hypToggleKeyFilter(btn) {
   btn.classList.toggle('active', hypothesesState.filterKey);
   renderHypList();
 }
+// Фильтры по дневнику: свежие записи (7 дн.) и «протухшие» тесты (>14 дн.).
+function hypToggleNoteFilter(kind, btn) {
+  hypothesesState.noteFilter = hypothesesState.noteFilter === kind ? '' : kind;
+  ['hypFreshFilter', 'hypStaleFilter'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.classList.toggle('active', hypothesesState.noteFilter === (id === 'hypFreshFilter' ? 'fresh' : 'stale'));
+  });
+  renderHypList();
+}
+const hypSearchChanged = debounce(value => {
+  hypothesesState.search = (value || '').trim().toLowerCase();
+  renderHypList();
+}, 250);
+function hypResetFilters() {
+  hypothesesState.filterStatus = '';
+  hypothesesState.filterKey = false;
+  hypothesesState.noteFilter = '';
+  hypothesesState.search = '';
+  const search = document.getElementById('hypSearch'); if (search) search.value = '';
+  document.querySelectorAll('#hypFilterBar .hyp-filter-chip').forEach(b => b.classList.remove('active'));
+  const all = document.querySelector('#hypFilterBar .hyp-filter-chip[data-filter-status=""]');
+  if (all) all.classList.add('active');
+  renderHypList();
+}
+// Приводим контролы фильтров к состоянию (нужно при первом рендере вкладки).
+function hypSyncFilterControls() {
+  const search = document.getElementById('hypSearch');
+  if (search && search.value !== hypothesesState.search) search.value = hypothesesState.search || '';
+  const author = document.getElementById('hypAuthorName');
+  if (author && !author.value) author.value = hypAuthorName();
+}
+// Записи дневника: массив с устойчивыми id и датой/временем.
+function hypNotes(h) {
+  return Array.isArray(h && h.progress_notes) ? h.progress_notes.filter(n => n && n.text) : [];
+}
+function hypLastNoteDate(h) {
+  const notes = hypNotes(h);
+  if (!notes.length) return null;
+  return notes.map(n => String(n.date || '')).sort().pop() || null;
+}
+function hypDaysSinceNote(h) {
+  const last = hypLastNoteDate(h);
+  if (!last) return null;
+  const diff = (Date.now() - new Date(last + 'T00:00:00').getTime()) / 86400000;
+  return Number.isFinite(diff) ? Math.floor(diff) : null;
+}
 function hypFilteredItems() {
+  const q = hypothesesState.search;
   return (hypothesesState.items || []).filter(h => {
     if (hypothesesState.filterStatus && (h.status || 'planning') !== hypothesesState.filterStatus) return false;
     if (hypothesesState.filterKey && !h.is_key) return false;
+    if (hypothesesState.noteFilter) {
+      const days = hypDaysSinceNote(h);
+      if (hypothesesState.noteFilter === 'fresh' && !(days !== null && days <= 7)) return false;
+      if (hypothesesState.noteFilter === 'stale' && !(days === null || days > 14)) return false;
+    }
+    if (q) {
+      const hay = [h.title, h.description, h.goal, h.planned_result, h.levers]
+        .concat(hypNotes(h).map(n => `${n.text} ${n.author || ''}`))
+        .join(' ').toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
     return true;
   });
 }
@@ -11951,6 +12995,171 @@ function hypToggleRowExpand(id) {
   if (el.classList.contains('hidden')) hypothesesState.expandedIds.delete(Number(id));
   else hypothesesState.expandedIds.add(Number(id));
 }
+// ------------------------- Дневник гипотезы -------------------------
+// Записи хранятся в progress_notes с устойчивыми id, поэтому редактирование
+// и удаление не «съезжают» при параллельных изменениях из другой вкладки.
+const HYP_NOTE_TAGS = { comment: 'комментарий', decision: 'решение', fact: 'факт' };
+
+function hypNoteMetaHtml(n) {
+  const when = `${escapeHtml(n.date || '')}${n.time ? ' ' + escapeHtml(n.time) : ''}`;
+  const author = n.author ? ' · ' + escapeHtml(n.author) : '';
+  const edited = n.edited_at ? ` · <span title="Изменено ${escapeHtml(n.edited_at)}">изменено</span>` : '';
+  const tag = n.tag && n.tag !== 'comment'
+    ? ` <span class="hyp-note-tag ${escapeHtml(n.tag)}">${escapeHtml(HYP_NOTE_TAGS[n.tag] || n.tag)}</span>` : '';
+  return `${when}${author}${edited}${tag}`;
+}
+// Одна запись дневника с действиями (используется в карточке и в раскрытии строки).
+function hypNoteEntryHtml(hypId, n) {
+  const noteId = Number(n.id) || 0;
+  return `<div class="hyp-note-entry${n.tag === 'decision' ? ' is-decision' : ''}" data-hyp-id="${Number(hypId)}" data-note-id="${noteId}">
+    <div class="hyp-note-head">
+      <div class="hyp-note-date">${hypNoteMetaHtml(n)}</div>
+      <div class="hyp-note-actions">
+        <button type="button" title="Редактировать" aria-label="Редактировать запись" onclick="event.stopPropagation();hypCardEditNote(${Number(hypId)},${noteId})">✏️</button>
+        <button type="button" title="Удалить" aria-label="Удалить запись" onclick="event.stopPropagation();hypCardDeleteNote(${Number(hypId)},${noteId})">🗑</button>
+      </div>
+    </div>
+    <div class="hyp-note-text">${escapeHtml(n.text || '')}</div>
+  </div>`;
+}
+// Весь дневник в карточке: по умолчанию 3 последних записи + все «решения».
+function hypNotesBlockHtml(h, notes) {
+  const hypId = Number(h.id);
+  const sorted = notes.slice().sort((a, b) =>
+    String(`${b.date || ''} ${b.time || ''}`).localeCompare(String(`${a.date || ''} ${a.time || ''}`)) ||
+    (Number(b.id) || 0) - (Number(a.id) || 0));
+  const expanded = hypothesesState.notesExpanded.has(hypId);
+  let visible = sorted;
+  if (!expanded && sorted.length > 3) {
+    const head = sorted.slice(0, 3);
+    const decisions = sorted.slice(3).filter(n => n.tag === 'decision');
+    visible = head.concat(decisions);
+  }
+  const staleDays = hypDaysSinceNote(h);
+  const staleBadge = (staleDays !== null && staleDays > 14)
+    ? `<span class="hyp-note-count is-stale" title="Последняя запись ${staleDays} дн. назад">🕸 ${staleDays} дн. без записей</span>` : '';
+  const list = sorted.length
+    ? `<div class="hyp-notes-list">${visible.map(n => hypNoteEntryHtml(hypId, n)).join('')}</div>`
+    : '<p class="text-xs" style="color:var(--text-faint);">Записей пока нет — добавьте первую.</p>';
+  const toggle = sorted.length > 3
+    ? `<button type="button" class="hyp-notes-toggle" onclick="event.stopPropagation();hypToggleNotes(${hypId})">${expanded ? 'Свернуть дневник' : `Показать все ${sorted.length}`}</button>`
+    : '';
+  return `<div class="hyp-notes-block" onclick="event.stopPropagation()">
+    <div class="flex items-center justify-between gap-2 mb-2 flex-wrap">
+      <div class="text-xs font-semibold uppercase" style="color:var(--text-dim);letter-spacing:.05em;">📓 Дневник теста · ${sorted.length}</div>
+      ${staleBadge}
+    </div>
+    ${list}
+    ${toggle}
+    <div class="hyp-note-add">
+      <input type="text" id="hypQuickNote-${hypId}" placeholder="Добавить комментарий…" aria-label="Новый комментарий"
+             onkeydown="if(event.key==='Enter'){event.preventDefault();hypCardAddNote(${hypId});}">
+      <select id="hypQuickNoteTag-${hypId}" aria-label="Тип записи">
+        <option value="comment">комментарий</option>
+        <option value="decision">решение</option>
+        <option value="fact">факт-апдейт</option>
+      </select>
+      <button type="button" class="btn" style="padding:6px 12px;font-size:12px;" onclick="hypCardAddNote(${hypId})">Добавить</button>
+    </div>
+  </div>`;
+}
+function hypToggleNotes(hypId) {
+  const id = Number(hypId);
+  if (hypothesesState.notesExpanded.has(id)) hypothesesState.notesExpanded.delete(id);
+  else hypothesesState.notesExpanded.add(id);
+  renderHypList();
+}
+function hypItemById(id) {
+  return (hypothesesState.items || []).find(x => Number(x.id) === Number(id)) || null;
+}
+// Быстрое добавление записи прямо из карточки (без открытия модалки).
+async function hypCardAddNote(hypId) {
+  const input = document.getElementById('hypQuickNote-' + hypId);
+  const tagSel = document.getElementById('hypQuickNoteTag-' + hypId);
+  const text = (input?.value || '').trim();
+  if (!text) return;
+  const tag = tagSel?.value || 'comment';
+  try {
+    const j = await fetchJsonSafe(buildApiUrl({ action: 'hypothesis_add_note' }), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: Number(hypId), text, tag, author: hypAuthorName() })
+    });
+    if (!j || j.status !== 'success') { showToast('Не удалось сохранить запись: ' + ((j && j.error) || 'ошибка'), { type: 'error' }); return; }
+    const item = hypItemById(hypId);
+    if (item) item.progress_notes = j.notes || [];
+    if (input) input.value = '';
+    renderHypList();
+    showToast('Запись добавлена в дневник.', { type: 'success' });
+  } catch (e) {
+    showToast('Ошибка сохранения записи: ' + (e && e.message ? e.message : e), { type: 'error' });
+  }
+}
+// Инлайн-редактирование записи прямо в карточке.
+function hypCardEditNote(hypId, noteId) {
+  const item = hypItemById(hypId); if (!item) return;
+  const note = hypNotes(item).find(n => Number(n.id) === Number(noteId)); if (!note) return;
+  const entry = document.querySelector(`.hyp-note-entry[data-hyp-id="${Number(hypId)}"][data-note-id="${Number(noteId)}"]`);
+  if (!entry) return;
+  entry.innerHTML = `
+    <textarea class="hyp-note-edit w-full text-sm" rows="2" data-esc-local="1"
+      style="background:var(--surface-thin);border:1px solid var(--border-strong);border-radius:var(--r-chip);padding:6px 10px;color:var(--text);">${escapeHtml(note.text || '')}</textarea>
+    <div class="hyp-note-actions mt-1">
+      <button type="button" class="btn" style="padding:4px 10px;font-size:12px;" onclick="hypCardSaveNote(${Number(hypId)},${Number(noteId)},this)">Сохранить</button>
+      <button type="button" class="btn" style="padding:4px 10px;font-size:12px;background:transparent;border:1px solid var(--border-strong);color:var(--text-dim);" onclick="renderHypList()">Отмена</button>
+    </div>`;
+  const ta = entry.querySelector('.hyp-note-edit');
+  if (ta) {
+    ta.focus();
+    ta.addEventListener('keydown', ev => { if (ev.key === 'Escape') { ev.stopPropagation(); renderHypList(); } });
+  }
+}
+async function hypCardSaveNote(hypId, noteId, btn) {
+  const text = (btn.closest('.hyp-note-entry')?.querySelector('.hyp-note-edit')?.value || '').trim();
+  if (!text) return;
+  try {
+    const j = await fetchJsonSafe(buildApiUrl({ action: 'hypothesis_edit_note' }), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: Number(hypId), note_id: Number(noteId), text })
+    });
+    if (!j || j.status !== 'success') { showToast('Не удалось изменить запись.', { type: 'error' }); return; }
+    const item = hypItemById(hypId);
+    if (item) item.progress_notes = j.notes || [];
+    renderHypList();
+  } catch (e) {
+    showToast('Ошибка изменения записи: ' + (e && e.message ? e.message : e), { type: 'error' });
+  }
+}
+// Удаление записи с возможностью отмены: из карточки запись пропадает сразу.
+function hypCardDeleteNote(hypId, noteId) {
+  const item = hypItemById(hypId); if (!item) return;
+  const notes = hypNotes(item);
+  const idx = notes.findIndex(n => Number(n.id) === Number(noteId));
+  if (idx < 0) return;
+  const removed = notes[idx];
+  item.progress_notes = notes.filter((_, i) => i !== idx);
+  renderHypList();
+  softDelete({
+    key: `hyp-note-${hypId}-${noteId}`,
+    message: 'Комментарий удалён.',
+    commit: async () => {
+      const j = await fetchJsonSafe(buildApiUrl({ action: 'hypothesis_delete_note' }), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: Number(hypId), note_id: Number(noteId) })
+      });
+      const cur = hypItemById(hypId);
+      if (cur && j && j.status === 'success') cur.progress_notes = j.notes || [];
+    },
+    undo: () => {
+      const cur = hypItemById(hypId);
+      if (!cur) return;
+      const list = hypNotes(cur);
+      list.splice(Math.min(idx, list.length), 0, removed);
+      cur.progress_notes = list;
+      renderHypList();
+    },
+  });
+}
+
 // Общие вычисления для карточки и строки гипотезы.
 function hypComputed(h) {
   const statusLabels = { planning:'🕐 Планируется', in_progress:'🔵 В работе', success:'✅ Успех', failed:'❌ Провал', paused:'⏸ Отложено' };
@@ -12011,12 +13220,9 @@ function hypComputed(h) {
     (impacts.includes('approve') ? Number(h.cr_approve_expected) : approveBase);
   const uplift = baseRate > 0 ? (expectedRate / baseRate - 1) * 100 : 0;
   const upliftLine = Math.abs(uplift) >= 0.05 ? `${uplift >= 0 ? '+' : ''}${uplift.toFixed(1)}% к воронке` : '';
-  // Лог заметок
-  const notes = Array.isArray(h.progress_notes) ? h.progress_notes : [];
-  const lastNote = notes.length ? notes[notes.length - 1] : null;
-  const notesHtml = lastNote
-    ? `<div class="hyp-note-entry"><div class="hyp-note-date">${escapeHtml(lastNote.date || '')}${notes.length > 1 ? ` (+${notes.length - 1} ещё)` : ''}</div><div class="hyp-note-text">${escapeHtml(lastNote.text || '')}</div></div>`
-    : '';
+  // Дневник теста: в карточке показываем весь лог (со свёрткой), а не последнюю запись.
+  const notes = hypNotes(h);
+  const notesHtml = hypNotesBlockHtml(h, notes);
   const keyBadge = isKey ? `<span class="text-[11px] px-2 py-0.5 rounded-full" style="background:rgba(34,197,94,.14);color:#4ade80;border:1px solid rgba(34,197,94,.3);">🚀 Ключевая</span>` : '';
   const dateRange = (h.start_date || h.end_date) ? `${h.start_date || '?'} – ${h.end_date || '?'}${days > 0 ? ` (${days} дн.)` : ''}` : '—';
   return { impacts, st, statusLabel: statusLabels[st] || st, isKey, isTask, days, visits, factN,
@@ -12126,6 +13332,13 @@ function hypCardHtml(h, c) {
 // Однострочный вид гипотезы: статус, воронка «план→факт», выборка, фокус, выручка, ROI.
 function hypRowHtml(h, c) {
   const { impacts, st, isKey, factN, fmoney, fmtRoi, expectedRoi } = c;
+  // Чип дневника: количество записей и дата последней (клик по строке раскрывает лог).
+  const noteList = hypNotes(h);
+  const lastNoteDate = hypLastNoteDate(h);
+  const staleDays = hypDaysSinceNote(h);
+  const noteChip = noteList.length
+    ? `<span class="hyp-note-count${staleDays !== null && staleDays > 14 ? ' is-stale' : ''}" title="${escapeHtml(`Записей в дневнике: ${noteList.length}${lastNoteDate ? `, последняя ${lastNoteDate}` : ''}`)}">💬 ${noteList.length}${lastNoteDate ? ` · ${escapeHtml(lastNoteDate.slice(5))}` : ''}</span>`
+    : '<span class="hyp-note-count" title="Записей в дневнике нет">💬 0</span>';
   const rowCls = st === 'success' ? 'hyp-row--success' : st === 'failed' ? 'hyp-row--failed' : st === 'in_progress' ? 'hyp-row--testing' : 'hyp-row--neutral';
   const shortStatus = { planning:'🕐 План', in_progress:'🔵 Тест', success:'✅ Успех', failed:'❌ Провал', paused:'⏸ Пауза' };
   const p = v => Number.isFinite(Number(v)) && Number(v) > 0 ? (Number(v) * 100).toFixed(2) + '%' : '—';
@@ -12177,7 +13390,7 @@ function hypRowHtml(h, c) {
     return `<div class="hyp-row-wrap">
   <div class="hyp-row ${rowCls}" onclick="hypToggleRowExpand(${id})" title="Нажмите, чтобы раскрыть детали">
     <div><span class="hyp-status hyp-status-${escapeHtml(st)}">${escapeHtml(shortStatus[st] || st)}</span></div>
-    <div class="hyp-row-title" title="${escapeHtml(h.title)}">${isKey ? '🚀 ' : ''}${escapeHtml(h.title)}</div>
+    <div class="hyp-row-title" title="${escapeHtml(h.title)}">${isKey ? '🚀 ' : ''}${escapeHtml(h.title)}<br>${noteChip}</div>
     <div><span class="hyp-cell-label">Тип</span><br><b>Задача без оцифровки</b></div>
     <div>—</div><div>—</div><div>—</div><div>—</div>
     <div><span class="hyp-sig hyp-sig-nodata">Не требуется</span></div>
@@ -12194,7 +13407,7 @@ function hypRowHtml(h, c) {
   return `<div class="hyp-row-wrap">
   <div class="hyp-row ${rowCls}" onclick="hypToggleRowExpand(${id})" title="Нажмите, чтобы раскрыть детали">
     <div><span class="hyp-status hyp-status-${escapeHtml(st)}">${escapeHtml(shortStatus[st] || st)}</span></div>
-    <div class="hyp-row-title" title="${escapeHtml(h.title)}">${isKey ? '🚀 ' : ''}${escapeHtml(h.title)}</div>
+    <div class="hyp-row-title" title="${escapeHtml(h.title)}">${isKey ? '🚀 ' : ''}${escapeHtml(h.title)}<br>${noteChip}</div>
     <div>${chain}</div>
     <div title="${escapeHtml(sampleTip)}"><div class="hyp-cell-label">Выборка${manual ? ' (ручная)' : ''}</div><b>${sampleVal > 0 ? Math.ceil(sampleVal).toLocaleString('ru-RU') : '—'}</b></div>
     <div class="hyp-cell-impacted" title="Фокусная метрика гипотезы"><div class="hyp-cell-label">🎯 ${escapeHtml(c.focusLabel)}</div>${pfPair(c.focusPlan, c.focusFact, c.focusGood)}</div>
@@ -12218,7 +13431,14 @@ function renderHypList() {
   const items = hypFilteredItems();
   const cnt = document.getElementById('hypCount');
   if (cnt) cnt.textContent = `${items.length} из ${(hypothesesState.items || []).length} шт.`;
-  if (!items.length) { list.className = ''; list.innerHTML = '<p class="text-sm" style="color:var(--text-faint);">Нет гипотез по выбранным фильтрам.</p>'; return; }
+  if (!items.length) {
+    list.className = '';
+    const hasItems = (hypothesesState.items || []).length > 0;
+    list.innerHTML = hasItems
+      ? emptyStateHtml({ icon: '🔍', title: 'Ничего не найдено', text: 'Ни одна гипотеза не подходит под выбранные фильтры и поиск.', actionLabel: 'Сбросить фильтры', onAction: 'hypResetFilters()' })
+      : emptyStateHtml({ icon: '🧪', title: 'Гипотез пока нет', text: 'Заведите первую гипотезу или задачу на выбранный месяц.', actionLabel: '+ Новая гипотеза', onAction: 'openHypModal(0)' });
+    return;
+  }
   if (hypViewMode() === 'cards') {
     list.className = 'grid grid-cols-1 xl:grid-cols-2 gap-4';
     list.innerHTML = items.map(h => hypCardHtml(h, hypComputed(h))).join('');
@@ -12232,6 +13452,9 @@ function renderHypList() {
 async function renderHypothesesTab() {
   if (!document.getElementById('tab-hypotheses')) return;
   const renderSeq = ++hypothesesState.renderSeq;
+  hypSyncFilterControls();
+  const listEl = document.getElementById('hypList');
+  if (listEl && !(hypothesesState.items || []).length) { listEl.className = ''; listEl.innerHTML = skeletonHtml(3, 96); }
   await loadHypothesisMonths();
   const month = document.getElementById('hypMonthFilter')?.value || currentMonthKey();
   const j = await fetchJsonSafe(buildApiUrl({ action: 'hypotheses_list', month_key: month }));
@@ -12364,14 +13587,14 @@ function editHypothesis(id) {
 function renderHypNotesLog(notes) {
   const el = document.getElementById('hypNotesLog'); if (!el) return;
   if (!notes.length) { el.innerHTML = '<p class="text-xs" style="color:var(--text-faint);">Записей пока нет.</p>'; return; }
-  // Индексы соответствуют исходному массиву; показываем новые записи сверху.
-  el.innerHTML = notes.map((n, i) => ({ n, i })).reverse().map(({ n, i }) =>
-    `<div class="hyp-note-entry" data-note-index="${i}">
+  // Адресуем записи по устойчивому id, новые — сверху.
+  el.innerHTML = notes.slice().reverse().map(n =>
+    `<div class="hyp-note-entry${n.tag === 'decision' ? ' is-decision' : ''}" data-note-id="${Number(n.id) || 0}">
       <div class="hyp-note-head">
-        <div class="hyp-note-date">${escapeHtml(n.date || '')}${n.author ? ' · ' + escapeHtml(n.author) : ''}</div>
+        <div class="hyp-note-date">${hypNoteMetaHtml(n)}</div>
         <div class="hyp-note-actions">
-          <button type="button" title="Редактировать" onclick="hypEditNoteInline(${i})">✏️</button>
-          <button type="button" title="Удалить" onclick="hypDeleteNoteInline(${i})">🗑</button>
+          <button type="button" title="Редактировать" aria-label="Редактировать запись" onclick="hypEditNoteInline(${Number(n.id) || 0})">✏️</button>
+          <button type="button" title="Удалить" aria-label="Удалить запись" onclick="hypDeleteNoteInline(${Number(n.id) || 0})">🗑</button>
         </div>
       </div>
       <div class="hyp-note-text">${escapeHtml(n.text || '')}</div>
@@ -12380,57 +13603,87 @@ function renderHypNotesLog(notes) {
 }
 // Заметки, у которых сервер уже знает id гипотезы, обновляем и на бэкенде сразу.
 function hypCurrentId() { return Number(document.getElementById('hypId')?.value || 0); }
-function hypEditNoteInline(index) {
+function hypPendingNoteIndex(noteId) {
+  return (hypothesesState.pendingNotes || []).findIndex(n => Number(n.id) === Number(noteId));
+}
+function hypEditNoteInline(noteId) {
   const notes = hypothesesState.pendingNotes || [];
+  const index = hypPendingNoteIndex(noteId);
   const note = notes[index]; if (!note) return;
   const el = document.getElementById('hypNotesLog'); if (!el) return;
-  const entry = el.querySelector(`.hyp-note-entry[data-note-index="${index}"]`); if (!entry) return;
+  const entry = el.querySelector(`.hyp-note-entry[data-note-id="${Number(noteId)}"]`); if (!entry) return;
   entry.innerHTML = `
-    <textarea class="hyp-note-edit w-full text-sm" rows="2" style="background:var(--surface-thin);border:1px solid var(--border-strong);border-radius:var(--r-chip);padding:6px 10px;color:var(--text);">${escapeHtml(note.text || '')}</textarea>
+    <textarea class="hyp-note-edit w-full text-sm" rows="2" data-esc-local="1" style="background:var(--surface-thin);border:1px solid var(--border-strong);border-radius:var(--r-chip);padding:6px 10px;color:var(--text);">${escapeHtml(note.text || '')}</textarea>
     <div class="hyp-note-actions mt-1">
-      <button type="button" class="btn" style="padding:4px 10px;font-size:12px;" onclick="hypSaveNoteInline(${index}, this)">Сохранить</button>
+      <select class="hyp-note-edit-tag" aria-label="Тип записи" style="background:var(--surface-thin);border:1px solid var(--border-strong);border-radius:var(--r-chip);padding:4px 8px;color:var(--text);font-size:12px;">
+        ${Object.entries(HYP_NOTE_TAGS).map(([k, label]) => `<option value="${k}"${(note.tag || 'comment') === k ? ' selected' : ''}>${label}</option>`).join('')}
+      </select>
+      <button type="button" class="btn" style="padding:4px 10px;font-size:12px;" onclick="hypSaveNoteInline(${Number(noteId)}, this)">Сохранить</button>
       <button type="button" class="btn" style="padding:4px 10px;font-size:12px;background:transparent;border:1px solid var(--border-strong);color:var(--text-dim);" onclick="renderHypNotesLog(hypothesesState.pendingNotes||[])">Отмена</button>
     </div>`;
   entry.querySelector('.hyp-note-edit')?.focus();
 }
-async function hypSaveNoteInline(index, btn) {
+async function hypSaveNoteInline(noteId, btn) {
   const notes = hypothesesState.pendingNotes || [];
-  if (!notes[index]) return;
+  const index = hypPendingNoteIndex(noteId);
+  if (index < 0) return;
   const entry = btn.closest('.hyp-note-entry');
   const text = (entry?.querySelector('.hyp-note-edit')?.value || '').trim();
+  const tag = entry?.querySelector('.hyp-note-edit-tag')?.value || notes[index].tag || 'comment';
   if (!text) return;
-  notes[index] = Object.assign({}, notes[index], { text });
+  notes[index] = Object.assign({}, notes[index], { text, tag, edited_at: new Date().toISOString().slice(0, 16).replace('T', ' ') });
   const id = hypCurrentId();
   if (id > 0) {
-    await fetchJsonSafe(buildApiUrl({ action: 'hypothesis_edit_note' }), {
+    const j = await fetchJsonSafe(buildApiUrl({ action: 'hypothesis_edit_note' }), {
       method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ id, index, text })
+      body: JSON.stringify({ id, note_id: Number(noteId), text, tag })
     });
+    if (j && j.status === 'success' && Array.isArray(j.notes)) {
+      hypothesesState.pendingNotes = j.notes;
+      hypSyncItemNotes(id, j.notes);
+      renderHypNotesLog(j.notes);
+      return;
+    }
   }
   renderHypNotesLog(notes);
 }
-async function hypDeleteNoteInline(index) {
+async function hypDeleteNoteInline(noteId) {
   const notes = hypothesesState.pendingNotes || [];
-  if (!notes[index] || !confirm('Удалить комментарий?')) return;
+  const index = hypPendingNoteIndex(noteId);
+  if (index < 0 || !confirm('Удалить комментарий?')) return;
   const id = hypCurrentId();
   notes.splice(index, 1);
   hypothesesState.pendingNotes = notes;
   if (id > 0) {
-    await fetchJsonSafe(buildApiUrl({ action: 'hypothesis_delete_note' }), {
+    const j = await fetchJsonSafe(buildApiUrl({ action: 'hypothesis_delete_note' }), {
       method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ id, index })
+      body: JSON.stringify({ id, note_id: Number(noteId) })
     });
+    if (j && j.status === 'success' && Array.isArray(j.notes)) hypothesesState.pendingNotes = j.notes;
+    hypSyncItemNotes(id, hypothesesState.pendingNotes);
   }
-  renderHypNotesLog(notes);
+  renderHypNotesLog(hypothesesState.pendingNotes);
 }
 function hypAddNoteInline() {
   const input = document.getElementById('hypNewNoteText'); if (!input) return;
   const text = input.value.trim(); if (!text) return;
-  const note = { date: new Date().toISOString().slice(0,10), text, author: '' };
-  hypothesesState.pendingNotes = hypothesesState.pendingNotes || [];
-  hypothesesState.pendingNotes.push(note);
-  renderHypNotesLog(hypothesesState.pendingNotes);
+  const tag = document.getElementById('hypNewNoteTag')?.value || 'comment';
+  const now = new Date();
+  const notes = hypothesesState.pendingNotes = hypothesesState.pendingNotes || [];
+  const nextId = notes.reduce((m, n) => Math.max(m, Number(n.id) || 0), 0) + 1;
+  notes.push({
+    id: nextId,
+    date: now.toISOString().slice(0, 10),
+    time: now.toTimeString().slice(0, 5),
+    text, tag, author: hypAuthorName(), edited_at: '',
+  });
+  renderHypNotesLog(notes);
   input.value = '';
+}
+// Синхронизируем дневник в списке гипотез, чтобы карточки не требовали перезагрузки.
+function hypSyncItemNotes(hypId, notes) {
+  const item = hypItemById(hypId);
+  if (item) { item.progress_notes = Array.isArray(notes) ? notes : []; renderHypList(); }
 }
 
 // --- Сохранение гипотезы ---
@@ -12488,10 +13741,25 @@ async function saveHypothesis() {
   document.getElementById('hypMonthFilter').value = payload.month_key;
   await renderHypothesesTab();
 }
-async function deleteHypothesis(id) {
-  if (!id || !confirm('Удалить гипотезу?')) return;
-  await fetchJsonSafe(buildApiUrl({ action: 'hypothesis_delete', id }));
-  await renderHypothesesTab();
+function deleteHypothesis(id) {
+  if (!id) return;
+  const idx = (hypothesesState.items || []).findIndex(x => Number(x.id) === Number(id));
+  if (idx < 0) return;
+  const removed = hypothesesState.items[idx];
+  hypothesesState.items = hypothesesState.items.filter((_, i) => i !== idx);
+  renderHypList();
+  softDelete({
+    key: `hypothesis-${id}`,
+    message: `«${removed.title || 'Гипотеза'}» удалена.`,
+    commit: async () => {
+      await fetchJsonSafe(buildApiUrl({ action: 'hypothesis_delete', id }));
+      await renderHypothesesTab();
+    },
+    undo: () => {
+      hypothesesState.items.splice(Math.min(idx, hypothesesState.items.length), 0, removed);
+      renderHypList();
+    },
+  });
 }
 
 // --- Быстрая заметка (из карточки) ---
@@ -12514,12 +13782,14 @@ async function saveHypNote() {
   const text = (document.getElementById('hypNoteText')?.value || '').trim();
   const err = document.getElementById('hypNoteError');
   if (!id || !text) { if (err) { err.textContent = 'Заполните текст записи.'; err.classList.remove('hidden'); } return; }
+  const tag = document.getElementById('hypNoteTag')?.value || 'comment';
   const j = await fetchJsonSafe(buildApiUrl({ action: 'hypothesis_add_note' }), {
     method: 'POST', headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({ id, text })
+    body: JSON.stringify({ id, text, tag, author: hypAuthorName() })
   });
   if (j.status !== 'success') { if (err) { err.textContent = 'Ошибка: ' + (j.error || 'unknown'); err.classList.remove('hidden'); } return; }
   closeHypNoteModal();
+  showToast('Запись добавлена в дневник.', { type: 'success' });
   await renderHypothesesTab();
 }
 
@@ -13114,6 +14384,8 @@ window.addEventListener('DOMContentLoaded', () => {
   setupApplePickers();
   setupChartDefaults();
   updateQuickRangeActive();
+  // Единое поведение модалок: Esc, клик по фону, ловушка и возврат фокуса.
+  try { initModalUx(); } catch (e) { console.debug('initModalUx skipped:', e); }
   // Yandex Metrika OAuth
   (async () => {
     try {
