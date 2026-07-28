@@ -1674,11 +1674,15 @@
       <div class="flex flex-wrap gap-3 justify-between items-start mb-4">
         <div>
           <h2 class="text-white font-bold">Показы баннера ↔ выручка</h2>
-          <p class="text-xs text-slate-500 mt-1">Сопоставляет показы баннера с выручкой и показывает выбранные закономерности.</p>
+          <p id="rejectRevenueSubtitle" class="text-xs text-slate-500 mt-1">Сопоставляет показы баннера с выручкой и показывает выбранные закономерности.</p>
         </div>
         <div id="rejectRevenueSummary" class="grid grid-cols-2 md:grid-cols-4 gap-3 w-full xl:w-auto"></div>
       </div>
-      <div id="bannerRelationLayers" class="flex flex-wrap gap-2 mb-3" aria-label="Слои графика баннера">
+      <div id="bannerRelationLayers" class="flex flex-wrap gap-2 mb-3 items-center" aria-label="Слои графика баннера">
+        <label class="text-xs text-slate-400" for="bannerRelationGrouping">Разбивка</label>
+        <select id="bannerRelationGrouping" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm focus:outline-none" title="Разбивка данных графика: по дням, неделям или месяцам" onchange="setBannerRelationGrouping(this.value)">
+          <option value="date">По дням</option><option value="week" selected>По неделям</option><option value="month">По месяцам</option>
+        </select>
         <button class="layer-toggle active" data-layer="trend" aria-pressed="true" onclick="toggleBannerRelationLayer('trend')">Линии тренда</button>
         <button class="layer-toggle active" data-layer="ma" aria-pressed="true" onclick="toggleBannerRelationLayer('ma')">Скользящая средняя</button>
         <button class="layer-toggle" data-layer="bounces" aria-pressed="false" onclick="toggleBannerRelationLayer('bounces')">Отказы баннера</button>
@@ -2554,6 +2558,8 @@
           <dd><code>AR = Подтверждённые / Лиды × 100%</code>. Доля заявок, подтверждённых рекламодателем.</dd>
           <dt>Показы баннера</dt>
           <dd>Данные Яндекс.Метрики о показах баннера. Используются как драйвер объёма для плана.</dd>
+          <dt>Подписи периодов на оси X</dt>
+          <dd>Зависят от выбранной разбивки: день — <code>12.05</code>; неделя — <code>W20 · 12–18.05</code>, где W20 — номер недели по ISO 8601 (пн–вс), а рядом её даты; месяц — <code>Май 2025</code>. При наведении в подсказке показывается полный период с годом.</dd>
         </dl>
       </section>
 
@@ -3358,6 +3364,9 @@ let chartAnalysisMode = 'fact';
 let chartAnalysisLayers = new Set();
 let hiddenChartSeries = new Set();
 let bannerRelationLayers = new Set(['trend', 'ma']);
+// Разбивка графика «Показы баннера ↔ выручка»: 'date' | 'week' | 'month'.
+// null — используется значение по умолчанию (недели), см. bannerRelationGroupingValue().
+let bannerRelationGrouping = null;
 let donutChartInstance = null;
 let barChartInstance = null;
 let bannerConvChart = null;
@@ -4174,10 +4183,79 @@ function periodKeyFromRow(row, grouping = 'date') {
   return row.date || '';
 }
 
+// Границы ISO-недели по ключу вида '2025-W20' → { from:'2025-05-12', to:'2025-05-18' }.
+// Опорная точка стандарта ISO 8601: 4 января всегда попадает в первую неделю года.
+function weekKeyRange(key) {
+  const m = /^(\d{4})-W(\d{1,2})$/.exec(String(key || ''));
+  if (!m) return null;
+  const year = Number(m[1]);
+  const week = Number(m[2]);
+  if (!isFinite(year) || !isFinite(week) || week < 1 || week > 53) return null;
+  const jan4 = new Date(Date.UTC(year, 0, 4));
+  const shift = (jan4.getUTCDay() || 7) - 1;
+  const monday = new Date(jan4.getTime() + ((week - 1) * 7 - shift) * 86400000);
+  const sunday = new Date(monday.getTime() + 6 * 86400000);
+  const iso = d => d.toISOString().slice(0, 10);
+  return { from: iso(monday), to: iso(sunday), week, year };
+}
+
+const MONTH_NAMES_RU = ['Янв', 'Фев', 'Мар', 'Апр', 'Май', 'Июн', 'Июл', 'Авг', 'Сен', 'Окт', 'Ноя', 'Дек'];
+
+// Русское склонение числительных: 1 точка / 2 точки / 5 точек.
+function pluralRu(n, one, few, many) {
+  const abs = Math.abs(Math.round(Number(n) || 0));
+  const mod10 = abs % 10;
+  const mod100 = abs % 100;
+  if (mod10 === 1 && mod100 !== 11) return one;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return few;
+  return many;
+}
+
+// Компактная подпись недели с диапазоном дат: 'W20 · 12–18.05'
+// (или '29.12–04.01' на стыке месяцев), чтобы на графике было видно
+// не только номер недели, но и конкретные даты.
+function formatWeekLabel(key) {
+  const r = weekKeyRange(key);
+  if (!r) return String(key || '');
+  const dd = s => s.slice(8, 10);
+  const mm = s => s.slice(5, 7);
+  const range = mm(r.from) === mm(r.to)
+    ? `${dd(r.from)}–${dd(r.to)}.${mm(r.to)}`
+    : `${dd(r.from)}.${mm(r.from)}–${dd(r.to)}.${mm(r.to)}`;
+  return `W${String(r.week).padStart(2, '0')} · ${range}`;
+}
+
+function formatMonthLabel(key) {
+  const m = /^(\d{4})-(\d{2})$/.exec(String(key || ''));
+  if (!m) return String(key || '');
+  const idx = Number(m[2]) - 1;
+  return `${MONTH_NAMES_RU[idx] || m[2]} ${m[1]}`;
+}
+
+// Короткая подпись периода для осей графиков.
+// 'day' — синоним 'date' (в разных селектах используются оба значения).
 function formatPeriodLabel(key, grouping = 'date') {
   const s = String(key || '');
   if (!s) return '';
-  if (grouping === 'date' && /^\d{4}-\d{2}-\d{2}$/.test(s)) return s.slice(8, 10) + '.' + s.slice(5, 7);
+  if ((grouping === 'date' || grouping === 'day') && /^\d{4}-\d{2}-\d{2}$/.test(s)) return s.slice(8, 10) + '.' + s.slice(5, 7);
+  if (grouping === 'week') return formatWeekLabel(s);
+  if (grouping === 'month') return formatMonthLabel(s);
+  return s;
+}
+
+// Полная подпись периода для заголовка тултипа: с годом и диапазоном дат,
+// чтобы при наведении было однозначно понятно, какой отрезок времени показан.
+function formatPeriodTitle(key, grouping = 'date') {
+  const s = String(key || '');
+  if (!s) return '';
+  if (grouping === 'week') {
+    const r = weekKeyRange(s);
+    if (!r) return s;
+    const ru = d => `${d.slice(8, 10)}.${d.slice(5, 7)}`;
+    return `Неделя ${r.week}: ${ru(r.from)} – ${ru(r.to)}.${r.to.slice(0, 4)}`;
+  }
+  if (grouping === 'month') return formatMonthLabel(s);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return `${s.slice(8, 10)}.${s.slice(5, 7)}.${s.slice(0, 4)}`;
   return s;
 }
 
@@ -5154,7 +5232,7 @@ function renderBannerChart() {
   const metric = (document.getElementById('bannerChartMetric') || {}).value || 'all';
   const grouping = (document.getElementById('bannerChartGrouping') || {}).value || 'day';
   const series = aggregateBannerByPeriod(grouping);
-  const labels = series.map(s => grouping === 'day' ? s.label.slice(5) : s.label);
+  const labels = series.map(s => formatPeriodLabel(s.label, grouping));
   let datasets = [];
   let scalesConfig = {};
   if (metric === 'impressions') {
@@ -5201,13 +5279,19 @@ function renderBannerChart() {
       interaction: { mode: 'index', intersect: false },
       plugins: {
         legend: { labels: { color: '#cbd5e1' } },
-        tooltip: { ...sharedTooltipConfig, callbacks: { label: function(ctx) {
-          const v = Number(ctx.raw);
-          if (ctx.dataset.label.includes('%')) return ` ${ctx.dataset.label}: ${v.toFixed(2)}%`;
-          return ` ${ctx.dataset.label}: ${v.toLocaleString('ru-RU')}`;
-        }}}
+        tooltip: { ...sharedTooltipConfig, callbacks: {
+          title: items => {
+            const item = items && items[0];
+            return item ? formatPeriodTitle(series[item.dataIndex].label, grouping) : '';
+          },
+          label: function(ctx) {
+            const v = Number(ctx.raw);
+            if (ctx.dataset.label.includes('%')) return ` ${ctx.dataset.label}: ${v.toFixed(2)}%`;
+            return ` ${ctx.dataset.label}: ${v.toLocaleString('ru-RU')}`;
+          }
+        }}
       },
-      scales: { x: { ticks: { color: '#94a3b8' }, grid: { display: false } }, ...scalesConfig }
+      scales: { x: { ticks: { color: '#94a3b8', autoSkip: true, maxRotation: grouping === 'week' ? 30 : 0 }, grid: { display: false } }, ...scalesConfig }
     }
   });
 }
@@ -5279,6 +5363,7 @@ async function applyGlobalFilters() {
   // скрытые серии, фильтры) — чтобы оно не сбрасывалось при авто-обновлении,
   // скролле или переключении вкладок.
   restoreChartState();
+  restoreBannerRelationGrouping();
 
   renderUI(); renderProblemZones(); renderTables(); refreshChart(); drawExtraCharts();
   renderEPCAnalytics(); renderMatrixAnalytics(); renderPlatformCharts();
@@ -5488,7 +5573,9 @@ function renderRejectRevenueAnalysis(data, sourceFilter = 'all') {
   const summaryEl = document.getElementById('rejectRevenueSummary');
   const canvas = document.getElementById('rejectRevenueChart');
   if (!summaryEl || !canvas) return;
-  const periodMode = ((document.getElementById('chartGrouping') || {}).value || 'date');
+  const periodMode = bannerRelationGroupingValue();
+  const groupingSel = document.getElementById('bannerRelationGrouping');
+  if (groupingSel && groupingSel.value !== periodMode) groupingSel.value = periodMode;
   const relation = buildBannerRevenueRelation(data, sourceFilter, periodMode);
   const labels = relation.labels;
   const grouped = relation.grouped;
@@ -5503,6 +5590,13 @@ function renderRejectRevenueAnalysis(data, sourceFilter = 'all') {
   const corrHint = corr === null
     ? (labels.length < 2 ? `недостаточно данных: ${labels.length} точек, нужно ≥ 2` : 'нет вариации в данных')
     : escapeHtml(relationLabel(corr));
+  const subtitleEl = document.getElementById('rejectRevenueSubtitle');
+  if (subtitleEl) {
+    const modeName = { date: 'по дням', week: 'по неделям', month: 'по месяцам' }[periodMode] || 'по дням';
+    subtitleEl.textContent = labels.length
+      ? `Сопоставляет показы баннера с выручкой. Разбивка ${modeName}: ${labels.length} ${pluralRu(labels.length, 'точка', 'точки', 'точек')} (${formatPeriodTitle(labels[0], periodMode)} — ${formatPeriodTitle(labels[labels.length - 1], periodMode)}).`
+      : `Сопоставляет показы баннера с выручкой. Разбивка ${modeName}.`;
+  }
   summaryEl.innerHTML = `
     <div class="relation-chip"><div class="label">Показы баннера${infoTip('Сумма показов рекламного баннера за выбранный период, источник — Яндекс.Метрика. CTR цели = клики по баннеру ÷ показы × 100%.')}</div><div class="value">${Math.round(totalImpressions).toLocaleString('ru-RU')}</div><div class="text-xs text-slate-500 mt-1">CTR цели: ${bannerCtr.toFixed(2)}%</div></div>
     <div class="relation-chip"><div class="label">Отказы${infoTip('Сумма отказов за выбранный период (ручной ввод по дням или загрузка Excel с колонками A — дата, B — количество). Выводятся отдельным слоем на графике.')}</div><div class="value">${totalBounces > 0 ? Math.round(totalBounces).toLocaleString('ru-RU') : '—'}</div><div class="text-xs text-slate-500 mt-1">${totalBounces > 0 ? 'слой «Отказы баннера»' : 'нет данных — загрузите Excel'}</div></div>
@@ -5553,15 +5647,22 @@ function renderRejectRevenueAnalysis(data, sourceFilter = 'all') {
     type: 'line',
     data: { labels: labels.map(l => formatPeriodLabel(l, periodMode)), datasets },
     options: { responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false },
-      plugins: { legend: { labels: { color: '#cbd5e1' } }, tooltip: { ...sharedTooltipConfig, callbacks: { label: ctx => {
-        const v = Number(ctx.raw) || 0;
-        if (ctx.dataset.label.includes('₽')) return ` ${ctx.dataset.label}: ${Math.round(v).toLocaleString('ru-RU')} ₽`;
-        return ` ${ctx.dataset.label}: ${Math.round(v).toLocaleString('ru-RU')}`;
-      }}}},
+      plugins: { legend: { labels: { color: '#cbd5e1' } }, tooltip: { ...sharedTooltipConfig, callbacks: {
+        title: items => {
+          const item = items && items[0];
+          if (!item) return '';
+          return formatPeriodTitle(labels[item.dataIndex], periodMode);
+        },
+        label: ctx => {
+          const v = Number(ctx.raw) || 0;
+          if (ctx.dataset.label.includes('₽')) return ` ${ctx.dataset.label}: ${Math.round(v).toLocaleString('ru-RU')} ₽`;
+          return ` ${ctx.dataset.label}: ${Math.round(v).toLocaleString('ru-RU')}`;
+        }
+      }}},
       scales: {
-        x: { ticks: { color: '#94a3b8' }, grid: { display: false } },
-        y: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } },
-        y1: { display: true, position: 'right', ticks: { color: '#94a3b8' }, grid: { drawOnChartArea: false } }
+        x: { ticks: { color: '#94a3b8', autoSkip: true, maxRotation: periodMode === 'week' ? 30 : 0 }, grid: { display: false } },
+        y: { title: { display: true, text: 'Показы баннера', color: '#94a3b8' }, ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } },
+        y1: { display: true, position: 'right', title: { display: true, text: 'Выручка, ₽', color: '#94a3b8' }, ticks: { color: '#94a3b8' }, grid: { drawOnChartArea: false } }
       }
     }
   });
@@ -6306,6 +6407,31 @@ function toggleBannerRelationLayer(layer) {
   else bannerRelationLayers.add(layer);
   updateBannerRelationLayerButtons();
   rerenderBannerRelation();
+}
+
+// ===== Разбивка графика «Показы баннера ↔ выручка» =====
+const BANNER_RELATION_GROUPING_KEY = 'leadsBannerRelationGrouping';
+const BANNER_RELATION_GROUPINGS = ['date', 'week', 'month'];
+
+// По умолчанию — недели: месяц слишком крупный шаг (2–3 точки на диапазон,
+// корреляция не считается), дни — слишком шумные. Выбор пользователя
+// сохраняется в localStorage и не зависит от графика «Динамика».
+function bannerRelationGroupingValue() {
+  return BANNER_RELATION_GROUPINGS.includes(bannerRelationGrouping) ? bannerRelationGrouping : 'week';
+}
+
+function setBannerRelationGrouping(value) {
+  bannerRelationGrouping = BANNER_RELATION_GROUPINGS.includes(value) ? value : 'week';
+  try { localStorage.setItem(BANNER_RELATION_GROUPING_KEY, bannerRelationGrouping); } catch (_) {}
+  rerenderBannerRelation();
+}
+
+function restoreBannerRelationGrouping() {
+  let saved = null;
+  try { saved = localStorage.getItem(BANNER_RELATION_GROUPING_KEY); } catch (_) { saved = null; }
+  if (BANNER_RELATION_GROUPINGS.includes(saved)) bannerRelationGrouping = saved;
+  const sel = document.getElementById('bannerRelationGrouping');
+  if (sel) sel.value = bannerRelationGroupingValue();
 }
 
 // ===== Отказы баннера: ручной ввод по дням и загрузка Excel =====
@@ -9426,7 +9552,10 @@ function refreshChart() {
         legend.chart.update();
         saveChartState();
         renderChartSeriesToggles();
-      }},eventMarkerPlugin:{events:eventGroups,grouping},tooltip:{...sharedTooltipConfig,callbacks:{label:function(ctx){
+      }},eventMarkerPlugin:{events:eventGroups,grouping},tooltip:{...sharedTooltipConfig,callbacks:{title:function(items){
+        const item = items && items[0];
+        return item ? formatPeriodTitle(labels[item.dataIndex], grouping) : '';
+      },label:function(ctx){
         const v=Number(ctx.raw);
         if(ctx.dataset.label.includes('₽'))return ` ${ctx.dataset.label}: ${v.toFixed(2)} ₽`;
         if(ctx.dataset.label.includes('%'))return ` ${ctx.dataset.label}: ${v.toFixed(2)}%`;
@@ -9438,7 +9567,7 @@ function refreshChart() {
         const list = eventGroups[rawKey] || [];
         return list.length ? ['События:', ...list.slice(0,3).map(e => `• ${e.title || e.event_type || 'событие'}`)] : '';
       }}}},
-      scales:{x:{ticks:{color:'#94a3b8',autoSkip:true,maxRotation:0},grid:{color:'#1e293b'}},...scalesConfig}
+      scales:{x:{ticks:{color:'#94a3b8',autoSkip:true,maxRotation:grouping==='week'?30:0},grid:{color:'#1e293b'}},...scalesConfig}
     }
   });
   // «Живой» ридаут: при уходе курсора с графика прячем подсветку значений.
@@ -9653,21 +9782,25 @@ function renderPlatformCharts() {
     return datasets;
   };
   const labels = periods.map(p => formatPeriodLabel(p, grouping));
+  const periodTooltipTitle = items => {
+    const item = items && items[0];
+    return item ? formatPeriodTitle(periods[item.dataIndex], grouping) : '';
+  };
   const revDS = buildDatasets('revenue');
   if(revenueByPlatformChartInstance)revenueByPlatformChartInstance.destroy();
   revenueByPlatformChartInstance=new Chart(document.getElementById('revenueByPlatformChart'),{
     type:'line',data:{labels,datasets:revDS},plugins:[seriesFocusPlugin],
     options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
-      plugins:{legend:{labels:{color:'#cbd5e1'},onHover:(e,item,legend)=>setChartFocusSeries(legend.chart,item.datasetIndex),onLeave:(e,item,legend)=>setChartFocusSeries(legend.chart,null)},tooltip:{...sharedTooltipConfig,callbacks:{label:ctx=>` ${ctx.dataset.label}: ${Math.round(ctx.raw).toLocaleString('ru-RU')} ₽`}}},
-      scales:{x:{ticks:{color:'#94a3b8',maxRotation:0,autoSkip:true},grid:{display:false}},y:{ticks:{color:'#94a3b8'},grid:{color:'#1e293b'}}}}
+      plugins:{legend:{labels:{color:'#cbd5e1'},onHover:(e,item,legend)=>setChartFocusSeries(legend.chart,item.datasetIndex),onLeave:(e,item,legend)=>setChartFocusSeries(legend.chart,null)},tooltip:{...sharedTooltipConfig,callbacks:{title:periodTooltipTitle,label:ctx=>` ${ctx.dataset.label}: ${Math.round(ctx.raw).toLocaleString('ru-RU')} ₽`}}},
+      scales:{x:{ticks:{color:'#94a3b8',maxRotation:grouping==='week'?30:0,autoSkip:true},grid:{display:false}},y:{ticks:{color:'#94a3b8'},grid:{color:'#1e293b'}}}}
   });
   const trafDS = buildDatasets('clicks');
   if(trafficByPlatformChartInstance)trafficByPlatformChartInstance.destroy();
   trafficByPlatformChartInstance=new Chart(document.getElementById('trafficByPlatformChart'),{
     type:'line',data:{labels,datasets:trafDS},plugins:[seriesFocusPlugin],
     options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
-      plugins:{legend:{labels:{color:'#cbd5e1'},onHover:(e,item,legend)=>setChartFocusSeries(legend.chart,item.datasetIndex),onLeave:(e,item,legend)=>setChartFocusSeries(legend.chart,null)},tooltip:{...sharedTooltipConfig,callbacks:{label:ctx=>` ${ctx.dataset.label}: ${ctx.raw.toLocaleString('ru-RU')} кликов`}}},
-      scales:{x:{ticks:{color:'#94a3b8',maxRotation:0,autoSkip:true},grid:{display:false}},y:{ticks:{color:'#94a3b8'},grid:{color:'#1e293b'}}}}
+      plugins:{legend:{labels:{color:'#cbd5e1'},onHover:(e,item,legend)=>setChartFocusSeries(legend.chart,item.datasetIndex),onLeave:(e,item,legend)=>setChartFocusSeries(legend.chart,null)},tooltip:{...sharedTooltipConfig,callbacks:{title:periodTooltipTitle,label:ctx=>` ${ctx.dataset.label}: ${ctx.raw.toLocaleString('ru-RU')} кликов`}}},
+      scales:{x:{ticks:{color:'#94a3b8',maxRotation:grouping==='week'?30:0,autoSkip:true},grid:{display:false}},y:{ticks:{color:'#94a3b8'},grid:{color:'#1e293b'}}}}
   });
   // Авто-инсайты под platform-чартами: концентрация по метрике + тренд лидера.
   const _topByMetric=(metric)=>Object.entries(sourceTotals)
@@ -9722,13 +9855,15 @@ function renderEPCAnalytics() {
 
   if(epcLineChart)epcLineChart.destroy();
   epcLineChart=new Chart(document.getElementById('epcLineChart').getContext('2d'),{
-    type:'line',data:{labels:labels.map(l=>grouping==='day'?l.slice(5):l),datasets:[
+    type:'line',data:{labels:labels.map(l=>formatPeriodLabel(l,grouping)),datasets:[
       {label:'EPC (₽)',data:epcValues,borderColor:CHART_PALETTE.epc.stroke,backgroundColor:CHART_PALETTE.epc.fill,fill:true,tension:0.3,pointRadius:3,pointBackgroundColor:epcValues.map(v=>v<avgEpc*0.7?'#FF453A':CHART_PALETTE.epc.stroke)},
       {label:'Среднее',data:labels.map(()=>avgEpc),borderColor:CHART_PALETTE.forecast.stroke,borderDash:[8,4],pointRadius:0,fill:false},
       ...(epcPlan.epc>0?[{label:'Плановый EPC',data:labels.map(()=>epcPlan.epc),borderColor:'#facc15',borderDash:[10,4],pointRadius:0,fill:false}]:[])
     ]},options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
-      plugins:{tooltip:{...sharedTooltipConfig,callbacks:{label:ctx=>` ${ctx.dataset.label}: ${Number(ctx.raw).toFixed(2)} ₽`}}},
-      scales:{y:{ticks:{color:'#94a3b8'},grid:{color:'#1e293b'}},x:{ticks:{color:'#94a3b8',maxRotation:45},grid:{display:false}}}}
+      plugins:{tooltip:{...sharedTooltipConfig,callbacks:{
+        title:items=>{const item=items&&items[0];return item?formatPeriodTitle(labels[item.dataIndex],grouping):'';},
+        label:ctx=>` ${ctx.dataset.label}: ${Number(ctx.raw).toFixed(2)} ₽`}}},
+      scales:{y:{ticks:{color:'#94a3b8'},grid:{color:'#1e293b'}},x:{ticks:{color:'#94a3b8',autoSkip:true,maxRotation:grouping==='month'?0:30},grid:{display:false}}}}
   });
   // Авто-инсайт под графиком динамики EPC
   const epcLineInsightEl=document.getElementById('epcLineInsight');
@@ -9768,7 +9903,7 @@ function renderEPCAnalytics() {
   const mEpc=mLabels.map(m=>mMap[m].clicks>0?mMap[m].revenue/mMap[m].clicks:0);
   if(epcMonthChartInstance)epcMonthChartInstance.destroy();
   epcMonthChartInstance=new Chart(document.getElementById('epcMonthChart').getContext('2d'),{
-    type:'bar',data:{labels:mLabels,datasets:[{label:'EPC (₽)',data:mEpc,backgroundColor:mEpc.map(v=>v<avgEpc*0.7?'#FF453A':v<avgEpc*0.9?'#FF9F0A':CHART_PALETTE.epc.stroke),borderRadius:4}]},
+    type:'bar',data:{labels:mLabels.map(m=>formatPeriodLabel(m,'month')),datasets:[{label:'EPC (₽)',data:mEpc,backgroundColor:mEpc.map(v=>v<avgEpc*0.7?'#FF453A':v<avgEpc*0.9?'#FF9F0A':CHART_PALETTE.epc.stroke),borderRadius:4}]},
     options:{responsive:true,maintainAspectRatio:false,
       plugins:{tooltip:{...sharedTooltipConfig,callbacks:{label:ctx=>` EPC: ${Number(ctx.raw).toFixed(2)} ₽`}}},
       scales:{y:{ticks:{color:'#94a3b8'},grid:{color:'#1e293b'}},x:{ticks:{color:'#94a3b8'},grid:{display:false}}}}
@@ -9799,7 +9934,7 @@ function renderEPCAnalytics() {
   wdNames.forEach(d => hHtml += `<th class="text-center">${d}</th>`);
   hHtml += '</tr></thead><tbody>';
   for (const yKey of yLabels) {
-    hHtml += `<tr><td class="font-bold">${escapeHtml(yKey)}</td>`;
+    hHtml += `<tr><td class="font-bold">${escapeHtml(formatPeriodLabel(yKey, heatAxis === 'week' ? 'week' : 'month'))}</td>`;
     for (let wd = 0; wd < 7; wd++) {
       const key = `${yKey}_${wd}`;
       const epc = heatData[key] && heatData[key].clicks > 0 ? heatData[key].revenue / heatData[key].clicks : 0;
@@ -14383,6 +14518,7 @@ window.addEventListener('DOMContentLoaded', () => {
   document.getElementById('dateTo').addEventListener('change', () => { updateQuickRangeActive(); autoLoadSavedStats(); });
   setupApplePickers();
   setupChartDefaults();
+  restoreBannerRelationGrouping();
   updateQuickRangeActive();
   // Единое поведение модалок: Esc, клик по фону, ловушка и возврат фокуса.
   try { initModalUx(); } catch (e) { console.debug('initModalUx skipped:', e); }
