@@ -4737,11 +4737,20 @@ async function loadFromAPI(opts = {}) {
     //                                   всё равно рендерим то, что есть.
     //   success                       → все 4 прохода прошли.
     if (resp && (resp.status === 'token_missing' || resp.status === 'token_invalid')) {
-      setDataSource('error', resp.message || 'Токен leads.su не работает');
-      updateLeadsTokenStatus({ ok: false, message: resp.message || 'Token invalid', http_status: resp.http_status });
+      const tokenMessage = resp.message || 'Токен Leads.su не задан или недействителен.';
+      setDataSource('error', tokenMessage);
+      updateLeadsTokenStatus({ ok: false, message: tokenMessage, http_status: resp.http_status });
+      const wrap = document.getElementById('loadStatusWrap');
+      if (wrap) wrap.classList.remove('hidden');
+      const statusText = document.getElementById('loadStatusText');
+      if (statusText) statusText.textContent = 'Обновление не выполнено: ' + tokenMessage + ' Откройте настройки и сохраните Leads.su token.';
+      updateProgress(0);
       if (!silent) {
-        alert('Токен leads.su недействителен:\n' + (resp.message || resp.status));
-        updateProgress(0);
+        if (typeof showToast === 'function') {
+          showToast('Новые цифры не загружены: ' + tokenMessage + ' Задайте token во вкладке настроек.', { type: 'error', duration: 8000 });
+        } else {
+          alert('Новые цифры не загружены:\n' + tokenMessage + '\n\nЗадайте Leads.su token во вкладке настроек.');
+        }
       }
       return false;
     }
@@ -4792,6 +4801,8 @@ async function loadFromAPI(opts = {}) {
     } else {
       console.warn('[Auto-refresh] loadFromAPI failed:', e.message);
       setDataSource('error', e.message);
+      const statusText = document.getElementById('loadStatusText');
+      if (statusText) statusText.textContent = 'Обновление не выполнено: ' + e.message;
     }
     return false;
   } finally {
