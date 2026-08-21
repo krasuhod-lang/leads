@@ -282,6 +282,16 @@
 
     /* ==================== ТАБЫ ==================== */
     #tabBar { gap: 2px; border-bottom: 1px solid var(--border); padding-bottom: 0; }
+    /* ==================== РЕЖИМ ПОКАЗА НА СОВЕЩАНИИ ==================== */
+    body.meeting-mode .meeting-secondary { display: none !important; }
+    body.meeting-mode #tabBar { display: none !important; }
+    body.meeting-mode .app-header { margin-bottom: 12px; }
+    body.meeting-mode .card { box-shadow: 0 1px 2px rgba(0,0,0,.45), 0 16px 40px -18px rgba(0,0,0,.75); }
+    .meeting-mode-toggle.is-active { background: var(--accent) !important; color: #fff !important; border-color: var(--accent) !important; }
+    .kpi-empty { color: var(--text-dim); font-size: clamp(28px, 5.2vw, 40px); font-weight: 600; letter-spacing: -0.03em; }
+    .data-empty-state { display: flex; flex-direction: column; gap: 4px; align-items: center; justify-content: center; padding: 14px 16px; border: 1px dashed var(--border-strong); border-radius: var(--r-chip); background: var(--surface-thin); color: var(--text-dim); text-align: center; }
+    .data-empty-state strong { color: var(--text); font-weight: 600; }
+
     .tab-btn {
       padding: 10px 16px;
       font-weight: 500;
@@ -1565,6 +1575,7 @@
         <input id="dateTo" type="hidden">
         <button id="btnLoadAPI" class="btn" onclick="loadFromAPI()">Загрузить данные</button>
         <button id="btnManualRefresh" class="btn" style="background:#475569" title="Обновить из сохранённого снапшота" onclick="manualRefresh()">Обновить</button>
+        <button id="meetingModeToggle" type="button" class="btn btn-secondary meeting-mode-toggle" aria-pressed="false" title="Скрыть вторичные элементы и оставить основные данные для показа" onclick="toggleMeetingMode()">Режим показа</button>
         <div class="auto-refresh-indicator" id="autoRefreshStatus">
           <span class="dot"></span>
           <span>Автообновление: <span id="nextRefreshTime">--:--</span></span>
@@ -1577,7 +1588,7 @@
         </span>
         <span id="lastUpdatedLabel" class="text-xs text-slate-400"></span>
       </div>
-      <div id="quickRangeBar" class="flex flex-wrap gap-2 mt-3" role="group" aria-label="Быстрый выбор периода">
+      <div id="quickRangeBar" class="meeting-secondary flex flex-wrap gap-2 mt-3" role="group" aria-label="Быстрый выбор периода">
         <button type="button" class="quick-range-btn" data-range="today"      onclick="setQuickRange('today')">Сегодня</button>
         <button type="button" class="quick-range-btn" data-range="yesterday"  onclick="setQuickRange('yesterday')">Вчера</button>
         <button type="button" class="quick-range-btn" data-range="last7"      onclick="setQuickRange('last7')">7 дней</button>
@@ -1625,7 +1636,7 @@
             <h2 class="text-white font-bold inline-flex items-center">Динамика<button type="button" class="help-btn" aria-label="Открыть глоссарий: что такое индексы, MA, план/факт и другие термины" title="Справка по терминам графика" onclick="openChartGlossary()"></button></h2>
             <p id="chartModeHint" class="text-xs text-slate-500 mt-1">Чистый факт без дополнительных слоёв.</p>
           </div>
-          <div class="flex flex-wrap gap-2 justify-end">
+          <div class="meeting-secondary flex flex-wrap gap-2 justify-end">
             <select id="chartGrouping" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm focus:outline-none" onchange="refreshChart()">
               <option value="date">По дням</option><option value="week">По неделям</option><option value="month">По месяцам</option>
             </select>
@@ -1640,7 +1651,7 @@
             </select>
           </div>
         </div>
-        <div id="chartAnalysisModes" class="flex flex-wrap gap-2 mb-3" aria-label="Слои графика">
+        <div id="chartAnalysisModes" class="meeting-secondary flex flex-wrap gap-2 mb-3" aria-label="Слои графика">
           <button class="analysis-mode-btn active" data-mode="fact" aria-pressed="true" onclick="setChartAnalysisMode('fact')">Без слоёв</button>
           <button class="analysis-mode-btn" data-mode="trend" aria-pressed="false" onclick="setChartAnalysisMode('trend')" title="Линия тренда, скользящие средние (MA) и накопительный итог">Тренд</button>
           <button class="analysis-mode-btn" data-mode="plan" aria-pressed="false" onclick="setChartAnalysisMode('plan')" title="Сравнение плановых и фактических показателей: план учитывает показы баннера, при падающей динамике сравнивается со средней">План / факт</button>
@@ -3561,7 +3572,7 @@ function renderInsightFooter(items) {
   const rest = filtered.slice(1, 3);
   const cls = main.tone === 'good' ? 'is-good' : main.tone === 'warn' ? 'is-warn' : main.tone === 'bad' ? 'is-bad' : 'is-mute';
   const icon = main.tone === 'good' ? '↑' : main.tone === 'warn' ? '!' : main.tone === 'bad' ? '↓' : 'i';
-  const conf = main.confidence ? `<span class="ci-confidence ${main.confidence}">conf: ${main.confidence === 'high' ? 'высокая' : main.confidence === 'medium' ? 'средняя' : 'низкая'}</span>` : '';
+  const conf = main.confidence ? `<span class="ci-confidence ${main.confidence}">Надёжность вывода: ${main.confidence === 'high' ? 'высокая' : main.confidence === 'medium' ? 'средняя' : 'низкая'}</span>` : '';
   return `<div class="chart-insight ${cls}">
     <span class="ci-icon" aria-hidden="true">${icon}</span>
     <div class="ci-body">
@@ -3918,10 +3929,12 @@ function setDataSource(source, error = '') {
   if (!el) return;
   const dot = el.querySelector('.dot');
   const text = el.querySelector('span:last-child');
-  const labels = { api: 'API свежие', db: 'БД snapshot', cache: 'кэш', error: 'ошибка' };
+  const labels = { api: 'API свежие', partial: 'API частично', db: 'БД snapshot', cache: 'кэш', error: 'ошибка' };
   if (text) text.textContent = `Данные: ${labels[source] || source || '—'}`;
-  if (dot) dot.style.background = error ? 'var(--bad)' : (source === 'api' ? 'var(--ok)' : 'var(--warn)');
-  el.title = error ? `Последняя ошибка: ${error}` : 'Источник последнего успешного обновления данных';
+  if (dot) dot.style.background = (error && source !== 'partial') ? 'var(--bad)' : (source === 'api' ? 'var(--ok)' : 'var(--warn)');
+  el.title = error
+    ? (source === 'partial' ? `Частичная синхронизация: ${error}` : `Последняя ошибка: ${error}`)
+    : 'Источник последнего успешного обновления данных';
 }
 
 async function updateHealthBadge() {
@@ -3940,9 +3953,13 @@ async function updateHealthBadge() {
     const marketOk = !!(integrations.offers_market && integrations.offers_market.last_update);
     const aiOk = !!(json.ai && json.ai.api_key_present);
     const leadsOk = !!(leadsDiag && leadsDiag.ok);
-    const allOk = ok && ymOk && marketOk && aiOk && leadsOk;
-    if (dot) dot.style.background = allOk ? 'var(--ok)' : ((ok && leadsOk) ? 'var(--warn)' : 'var(--bad)');
-    if (text) text.textContent = allOk ? 'Health: OK' : ((ok && leadsOk) ? 'Health: partial' : 'Health: fail');
+    // Health отделяет доступность ядра/БД от необязательных интеграций.
+    // Отсутствие AI, Метрики или market EPC не должно выглядеть как поломка
+    // уже загруженного Leads.su-снапшота.
+    const optionalOk = ymOk && marketOk && aiOk;
+    const healthState = !ok ? 'fail' : (leadsOk && optionalOk ? 'ok' : 'partial');
+    if (dot) dot.style.background = healthState === 'ok' ? 'var(--ok)' : (healthState === 'partial' ? 'var(--warn)' : 'var(--bad)');
+    if (text) text.textContent = healthState === 'ok' ? 'Health: OK' : (healthState === 'partial' ? 'Health: частично' : 'Health: fail');
     const tokenTxt = json.leads_token?.present ? `Leads token: ${json.leads_token.source}` : 'Leads token: не задан';
     const leadsTxt = leadsDiag && leadsDiag.ok
       ? `Leads API: OK (${leadsDiag.latency_ms || 0} мс)`
@@ -4742,8 +4759,10 @@ async function loadFromAPI(opts = {}) {
     if (resp && resp.coverage) {
       renderCoverageBadge(resp);
     }
+    let partialSyncMessage = '';
     if (resp && resp.status === 'partial_success') {
       const failed = (resp.passes || []).filter(p => p && p.ok === false).map(p => p.name).join(', ');
+      partialSyncMessage = failed || 'часть проходов синхронизации';
       console.warn('[update_stats] partial_success, failed passes:', failed, 'run_id=', resp.run_id);
       if (!silent) {
         // Мягкое предупреждение, но не блокирующий alert.
@@ -4759,7 +4778,7 @@ async function loadFromAPI(opts = {}) {
     catch(e) { console.warn('Ошибка загрузки рыночных EPC:', e); }
     await autoLoadSavedStats();
     await applyGlobalFilters();
-    setDataSource('api');
+    setDataSource(partialSyncMessage ? 'partial' : 'api', partialSyncMessage ? partialSyncMessage : '');
     updateHealthBadge();
     updateSyncLogPanel();
     prog(100, 'Готово!');
@@ -4848,11 +4867,12 @@ async function runAutoRefresh(force = false) {
   }
 }
 
-function startAutoRefresh() {
+function startAutoRefresh(skipInitial = false) {
   if (autoRefreshTimer) clearInterval(autoRefreshTimer);
   updateNextRefreshTime();
-  // Немедленно запускаем, если пора (например, страница долго не открывалась)
-  runAutoRefresh(false);
+  // При первом старте DOMContentLoaded сначала читаем сохранённый снапшот,
+  // чтобы не запускать параллельно update_stats и autoLoadSavedStats.
+  if (!skipInitial) runAutoRefresh(false);
   autoRefreshTimer = setInterval(() => runAutoRefresh(false), AUTO_REFRESH_INTERVAL_MS);
 
   // Handle visibility change - refresh when tab becomes visible (register once)
@@ -5154,6 +5174,12 @@ async function autoLoadSavedStats() {
   }
   // Always apply filters to update dashboard (banner data may exist even without leads data)
   await applyGlobalFilters();
+  // Timestamp меняется только после успешного получения хотя бы одного
+  // осмысленного снапшота. При ошибке и пустом периоде не показываем ложное
+  // «обновлено только что».
+  if ((saved && saved.length) || globalAccountTotals.length || globalUniqueClicks.length || globalUniqueClicksByOffer.length) {
+    markDataUpdated();
+  }
 }
 
 // ========================== БАННЕР ==========================
@@ -5452,15 +5478,21 @@ function renderUI() {
   const cr = clicksForKpi ? (conversionsForKpi/clicksForKpi*100) : 0;
   const ar = conversionsForKpi ? (approvedForKpi/conversionsForKpi*100) : 0;
   const epc = clicksForKpi ? (revenueForKpi/clicksForKpi) : 0;
+  const hasAccountKpiData = !!(accountTotals && (accountTotals.unique_clicks > 0 || accountTotals.payout > 0 || accountTotals.pending_payout > 0 || accountTotals.conversions > 0 || accountTotals.approved > 0));
+  const hasKpiData = globalRawData.length > 0 || hasAccountKpiData;
   // План/факт-бары верхних KPI тоже считаем по всему кабинету (без фильтра
   // площадки/sub1), чтобы факт и план в 6 ячейках соответствовали друг другу.
   const plan = planFromRows([...planBaselineData], planFactState.days || 1);
   const kpiCard = (title, valueHtml, fact, planValue, fmt, tipText) => `<div class="card">
     <div class="text-slate-400 text-xs uppercase">${title}${tipText?infoTip(tipText):''}</div>
-    <div class="kpi-value"><div class="text-3xl font-black mt-2">${valueHtml}</div></div>
-    <div class="kpi-pf mt-3">${planFactBar(fact, planValue, fmt)}</div>
+    <div class="kpi-value"><div class="text-3xl font-black mt-2">${hasKpiData ? valueHtml : '<span class="kpi-empty">—</span>'}</div></div>
+    <div class="kpi-pf mt-3">${hasKpiData ? planFactBar(fact, planValue, fmt) : '<div class="pf-bars pf-empty text-slate-500 text-[11px]">Нет фактических данных</div>'}</div>
   </div>`;
-  const noDataHint = !globalRawData.length ? '<div class="col-span-full text-center text-slate-500 text-sm py-2">Нет данных за выбранный период. Нажмите « Загрузить из кабинета» для загрузки.</div>' : '';
+  const noDataHint = !hasKpiData
+    ? '<div class="col-span-full data-empty-state"><strong>Нет данных Leads.su за выбранный период</strong><span>Проверьте даты или нажмите «Загрузить данные» для синхронизации.</span></div>'
+    : (!globalRawData.length && hasAccountKpiData
+      ? '<div class="col-span-full data-empty-state"><strong>Сводные KPI доступны</strong><span>Детальная разбивка по площадкам и офферам за этот период пока не загружена.</span></div>'
+      : '');
   const clicksTip = (clicksSource === 'unique_clicks')
     ? 'Уник. клики за период — сумма unique_clicks из /webmaster/reports/summary?field=source (аддитивный срез per (date, площадка), сохранённый в daily_unique_clicks). Используется, когда детальный срез /reports/summary?fields=offer_id,source,aff_sub1 не пришёл; совпадает с колонкой «Уник. клики» в ЛК leads.su.'
     : (clicksSource === 'account')
@@ -5480,7 +5512,6 @@ function renderUI() {
     ${kpiCard('CR %', cr.toFixed(2) + '%', cr, plan.cr, v => v.toFixed(1) + '%', crTip)}`;
   renderFunnel(data, sf);
   renderRejectRevenueAnalysis(data, sf);
-  markDataUpdated();
 }
 
 function renderProblemZones() {
@@ -5526,6 +5557,11 @@ function renderFunnel(data, sourceFilter = 'all') {
   const box = document.getElementById('funnelBox');
   if (!box) return;
   const t = sumLeadRows(data);
+  const hasFunnelData = (data && data.length > 0) || bannerData.length > 0 || bouncesData.length > 0;
+  if (!hasFunnelData) {
+    box.innerHTML = '<div class="data-empty-state"><strong>Нет данных для воронки</strong><span>Загрузите статистику Leads.su и данные Яндекс.Метрики за выбранный период.</span></div>';
+    return;
+  }
   // Этап «Клик по Leads.su» — это уникальные клики (как в кабинете). Берём
   // истинные uniques из daily_unique_clicks; fallback к сумме детальных
   // строк, если фильтр sub1 активен или aggregate недоступен.
@@ -11860,7 +11896,7 @@ function renderDeepAIResult(d) {
             const meta = [
               s.owner ? ` ${escapeHtml(String(s.owner))}` : '',
               (s.due_in_days !== undefined && s.due_in_days !== null) ? ` ${escapeHtml(String(s.due_in_days))}д` : '',
-              s.confidence ? `conf: ${conf(s.confidence)}` : '',
+              s.confidence ? `Надёжность вывода: ${conf(s.confidence)}` : '',
             ].filter(Boolean).join(' · ');
             return `
             <div class="border-l-4 border-blue-500 bg-blue-500/5 p-3 rounded">
@@ -11974,7 +12010,7 @@ function renderDeepAIResult(d) {
     const dp = (r.data_points_used !== undefined && r.data_points_used !== null)
       ? ` <span class="text-xs text-slate-500">· ${Number(r.data_points_used)} точек</span>` : '';
     const conf2 = (r.expected_impact && r.expected_impact.confidence)
-      ? ` <span class="text-xs">conf: ${conf(r.expected_impact.confidence)}</span>` : '';
+      ? ` <span class="text-xs">Надёжность вывода: ${conf(r.expected_impact.confidence)}</span>` : '';
     const revoke = r.revoke_if ? `<div class="text-xs text-amber-300 mt-1">↩ Отменить если: ${escapeHtml(String(r.revoke_if))}</div>` : '';
     return `
       <div class="border border-slate-700 rounded p-3 bg-slate-900/50">
@@ -14321,6 +14357,40 @@ function computeQuickRange(name) {
 
 // Подсвечивает активную кнопку быстрого периода, если текущий выбор
 // совпадает с одним из пресетов. Иначе — снимает подсветку со всех.
+function setMeetingMode(enabled) {
+  const on = !!enabled;
+  document.body.classList.toggle('meeting-mode', on);
+  const btn = document.getElementById('meetingModeToggle');
+  if (btn) {
+    btn.classList.toggle('is-active', on);
+    btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    btn.textContent = on ? 'Выйти из режима показа' : 'Режим показа';
+  }
+  try { localStorage.setItem('leadsMeetingMode', on ? '1' : '0'); } catch (_) {}
+}
+function toggleMeetingMode() {
+  setMeetingMode(!document.body.classList.contains('meeting-mode'));
+}
+function restoreMeetingMode() {
+  let on = false;
+  try { on = localStorage.getItem('leadsMeetingMode') === '1'; } catch (_) {}
+  setMeetingMode(on);
+}
+
+function initSortHeaders() {
+  document.querySelectorAll('th.sort-th').forEach(th => {
+    th.setAttribute('role', 'button');
+    th.setAttribute('tabindex', '0');
+    th.setAttribute('aria-label', `${th.textContent.replace(/↕/g, '').trim()}: сортировать`);
+    th.addEventListener('keydown', e => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        th.click();
+      }
+    });
+  });
+}
+
 function updateQuickRangeActive() {
   const dFrom = document.getElementById('dateFrom').value;
   const dTo   = document.getElementById('dateTo').value;
@@ -14535,6 +14605,8 @@ window.addEventListener('DOMContentLoaded', () => {
   document.getElementById('dateFrom').addEventListener('change', () => { updateQuickRangeActive(); autoLoadSavedStats(); });
   document.getElementById('dateTo').addEventListener('change', () => { updateQuickRangeActive(); autoLoadSavedStats(); });
   setupApplePickers();
+  initSortHeaders();
+  restoreMeetingMode();
   setupChartDefaults();
   restoreBannerRelationGrouping();
   updateQuickRangeActive();
@@ -14566,8 +14638,13 @@ window.addEventListener('DOMContentLoaded', () => {
     document.getElementById('aiSettingsPanel')?.addEventListener('change', aiSettingsRefreshSummary);
     document.getElementById('aiSettingsPanel')?.addEventListener('input',  aiSettingsRefreshSummary);
   } catch (e) { console.debug('aiSettings init skipped:', e); }
-  startAutoRefresh();
-  autoLoadSavedStats();
+  startAutoRefresh(true);
+  // Последовательный старт: сначала быстрый снапшот, затем API-refresh,
+  // если он действительно просрочен. Это исключает гонку backfill/update_stats.
+  (async () => {
+    try { await autoLoadSavedStats(); }
+    finally { runAutoRefresh(false); }
+  })();
   // Каркас «Монетизация отказников» — подвкладки, фильтр сегментов, первичный рендер.
   try { rejectMonInit(); } catch (e) { console.debug('rejectMonInit skipped:', e); }
   // Восстанавливаем последнюю открытую вкладку (после инициализации контента).
