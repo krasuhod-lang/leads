@@ -1574,7 +1574,7 @@
         <input id="dateFrom" type="hidden">
         <input id="dateTo" type="hidden">
         <button id="btnLoadAPI" class="btn" onclick="loadFromAPI()">Загрузить данные</button>
-        <button id="btnManualRefresh" class="btn" style="background:#475569" title="Обновить из сохранённого снапшота" onclick="manualRefresh()">Обновить</button>
+        <button id="btnManualRefresh" class="btn" style="background:#475569" title="Заново загрузить данные из Leads.su API за выбранный период; старый срез будет заменён" onclick="manualRefresh()">Обновить</button>
         <button id="meetingModeToggle" type="button" class="btn btn-secondary meeting-mode-toggle" aria-pressed="false" title="Скрыть вторичные элементы и оставить основные данные для показа" onclick="toggleMeetingMode()">Режим показа</button>
         <div class="auto-refresh-indicator" id="autoRefreshStatus">
           <span class="dot"></span>
@@ -4923,12 +4923,20 @@ function updateLastUpdatedLabel() {
   el.textContent = ' ' + txt;
 }
 
-// Ручное обновление из сохранённого снапшота БД (быстро, без обращения к API).
+// Ручное обновление выбранного периода из Leads.su API.
+// Сервер сначала выполняет preflight-проверку токена и только после успешного
+// полного ответа API заменяет старый срез этого периода. При ошибке, 429 или
+// частичном ответе прежние данные сохраняются, чтобы не потерять историю.
 async function manualRefresh() {
   const btn = document.getElementById('btnManualRefresh');
   if (btn) btn.disabled = true;
-  try { await autoLoadSavedStats(); } catch (e) { console.warn('manualRefresh:', e); }
-  if (btn) btn.disabled = false;
+  try {
+    await loadFromAPI();
+  } catch (e) {
+    console.warn('manualRefresh:', e);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 // ===================== БЕЙДЖ НЕПРОЧИТАННЫХ СОБЫТИЙ =====================
